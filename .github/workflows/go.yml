@@ -1,0 +1,141 @@
+name: Go
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        gover: ["1.21"]
+        # gover: ["1.19", "1.20", "1.21"] # TODO: move slog to version specific files, make it a noop for older versions
+
+    env:
+      RELEASE_GO_VER: "1.21"
+      # do not automatically upgrade go to a different version: https://go.dev/doc/toolchain
+      GOTOOLCHAIN: "local"
+
+    permissions:
+      contents: write # needed for pushing release with softprops/actions-gh-release
+      id-token: write # needed for OIDC Token signing with cosign
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+    - name: "Set up Go ${{ matrix.gover }}"
+      uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4.1.0
+      with:
+        go-version: "${{ matrix.gover }}"
+        check-latest: true
+      id: go
+
+    - name: Get dependencies
+      run: |
+        go get -v -t -d ./...
+
+    - name: Verify go fmt
+      run: test -z "$(go fmt ./...)"
+
+    - name: Verify go vet
+      run: test -z "$(go vet ./...)"
+
+    - name: Test
+      run: make test
+
+    - name: Linting
+      if: matrix.gover == env.RELEASE_GO_VER
+      run: make lint
+
+    - name: Install syft
+      if: startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main'
+      uses: anchore/sbom-action/download-syft@78fc58e266e87a38d4194b2137a3d4e9bcaf7ca1 # v0.14.3
+      id: syft
+      with:
+        syft-version: "v0.97.1"
+
+    - name: Build artifacts
+      if: startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main'
+      run: make artifacts
+
+    - name: Install cosign
+      if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
+      uses: sigstore/cosign-installer@1fc5bd396d372bee37d608f955b336615edf79c8 # v3.2.0
+      with:
+        cosign-release: "v2.2.1"
+
+    - name: Package artifacts
+      if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
+      run: |
+        cd artifacts
+        for artifact in \
+            olareg-darwin-amd64 \
+            olareg-darwin-arm64 \
+            olareg-linux-amd64 \
+            olareg-linux-arm64 \
+            olareg-linux-ppc64le \
+            olareg-linux-s390x \
+            olareg-windows-amd64.exe \
+          ; do
+          cosign sign-blob -y --output-signature "${artifact%.exe}.sig" --output-certificate "${artifact%.exe}.pem" "${artifact}"
+        done
+        tar -cvzf metadata.tgz *.sig *.pem *.json
+
+    - name: Gather release details
+      if: startsWith( github.ref, 'refs/tags/v' ) && github.repository_owner == 'olareg' && matrix.gover == env.RELEASE_GO_VER
+      id: release_details
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        VALID_RELEASE=false
+        if [ -f "release.md" ] && grep -q "Release $VERSION" release.md; then
+          VALID_RELEASE=true
+        fi
+        RELEASE_NOTES=$(cat release.md || echo release notes unavailable)
+        # escape % and linefeeds
+        RELEASE_NOTES="${RELEASE_NOTES//'%'/'%25'}"
+        RELEASE_NOTES="${RELEASE_NOTES//$'\n'/'%0A'}"
+        RELEASE_NOTES="${RELEASE_NOTES//$'\r'/'%0D'}"
+        echo ::set-output name=version::${VERSION}
+        echo ::set-output name=valid::${VALID_RELEASE}
+        echo ::set-output name=release_notes::${RELEASE_NOTES}
+
+    - name: Create release
+      if: steps.release_details.outputs.valid == 'true' && matrix.gover == env.RELEASE_GO_VER
+      id: release_create
+      uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.release_details.outputs.version }}
+        body: ${{ steps.release_details.outputs.release_notes }}
+        draft: false
+        prerelease: false
+        files: |
+          ./artifacts/olareg-darwin-amd64
+          ./artifacts/olareg-darwin-arm64
+          ./artifacts/olareg-linux-amd64
+          ./artifacts/olareg-linux-arm64
+          ./artifacts/olareg-linux-ppc64le
+          ./artifacts/olareg-linux-s390x
+          ./artifacts/olareg-windows-amd64.exe
+          ./artifacts/metadata.tgz
+
+    - name: Save artifacts
+      if: github.ref == 'refs/heads/main' && matrix.gover == env.RELEASE_GO_VER
+      uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+      with:
+        name: binaries
+        path: ./artifacts/
+        retention-days: 30
