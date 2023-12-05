@@ -2,13 +2,12 @@ package olareg
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
-	"os"
 	"path"
 	"regexp"
 	"strings"
 
+	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/internal/store"
 )
 
@@ -23,7 +22,7 @@ func New(conf Config) http.Handler {
 		log:  conf.Log,
 	}
 	if s.log == nil {
-		s.log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		s.log = slog.Null{}
 	}
 	switch conf.StoreType {
 	case StoreMem:
@@ -40,7 +39,7 @@ func New(conf Config) http.Handler {
 type server struct {
 	conf  Config
 	store store.Store
-	log   *slog.Logger
+	log   slog.Logger
 	// TODO: add context?
 	// TODO: implement memory store, disk cache, GC handling, etc for the non-disk and non-config data
 }

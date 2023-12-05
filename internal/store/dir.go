@@ -3,7 +3,6 @@ package store
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/types"
 )
 
@@ -38,7 +38,7 @@ type dir struct {
 	mu    sync.Mutex
 	root  string
 	repos map[string]*dirRepo // TODO: switch to storing these in a cache that expires from memory
-	log   *slog.Logger
+	log   slog.Logger
 }
 
 type dirRepo struct {
@@ -51,7 +51,7 @@ type dirRepo struct {
 	index     types.Index
 	tags      map[string]types.Descriptor
 	manifests map[digest.Digest]types.Descriptor
-	log       *slog.Logger
+	log       slog.Logger
 }
 
 // OptDir includes options for the directory store.
@@ -67,14 +67,13 @@ func NewDir(root string, opts ...OptDir) Store {
 		opt(d)
 	}
 	if d.log == nil {
-		// TODO: is there a better way to create a noop logger?
-		d.log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(99)}))
+		d.log = slog.Null{}
 	}
 	return d
 }
 
 // WithDirLog includes a logger on the directory store.
-func WithDirLog(log *slog.Logger) OptDir {
+func WithDirLog(log slog.Logger) OptDir {
 	return func(d *dir) {
 		d.log = log
 	}

@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/olareg/olareg/internal/slog"
 )
 
 func main() {
@@ -16,7 +17,7 @@ func main() {
 }
 
 type rootOpts struct {
-	log      *slog.Logger
+	log      slog.Logger
 	levelStr string
 }
 
@@ -29,12 +30,8 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	// TODO: temporary log value, is this needed before the prerun executes?
-	opts.log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	newCmd.PersistentFlags().StringVarP(&opts.levelStr, "verbosity", "v", "warn", "Log level (debug, info, warn, error)")
-	_ = newCmd.RegisterFlagCompletionFunc("verbosity", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"debug", "info", "warn", "error"}, cobra.ShellCompDirectiveNoFileComp
-	})
+	opts.log = slog.Null{}
+	setupLogFlag(newCmd, &opts)
 	newCmd.PersistentPreRunE = opts.preRun
 	newCmd.AddCommand(
 		newServeCmd(&opts),
@@ -43,11 +40,9 @@ func newRootCmd() *cobra.Command {
 }
 
 func (opts *rootOpts) preRun(cmd *cobra.Command, args []string) error {
-	var lvl slog.Level
-	err := lvl.UnmarshalText([]byte(opts.levelStr))
+	err := setupLogger(cmd, opts)
 	if err != nil {
-		return fmt.Errorf("unable to parse verbosity %s: %v", opts.levelStr, err)
+		return err
 	}
-	opts.log = slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: lvl}))
 	return nil
 }
