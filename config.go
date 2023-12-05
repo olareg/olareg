@@ -2,8 +2,9 @@ package olareg
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
+
+	"github.com/olareg/olareg/internal/slog"
 )
 
 // TODO: add config struct
@@ -19,7 +20,7 @@ const (
 type Config struct {
 	StoreType Store
 	RootDir   string
-	Log       *slog.Logger
+	Log       slog.Logger
 	// TODO: TLS and listener options? not needed here if only providing handler
 	// TODO: GC policy, delete untagged? timeouts for partial blobs?
 	// TODO: proxy settings, pull only, or push+pull cache
