@@ -1,0 +1,9 @@
+*
+!.git/
+!cmd/
+!internal/
+!pkg/
+!types/
+!go.*
+!*.go
+!Makefile
