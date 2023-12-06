@@ -1,0 +1,68 @@
+ARG REGISTRY=docker.io
+ARG ALPINE_VER=3.18.5@sha256:34871e7290500828b39e22294660bee86d966bc0017544e848dd9a255cdf59e0
+ARG GO_VER=1.21.4-alpine@sha256:70afe55365a265f0762257550bc38440e0d6d6b97020d3f8c85328f00200dd8e
+
+FROM ${REGISTRY}/library/golang:${GO_VER} as golang
+RUN apk add --no-cache \
+      ca-certificates \
+      git \
+      make
+RUN adduser -D appuser \
+ && mkdir -p /home/appuser \
+ && chown -R appuser /home/appuser
+WORKDIR /src
+
+FROM golang as build
+COPY go.mod go.sum /src/
+RUN go mod download
+COPY . /src/
+RUN make bin/olareg
+USER appuser
+CMD [ "bin/olareg" ]
+
+FROM ${REGISTRY}/library/alpine:${ALPINE_VER} as release-alpine
+COPY --from=build /etc/passwd /etc/group /etc/
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build --chown=appuser /home/appuser /home/appuser
+COPY --from=build /src/bin/olareg /usr/local/bin/olareg
+USER appuser
+CMD [ "olareg", "--help" ]
+
+ARG BUILD_DATE
+ARG VCS_REF
+LABEL maintainer="" \
+      org.opencontainers.image.created=$BUILD_DATE \
+      org.opencontainers.image.authors="olareg contributors" \
+      org.opencontainers.image.url="https://github.com/olareg/olareg" \
+      org.opencontainers.image.documentation="https://github.com/olareg/olareg" \
+      org.opencontainers.image.source="https://github.com/olareg/olareg" \
+      org.opencontainers.image.version="latest" \
+      org.opencontainers.image.revision=$VCS_REF \
+      org.opencontainers.image.vendor="" \
+      org.opencontainers.image.licenses="Apache 2.0" \
+      org.opencontainers.image.title="olareg" \
+      org.opencontainers.image.description=""
+
+FROM scratch as release-scratch
+COPY --from=build /tmp /
+COPY --from=build /etc/passwd /etc/group /etc/
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build --chown=appuser /home/appuser /home/appuser
+COPY --from=build /src/bin/olareg /olareg
+USER appuser
+ENTRYPOINT [ "/olareg" ]
+
+ARG BUILD_DATE
+ARG VCS_REF
+LABEL maintainer="" \
+      org.opencontainers.image.created=$BUILD_DATE \
+      org.opencontainers.image.authors="olareg contributors" \
+      org.opencontainers.image.url="https://github.com/olareg/olareg" \
+      org.opencontainers.image.documentation="https://github.com/olareg/olareg" \
+      org.opencontainers.image.source="https://github.com/olareg/olareg" \
+      org.opencontainers.image.version="latest" \
+      org.opencontainers.image.revision=$VCS_REF \
+      org.opencontainers.image.vendor="" \
+      org.opencontainers.image.licenses="Apache 2.0" \
+      org.opencontainers.image.title="olareg" \
+      org.opencontainers.image.description=""
