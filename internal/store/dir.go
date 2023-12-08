@@ -3,13 +3,9 @@ package store
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
+	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,14 +20,9 @@ import (
 )
 
 const (
-	freqCheck    = time.Second
-	indexFile    = "index.json"
-	layoutFile   = "oci-layout"
-	annotRefName = "org.opencontainers.image.ref.name"
-)
-
-var (
-	reTag = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`)
+	freqCheck  = time.Second
+	indexFile  = "index.json"
+	layoutFile = "oci-layout"
 )
 
 type dir struct {
@@ -49,8 +40,6 @@ type dirRepo struct {
 	path      string
 	exists    bool
 	index     types.Index
-	tags      map[string]types.Descriptor
-	manifests map[digest.Digest]types.Descriptor
 	log       slog.Logger
 }
 
@@ -88,18 +77,16 @@ func (d *dir) RepoGet(repoStr string) Repo {
 		return dr
 	}
 	dr := dirRepo{
-		path:      filepath.Join(d.root, repoStr),
-		name:      repoStr,
-		manifests: map[digest.Digest]types.Descriptor{},
-		tags:      map[string]types.Descriptor{},
-		log:       d.log,
+		path: filepath.Join(d.root, repoStr),
+		name: repoStr,
+		log:  d.log,
 	}
 	d.repos[repoStr] = &dr
 	statDir, err := os.Stat(dr.path)
 	if err == nil && statDir.IsDir() {
 		statIndex, errIndex := os.Stat(filepath.Join(dr.path, indexFile))
 		statLayout, errLayout := os.Stat(filepath.Join(dr.path, layoutFile))
-		// TODO: validate content of index and layout
+		// TODO: validate content of layout
 		if errIndex == nil && errLayout == nil && !statIndex.IsDir() && !statLayout.IsDir() {
 			dr.exists = true
 		}
@@ -107,188 +94,25 @@ func (d *dir) RepoGet(repoStr string) Repo {
 	return &dr
 }
 
-// BlobGet returns a requested blob by digest.
-func (dr *dirRepo) BlobGet(arg string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !dr.exists {
-			w.WriteHeader(http.StatusNotFound)
-			_ = types.ErrRespJSON(w, types.ErrInfoNameUnknown("repository does not exist"))
-			return
-		}
-		d, err := digest.Parse(arg)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest cannot be parsed"))
-			return
-		}
-		fh, err := os.Open(filepath.Join(dr.path, "blobs", d.Algorithm().String(), d.Encoded()))
-		if err != nil {
-			dr.log.Info("failed to open blob", "err", err)
-			if os.IsNotExist(err) {
-				w.WriteHeader(http.StatusNotFound)
-				_ = types.ErrRespJSON(w, types.ErrInfoBlobUnknown("blob was not found"))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
-		}
-		defer fh.Close()
-		w.Header().Add("Content-Type", "application/octet-stream")
-		w.Header().Add("Docker-Content-Digest", d.String())
-		// use ServeContent to handle range requests
-		http.ServeContent(w, r, "", time.Time{}, fh)
-	}
+// IndexGet returns the current top level index for a repo.
+func (dr *dirRepo) IndexGet() (types.Index, error) {
+	err := dr.repoLoad(false)
+	return dr.index, err
 }
 
-// ManifestGet returns a requested manifest by tag or digest.
-func (dr *dirRepo) ManifestGet(arg string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		err := dr.repoLoad(false)
-		if err != nil || !dr.exists {
-			w.WriteHeader(http.StatusNotFound)
-			_ = types.ErrRespJSON(w, types.ErrInfoNameUnknown("repository does not exist"))
-			return
-		}
-		// get the descriptor
-		desc, err := dr.descGet(arg)
-		if err != nil || desc.Digest.String() == "" {
-			dr.log.Info("failed to get descriptor", "err", err)
-			w.WriteHeader(http.StatusNotFound)
-			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
-			return
-		}
-		// if desc does not match requested accept header
-		acceptList := r.Header.Values("Accept")
-		if !types.MediaTypeAccepts(desc.MediaType, acceptList) {
-			// if accept header is defined, desc is an index, and arg is a tag
-			if len(acceptList) > 0 && types.MediaTypeIndex(desc.MediaType) && reTag.MatchString(arg) {
-				// parse the index to find a matching media type
-				i := types.Index{}
-				fh, err := os.Open(filepath.Join(dr.path, "blobs", desc.Digest.Algorithm().String(), desc.Digest.Encoded()))
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				defer fh.Close()
-				err = json.NewDecoder(fh).Decode(&i)
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				found := false
-				for _, d := range i.Manifests {
-					if types.MediaTypeAccepts(d.MediaType, acceptList) {
-						// use first match if found
-						desc = d
-						found = true
-						break
-					}
-				}
-				if !found {
-					w.WriteHeader(http.StatusNotFound)
-					_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("requested media type not found, available media type is "+desc.MediaType))
-					return
-				}
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-				_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("requested media type not found, available media type is "+desc.MediaType))
-				return
-			}
-		}
-		fh, err := os.Open(filepath.Join(dr.path, "blobs", desc.Digest.Algorithm().String(), desc.Digest.Encoded()))
-		if err != nil {
-			dr.log.Info("failed to open manifest blob", "err", err)
-			if os.IsNotExist(err) {
-				w.WriteHeader(http.StatusNotFound)
-				_ = types.ErrRespJSON(w, types.ErrInfoManifestBlobUnknown("requested manifest was not found in blob store"))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
-		}
-		defer fh.Close()
-		w.Header().Add("Content-Type", desc.MediaType)
-		w.Header().Add("Docker-Content-Digest", desc.Digest.String())
-		// use ServeContent to handle range requests
-		http.ServeContent(w, r, "", time.Time{}, fh)
+// BlobGet returns a reader to an entry from the CAS.
+func (dr *dirRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
+	if !dr.exists {
+		return nil, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
-}
-
-// TagList returns the list of tags.
-func (dr *dirRepo) TagList() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		err := dr.repoLoad(false)
-		if err != nil || !dr.exists {
-			w.WriteHeader(http.StatusNotFound)
-			_ = types.ErrRespJSON(w, types.ErrInfoNameUnknown("repository does not exist"))
-			return
+	fh, err := os.Open(filepath.Join(dr.path, "blobs", d.Algorithm().String(), d.Encoded()))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
 		}
-		last := r.URL.Query().Get("last")
-		w.Header().Add("Content-Type", "application/json")
-		tl := types.TagList{
-			Name: dr.name,
-			Tags: []string{},
-		}
-		for t := range dr.tags {
-			if strings.Compare(last, t) < 0 {
-				tl.Tags = append(tl.Tags, t)
-			}
-		}
-		sort.Strings(tl.Tags)
-		n := r.URL.Query().Get("n")
-		if n != "" {
-			if nInt, err := strconv.Atoi(n); err == nil && len(tl.Tags) > nInt {
-				tl.Tags = tl.Tags[:nInt]
-				// add next header for pagination
-				next := r.URL
-				q := next.Query()
-				q.Set("last", tl.Tags[len(tl.Tags)-1])
-				next.RawQuery = q.Encode()
-				w.Header().Add("Link", fmt.Sprintf("%s; rel=next", next.String()))
-			}
-		}
-		tlJSON, err := json.Marshal(tl)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			dr.log.Warn("failed to marshal tag list", "err", err)
-			return
-		}
-		w.Header().Add("Content-Length", fmt.Sprintf("%d", len(tlJSON)))
-		w.WriteHeader(http.StatusOK)
-		if r.Method != http.MethodHead {
-			_, err = w.Write(tlJSON)
-			if err != nil {
-				dr.log.Warn("failed to marshal tag list", "err", err)
-			}
-		}
+		return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
 	}
-}
-
-func (dr *dirRepo) descGet(arg string) (types.Descriptor, error) {
-	dr.mu.Lock()
-	defer dr.mu.Unlock()
-	var dZero types.Descriptor
-	if reTag.MatchString(arg) {
-		// search for tag
-		if dr.tags == nil {
-			return dZero, types.ErrNotFound
-		}
-		if d, ok := dr.tags[arg]; ok {
-			return d, nil
-		}
-		dr.log.Info("failed to get descriptor by tag", "arg", arg)
-	} else {
-		// else, attempt to parse digest
-		dig, err := digest.Parse(arg)
-		if err != nil {
-			return dZero, err
-		}
-		if d, ok := dr.manifests[dig]; ok {
-			return d, nil
-		}
-		dr.log.Info("failed to get descriptor by digest", "arg", arg)
-	}
-	return dZero, types.ErrNotFound
+	return fh, nil
 }
 
 func (dr *dirRepo) repoLoad(force bool) error {
@@ -297,7 +121,6 @@ func (dr *dirRepo) repoLoad(force bool) error {
 	if !force && time.Since(dr.timeCheck) < freqCheck {
 		return nil
 	}
-	// TODO: verify oci-layout existence and content
 	fh, err := os.Open(filepath.Join(dr.path, indexFile))
 	if err != nil {
 		return err
@@ -315,28 +138,12 @@ func (dr *dirRepo) repoLoad(force bool) error {
 	if err != nil {
 		return err
 	}
-	dr.manifests = map[digest.Digest]types.Descriptor{}
-	dr.tags = map[string]types.Descriptor{}
 	dr.exists = true
 	for _, d := range dr.index.Manifests {
-		if _, ok := dr.manifests[d.Digest]; !ok {
-			dr.manifests[d.Digest] = types.Descriptor{
-				MediaType: d.MediaType,
-				Digest:    d.Digest,
-				Size:      d.Size,
-			}
-		}
-		if d.Annotations != nil && d.Annotations[annotRefName] != "" {
-			dr.tags[d.Annotations[annotRefName]] = types.Descriptor{
-				MediaType: d.MediaType,
-				Digest:    d.Digest,
-				Size:      d.Size,
-			}
-		}
 		if types.MediaTypeIndex(d.MediaType) {
 			err = dr.repoLoadIndex(d)
 			if err != nil {
-				return err // TODO: ignore, log, or gather multiple errors?
+				return err // TODO: after dropping 1.19 support, join multiple errors into one return
 			}
 		}
 	}
@@ -345,33 +152,22 @@ func (dr *dirRepo) repoLoad(force bool) error {
 }
 
 func (dr *dirRepo) repoLoadIndex(d types.Descriptor) error {
-	fh, err := os.Open(filepath.Join(dr.path, "blobs", d.Digest.Algorithm().String(), d.Digest.Encoded()))
+	rdr, err := dr.BlobGet(d.Digest)
 	if err != nil {
 		return err
 	}
 	i := types.Index{}
-	err = json.NewDecoder(fh).Decode(&i)
-	_ = fh.Close() // close here rather than defer, to avoid open fh during recursion
+	err = json.NewDecoder(rdr).Decode(&i)
+	_ = rdr.Close() // close here rather than defer, to avoid open fh during recursion
 	if err != nil {
 		return err
 	}
+	dr.index.AddChildren(i.Manifests)
 	for _, di := range i.Manifests {
-		dCur := types.Descriptor{
-			MediaType: di.MediaType,
-			Digest:    di.Digest,
-			Size:      di.Size,
-		}
-		dr.log.Debug("loading descriptor", "digest", dCur.Digest.String(), "parent", d.Digest.String())
-		// if _, ok := dr.manifests[dCur.Digest]; ok {
-		// 	continue // don't reprocess digests
-		// }
-		dr.manifests[dCur.Digest] = dCur
-		switch {
-		case types.MediaTypeIndex(dCur.MediaType):
-			// TODO: gather multiple errors and process as much as possible?
-			err = dr.repoLoadIndex(dCur)
+		if types.MediaTypeIndex(di.MediaType) {
+			err = dr.repoLoadIndex(di)
 			if err != nil {
-				return err
+				return err // TODO: after dropping 1.19 support, join multiple errors into one return
 			}
 		}
 	}

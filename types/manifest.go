@@ -1,5 +1,13 @@
 package types
 
+import (
+	// imports required for go-digest
+	_ "crypto/sha256"
+	_ "crypto/sha512"
+
+	"github.com/opencontainers/go-digest"
+)
+
 // Index references manifests for various platforms.
 type Index struct {
 	// SchemaVersion is the image manifest schema that this image follows
@@ -19,6 +27,9 @@ type Index struct {
 
 	// Annotations contains arbitrary metadata for the image index.
 	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// childManifests is used to recursively include child manifests from nested indexes.
+	childManifests []Descriptor
 }
 
 // Manifest defines an OCI image
@@ -44,4 +55,42 @@ type Manifest struct {
 
 	// Annotations contains arbitrary metadata for the image manifest.
 	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+func (i *Index) AddChildren(children []Descriptor) {
+	i.childManifests = append(i.childManifests, children...)
+}
+
+func (i Index) GetDesc(arg string) (Descriptor, error) {
+	var dRet Descriptor
+	if i.Manifests == nil {
+		return dRet, ErrNotFound
+	}
+	if RefTagRE.MatchString(arg) {
+		// search for tag
+		for _, d := range i.Manifests {
+			if d.Annotations != nil && d.Annotations[AnnotRefName] == arg {
+				return d, nil
+			}
+		}
+	} else {
+		// else, attempt to parse digest
+		dig, err := digest.Parse(arg)
+		if err != nil {
+			return dRet, err
+		}
+		for _, d := range i.Manifests {
+			if d.Digest == dig {
+				return d, nil
+			}
+		}
+		if i.childManifests != nil {
+			for _, d := range i.childManifests {
+				if d.Digest == dig {
+					return d, nil
+				}
+			}
+		}
+	}
+	return dRet, ErrNotFound
 }

@@ -25,8 +25,8 @@ func New(conf Config) http.Handler {
 		s.log = slog.Null{}
 	}
 	switch conf.StoreType {
-	case StoreMem:
-		s.store = store.NewMem()
+	// case StoreMem:
+	// 	s.store = store.NewMem()
 	case StoreDir:
 		if s.conf.RootDir == "" {
 			s.conf.RootDir = "."
@@ -70,16 +70,16 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		s.v2Ping(resp, req)
 		return
 	case validAPI && action == "tags" && arg == "list" && (req.Method == http.MethodGet || req.Method == http.MethodHead):
-		// handle manifest get
-		s.store.RepoGet(repoStr).TagList().ServeHTTP(resp, req)
+		// handle tag listing
+		s.tagList(repoStr).ServeHTTP(resp, req)
 		return
 	case validAPI && action == "blobs" && (req.Method == http.MethodGet || req.Method == http.MethodHead):
 		// handle blob get
-		s.store.RepoGet(repoStr).BlobGet(arg).ServeHTTP(resp, req)
+		s.blobGet(repoStr, arg).ServeHTTP(resp, req)
 		return
 	case validAPI && action == "manifests" && (req.Method == http.MethodGet || req.Method == http.MethodHead):
 		// handle manifest get
-		s.store.RepoGet(repoStr).ManifestGet(arg).ServeHTTP(resp, req)
+		s.manifestGet(repoStr, arg).ServeHTTP(resp, req)
 		return
 	default:
 		resp.WriteHeader(http.StatusNotFound)
