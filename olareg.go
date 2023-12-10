@@ -12,7 +12,8 @@ import (
 )
 
 var (
-	rePathPart = regexp.MustCompile(`^[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*$`)
+	pathPart = `[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*`
+	rePath   = regexp.MustCompile(`^` + pathPart + `(?:\/` + pathPart + `)*$`)
 )
 
 // New runs an http handler
@@ -47,60 +48,79 @@ type server struct {
 func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	// parse request path, cleaning traversal attacks, and stripping leading and trailing slash
 	pathEl := strings.Split(strings.Trim(path.Clean("/"+req.URL.Path), "/"), "/")
-	validAPI := false
-	repoStr := ""
-	action := ""
-	arg := ""
-	if len(pathEl) >= 4 && pathEl[0] == "v2" {
-		validAPI = true
-		repoStr = strings.Join(pathEl[1:len(pathEl)-2], "/")
-		action = pathEl[len(pathEl)-2]
-		arg = pathEl[len(pathEl)-1]
-		for _, part := range pathEl[1 : len(pathEl)-2] {
-			if !rePathPart.MatchString(part) {
-				validAPI = false
-				break
-			}
-		}
-	}
 	resp.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	switch {
-	case len(pathEl) == 1 && pathEl[0] == "v2" && (req.Method == http.MethodGet || req.Method == http.MethodHead):
+	if _, ok := matchV2(pathEl); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle v2 ping
 		s.v2Ping(resp, req)
 		return
-	case validAPI && action == "tags" && arg == "list" && (req.Method == http.MethodGet || req.Method == http.MethodHead):
+	} else if matches, ok := matchV2(pathEl, "...", "tags", "list"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle tag listing
-		s.tagList(repoStr).ServeHTTP(resp, req)
+		s.tagList(matches[0]).ServeHTTP(resp, req)
 		return
-	case validAPI && action == "blobs" && (req.Method == http.MethodGet || req.Method == http.MethodHead):
+	} else if matches, ok := matchV2(pathEl, "...", "blobs", "*"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle blob get
-		s.blobGet(repoStr, arg).ServeHTTP(resp, req)
+		s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
 		return
-	case validAPI && action == "manifests" && (req.Method == http.MethodGet || req.Method == http.MethodHead):
+	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads"); ok && req.Method == http.MethodPost {
+		// handle blob post
+		s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
+		return
+	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok && req.Method == http.MethodPut {
+		// handle blob put
+		s.blobUploadPut(matches[0], matches[1]).ServeHTTP(resp, req)
+		return
+	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle manifest get
-		s.manifestGet(repoStr, arg).ServeHTTP(resp, req)
+		s.manifestGet(matches[0], matches[1]).ServeHTTP(resp, req)
 		return
-	default:
+	} else {
 		resp.WriteHeader(http.StatusNotFound)
 		// TODO: remove response, this is for debugging/development
 		errResp := struct {
-			Valid  bool
 			Method string
-			Action string
-			Arg    string
 			Path   []string
 		}{
-			Valid:  validAPI,
 			Method: req.Method,
-			Action: action,
-			Arg:    arg,
 			Path:   pathEl,
 		}
 		_ = json.NewEncoder(resp).Encode(errResp)
 	}
 	// TODO: include a status/health endpoint?
 	// TODO: add handler wrappers: auth, rate limit, etc
+}
+
+func matchV2(pathEl []string, params ...string) ([]string, bool) {
+	matches := make([]string, 0, len(pathEl)-1)
+	if pathEl[0] != "v2" || len(pathEl) < len(params)+1 {
+		return nil, false
+	}
+	i := 1
+	repoStr := ""
+	for j, p := range params {
+		switch p {
+		case "...": // repo value
+			// from current pos to num of path elements - remaining params
+			repoStr = strings.Join(pathEl[i:len(pathEl)-(len(params)-j-1)], "/")
+			// offset remaining path - remaining params - 1 (handle the later ++)
+			i += ((len(pathEl) - i) - (len(params) - j - 1) - 1)
+			matches = append(matches, repoStr)
+		case "*": // match any single arg
+			matches = append(matches, pathEl[i])
+		default:
+			if pathEl[i] != p {
+				return nil, false
+			}
+		}
+		i++
+	}
+	if len(pathEl) != i {
+		// not all path fields were matched
+		return nil, false
+	}
+	if repoStr != "" && !rePath.MatchString(repoStr) {
+		return nil, false
+	}
+	return matches, true
 }
 
 func (s *server) v2Ping(resp http.ResponseWriter, req *http.Request) {
