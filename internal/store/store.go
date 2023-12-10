@@ -28,6 +28,42 @@ type Repo interface {
 	// BlobGet returns a reader to an entry from the CAS.
 	BlobGet(d digest.Digest) (io.ReadSeekCloser, error)
 
-	// TODO: some kind of BlobPut or BlobCreate interface
-	// the return should be an interface that includes a WriteCloser, along with digest generate/verify methods.
+	// BlobCreate is used to create a new blob.
+	BlobCreate(opts ...BlobOpt) (BlobCreator, error)
+}
+
+type BlobOpt func(*blobConfig)
+
+type blobConfig struct {
+	algo   digest.Algorithm
+	expect digest.Digest
+}
+
+func BlobWithAlgorithm(a digest.Algorithm) BlobOpt {
+	return func(bc *blobConfig) {
+		bc.algo = a
+	}
+}
+
+func BlobWithDigest(d digest.Digest) BlobOpt {
+	return func(bc *blobConfig) {
+		bc.expect = d
+		bc.algo = d.Algorithm()
+	}
+}
+
+// BlobCreator is used to upload new blobs.
+type BlobCreator interface {
+	// WriteCloser is used to push the blob content.
+	io.WriteCloser
+	// Cancel is used to stop an upload.
+	Cancel()
+	// Size reports the number of bytes pushed.
+	Size() int64
+	// Digest is used to get the current digest of the content.
+	Digest() digest.Digest
+	// Verify ensures a digest matches the content.
+	Verify(digest.Digest) error
+	// TempFilename returns the assigned temp filename.
+	TempFilename() string
 }
