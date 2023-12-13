@@ -11,6 +11,10 @@ import (
 	"github.com/olareg/olareg/internal/store"
 )
 
+const (
+	manifestLimitDefault = 8388608 // 8MiB
+)
+
 var (
 	pathPart = `[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*`
 	rePath   = regexp.MustCompile(`^` + pathPart + `(?:\/` + pathPart + `)*$`)
@@ -24,6 +28,9 @@ func New(conf Config) http.Handler {
 	}
 	if s.log == nil {
 		s.log = slog.Null{}
+	}
+	if s.conf.ManifestLimit <= 0 {
+		s.conf.ManifestLimit = manifestLimitDefault
 	}
 	switch conf.StoreType {
 	// case StoreMem:
@@ -72,6 +79,10 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle manifest get
 		s.manifestGet(matches[0], matches[1]).ServeHTTP(resp, req)
+		return
+	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok && req.Method == http.MethodPut {
+		// handle manifest put
+		s.manifestPut(matches[0], matches[1]).ServeHTTP(resp, req)
 		return
 	} else {
 		resp.WriteHeader(http.StatusNotFound)

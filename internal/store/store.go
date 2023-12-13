@@ -20,14 +20,13 @@ type Store interface {
 type Repo interface {
 	// IndexGet returns the current top level index for a repo.
 	IndexGet() (types.Index, error)
-
-	// TODO:
-	// IndexAdd(desc types.Descriptor) error // call index.Add, this wraps in a lock to ensure atomic change
-	// IndexRm(desc types.Descriptor) error // reverse of add
+	// IndexAdd adds a new entry to the index and writes the change to index.json.
+	IndexAdd(desc types.Descriptor, opts ...types.IndexOpt) error
+	// IndexRm removes an entry from the index and writes the change to index.json.
+	IndexRm(desc types.Descriptor) error
 
 	// BlobGet returns a reader to an entry from the CAS.
 	BlobGet(d digest.Digest) (io.ReadSeekCloser, error)
-
 	// BlobCreate is used to create a new blob.
 	BlobCreate(opts ...BlobOpt) (BlobCreator, error)
 }

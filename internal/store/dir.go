@@ -104,8 +104,24 @@ func (d *dir) RepoGet(repoStr string) Repo {
 
 // IndexGet returns the current top level index for a repo.
 func (dr *dirRepo) IndexGet() (types.Index, error) {
-	err := dr.repoLoad(false)
+	err := dr.repoLoad(false, false)
 	return dr.index, err
+}
+
+// IndexAdd adds a new entry to the index and writes the change to index.json.
+func (dr *dirRepo) IndexAdd(desc types.Descriptor, opts ...types.IndexOpt) error {
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
+	dr.index.AddDesc(desc, opts...)
+	return dr.repoSave(true)
+}
+
+// IndexRm removes an entry from the index and writes the change to index.json.
+func (dr *dirRepo) IndexRm(desc types.Descriptor) error {
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
+	dr.index.RmDesc(desc)
+	return dr.repoSave(true)
 }
 
 // BlobGet returns a reader to an entry from the CAS.
@@ -224,9 +240,11 @@ func (dr *dirRepo) repoInit() error {
 	return nil
 }
 
-func (dr *dirRepo) repoLoad(force bool) error {
-	dr.mu.Lock()
-	defer dr.mu.Unlock()
+func (dr *dirRepo) repoLoad(force, locked bool) error {
+	if !locked {
+		dr.mu.Lock()
+		defer dr.mu.Unlock()
+	}
 	if !force && time.Since(dr.timeCheck) < freqCheck {
 		return nil
 	}
@@ -279,6 +297,34 @@ func (dr *dirRepo) repoLoadIndex(d types.Descriptor) error {
 				return err // TODO: after dropping 1.19 support, join multiple errors into one return
 			}
 		}
+	}
+	return nil
+}
+
+func (dr *dirRepo) repoSave(locked bool) error {
+	if !locked {
+		dr.mu.Lock()
+		defer dr.mu.Unlock()
+	}
+	fh, err := os.CreateTemp(dr.path, "index.json.*")
+	if err != nil {
+		return err
+	}
+	err = json.NewEncoder(fh).Encode(dr.index)
+	if err != nil {
+		_ = fh.Close()
+		_ = os.Remove(fh.Name())
+		return err
+	}
+	err = fh.Close()
+	if err != nil {
+		_ = os.Remove(fh.Name())
+		return err
+	}
+	err = os.Rename(fh.Name(), filepath.Join(dr.path, indexFile))
+	if err != nil {
+		_ = os.Remove(fh.Name())
+		return err
 	}
 	return nil
 }
