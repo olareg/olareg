@@ -18,9 +18,10 @@ const (
 )
 
 type Config struct {
-	StoreType Store
-	RootDir   string
-	Log       slog.Logger
+	StoreType     Store
+	RootDir       string
+	Log           slog.Logger
+	ManifestLimit int64
 	// TODO: TLS and listener options? not needed here if only providing handler
 	// TODO: GC policy, delete untagged? timeouts for partial blobs?
 	// TODO: proxy settings, pull only, or push+pull cache
