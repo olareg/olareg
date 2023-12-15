@@ -23,7 +23,17 @@ import (
 
 func (s *server) blobGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
+			return
+		}
 		d, err := digest.Parse(arg)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -65,7 +75,17 @@ type blobUploadState struct {
 func (s *server) blobUploadPost(repoStr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// start a new upload session with the backend storage and track as current upload
-		repo := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr)
+			return
+		}
 		// TODO: check for mount=digest&from=repo, consider allowing anonymous blob mounts
 		bOpts := []store.BlobOpt{}
 		dStr := r.URL.Query().Get("digest")

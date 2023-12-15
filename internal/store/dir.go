@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,8 @@ const (
 	freqCheck  = time.Second
 	indexFile  = "index.json"
 	layoutFile = "oci-layout"
+	blobsDir   = "blobs"
+	uploadDir  = "_uploads"
 )
 
 type dir struct {
@@ -80,11 +83,14 @@ func WithDirLog(log slog.Logger) OptDir {
 
 // TODO: include options for memory caching, allowed methods.
 
-func (d *dir) RepoGet(repoStr string) Repo {
+func (d *dir) RepoGet(repoStr string) (Repo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if dr, ok := d.repos[repoStr]; ok {
-		return dr
+		return dr, nil
+	}
+	if stringsHasAny(strings.Split(repoStr, "/"), indexFile, layoutFile, blobsDir) {
+		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
 	}
 	dr := dirRepo{
 		path: filepath.Join(d.root, repoStr),
@@ -99,7 +105,7 @@ func (d *dir) RepoGet(repoStr string) Repo {
 			dr.exists = true
 		}
 	}
-	return &dr
+	return &dr, nil
 }
 
 // IndexGet returns the current top level index for a repo.
@@ -129,7 +135,7 @@ func (dr *dirRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
 	if !dr.exists {
 		return nil, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
-	fh, err := os.Open(filepath.Join(dr.path, "blobs", d.Algorithm().String(), d.Encoded()))
+	fh, err := os.Open(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
@@ -154,21 +160,21 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 		}
 	}
 	// create a temp file in the repo blob store, under an upload folder
-	uploadDir := filepath.Join(dr.path, "uploads")
-	uploadFH, err := os.Stat(uploadDir)
+	tmpDir := filepath.Join(dr.path, uploadDir)
+	uploadFH, err := os.Stat(tmpDir)
 	if err == nil && !uploadFH.IsDir() {
-		return nil, fmt.Errorf("upload location %s is not a directory", uploadDir)
+		return nil, fmt.Errorf("upload location %s is not a directory", tmpDir)
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
-		err = os.MkdirAll(uploadDir, 0755)
+		err = os.MkdirAll(tmpDir, 0755)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create upload directory %s: %w", uploadDir, err)
+			return nil, fmt.Errorf("failed to create upload directory %s: %w", tmpDir, err)
 		}
 	}
-	tf, err := os.CreateTemp(uploadDir, "upload.*")
+	tf, err := os.CreateTemp(tmpDir, "upload.*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file in %s: %w", uploadDir, err)
+		return nil, fmt.Errorf("failed to create temp file in %s: %w", tmpDir, err)
 	}
 	filename := tf.Name()
 	// start a new digester with the appropriate algo
@@ -349,19 +355,19 @@ func (dru *dirRepoUpload) Close() error {
 		return fmt.Errorf("digest mismatch, expected %s, received %s", dru.expect, dru.d.Digest())
 	}
 	// move temp file to blob store
-	blobDir := filepath.Join(dru.path, "blobs", dru.d.Digest().Algorithm().String())
-	fi, err := os.Stat(blobDir)
+	tgtDir := filepath.Join(dru.path, blobsDir, dru.d.Digest().Algorithm().String())
+	fi, err := os.Stat(tgtDir)
 	if err == nil && !fi.IsDir() {
-		return fmt.Errorf("failed to move file to blob storage, %s is not a directory", blobDir)
+		return fmt.Errorf("failed to move file to blob storage, %s is not a directory", tgtDir)
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
-		err = os.MkdirAll(blobDir, 0755)
+		err = os.MkdirAll(tgtDir, 0755)
 		if err != nil {
-			return fmt.Errorf("unable to create blob storage directory %s: %w", blobDir, err)
+			return fmt.Errorf("unable to create blob storage directory %s: %w", tgtDir, err)
 		}
 	}
-	blobName := filepath.Join(blobDir, dru.d.Digest().Encoded())
+	blobName := filepath.Join(tgtDir, dru.d.Digest().Encoded())
 	err = os.Rename(dru.filename, blobName)
 	return err
 }
@@ -395,6 +401,17 @@ func (dru *dirRepoUpload) Verify(expect digest.Digest) error {
 // TempFilename returns the assigned temp filename.
 func (dru *dirRepoUpload) TempFilename() string {
 	return dru.filename
+}
+
+func stringsHasAny(list []string, check ...string) bool {
+	for _, l := range list {
+		for _, c := range check {
+			if l == c {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func verifyLayout(filename string) bool {

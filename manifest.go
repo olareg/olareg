@@ -2,6 +2,7 @@ package olareg
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,7 +19,17 @@ import (
 
 func (s *server) manifestGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
+			return
+		}
 		index, err := repo.IndexGet()
 		if err != nil {
 			// TODO: handle different errors (perm denied, not found, internal server error)
@@ -98,7 +109,17 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 		tag := ""
 		var dExpect digest.Digest
 		addOpts := []types.IndexOpt{}
-		repo := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
+			return
+		}
 		// parse/validate headers
 		mt := r.Header.Get("content-type")
 		mt, _, _ = strings.Cut(mt, ";")
