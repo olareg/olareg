@@ -9,6 +9,8 @@ import (
 var (
 	// ErrNotFound is returned when a resource is not found.
 	ErrNotFound = errors.New("not found")
+	// ErrRepoNotAllowed is used when a repository name is not permitted.
+	ErrRepoNotAllowed = errors.New("repository name is not permitted")
 )
 
 // ErrorResp is returned by the registry on an invalid request.

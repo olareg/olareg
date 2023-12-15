@@ -14,7 +14,7 @@ import (
 )
 
 type Store interface {
-	RepoGet(repoStr string) Repo
+	RepoGet(repoStr string) (Repo, error)
 }
 
 type Repo interface {

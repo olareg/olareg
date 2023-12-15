@@ -36,11 +36,11 @@ func NewMem() Store {
 	}
 }
 
-func (m *mem) RepoGet(repoStr string) Repo {
+func (m *mem) RepoGet(repoStr string) (Repo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if mr, ok := m.repos[repoStr]; ok {
-		return mr
+		return mr, nil
 	}
 	mr := &memRepo{
 		index: types.Index{
@@ -49,7 +49,7 @@ func (m *mem) RepoGet(repoStr string) Repo {
 		blobs: map[digest.Digest][]byte{},
 	}
 	m.repos[repoStr] = mr
-	return mr
+	return mr, nil
 }
 
 // IndexGet returns the current top level index for a repo.
