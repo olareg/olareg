@@ -29,7 +29,9 @@ func (s *server) manifestGet(repoStr, arg string) http.HandlerFunc {
 		// get descriptor for arg from index
 		desc, err := index.GetDesc(arg)
 		if err != nil || desc.Digest.String() == "" {
-			s.log.Info("failed to get descriptor", "err", err, "repo", repoStr, "arg", arg)
+			if r.Method != http.MethodHead {
+				s.log.Debug("failed to get descriptor", "err", err, "repo", repoStr, "arg", arg)
+			}
 			w.WriteHeader(http.StatusNotFound)
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
 			return
