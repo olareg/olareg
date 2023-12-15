@@ -105,9 +105,10 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 		case types.MediaTypeDocker2Manifest, types.MediaTypeDocker2ManifestList,
 			types.MediaTypeOCI1Manifest, types.MediaTypeOCI1ManifestList:
 			// valid types, noop
-		// TODO: detect media type if unset
-		// case "":
+		case "":
+			// detect media type later if unset
 		default:
+			// fail fast
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("unsupported media type: "+mt))
 			s.log.Debug("unsupported media type", "repo", repoStr, "arg", arg, "mediaType", mt)
@@ -139,10 +140,53 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to read manifest", "repo", repoStr, "arg", arg, "err", err)
 			return
 		}
-		// TODO: if mt == "", detect media type
-		// TODO: parse and validate image or index contents
-		// TODO: if index, gather list of child descriptors, append option to addOpts
-
+		// if mt == "", detect media type
+		if mt == "" {
+			mt = types.MediaTypeDetect(mRaw)
+		}
+		// parse and validate image or index contents
+		switch mt {
+		case types.MediaTypeOCI1Manifest, types.MediaTypeDocker2Manifest:
+			m := types.Manifest{}
+			err = json.Unmarshal(mRaw, &m)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("manifest could not be parsed"))
+				s.log.Debug("failed to parse image manifest", "repo", repoStr, "arg", arg, "mediaType", mt, "err", err)
+				return
+			}
+			// validate image blobs exist
+			eList := s.manifestVerifyImage(repo, m)
+			if eList != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, eList...)
+				s.log.Debug("manifest blobs missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
+				return
+			}
+		case types.MediaTypeOCI1ManifestList, types.MediaTypeDocker2ManifestList:
+			m := types.Index{}
+			err = json.Unmarshal(mRaw, &m)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("manifest could not be parsed"))
+				s.log.Debug("failed to parse image manifest", "repo", repoStr, "arg", arg, "mediaType", mt, "err", err)
+				return
+			}
+			addOpts = append(addOpts, types.IndexWithChildren(m.Manifests))
+			// validate manifests exist
+			eList := s.manifestVerifyIndex(repo, m)
+			if eList != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, eList...)
+				s.log.Debug("child manifests missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
+				return
+			}
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("unsupported media type: "+mt))
+			s.log.Debug("unsupported media type", "repo", repoStr, "arg", arg, "mediaType", mt)
+			return
+		}
 		// verify / set digest
 		dAlgo := digest.Canonical
 		if dExpect != "" {
@@ -201,4 +245,45 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 		w.Header().Set("location", loc)
 		w.WriteHeader(http.StatusCreated)
 	}
+}
+
+func (s *server) manifestVerifyImage(repo store.Repo, m types.Manifest) []types.ErrorInfo {
+	// TODO: allow validation to be disabled
+	es := []types.ErrorInfo{}
+	r, err := repo.BlobGet(m.Config.Digest)
+	if err != nil {
+		es = append(es, types.ErrInfoManifestBlobUnknown("config not found: "+m.Config.Digest.String()))
+	} else {
+		_ = r.Close()
+	}
+	for _, d := range m.Layers {
+		r, err := repo.BlobGet(d.Digest)
+		if err != nil {
+			es = append(es, types.ErrInfoManifestBlobUnknown("layer not found: "+d.Digest.String()))
+		} else {
+			_ = r.Close()
+		}
+	}
+	if len(es) > 0 {
+		return es
+	}
+	return nil
+}
+
+func (s *server) manifestVerifyIndex(repo store.Repo, m types.Index) []types.ErrorInfo {
+	// TODO: allow validation to be disabled
+	es := []types.ErrorInfo{}
+	for _, d := range m.Manifests {
+		// TODO: allow sparse manifests
+		r, err := repo.BlobGet(d.Digest)
+		if err != nil {
+			es = append(es, types.ErrInfoManifestBlobUnknown("manifest not found: "+d.Digest.String()))
+		} else {
+			_ = r.Close()
+		}
+	}
+	if len(es) > 0 {
+		return es
+	}
+	return nil
 }

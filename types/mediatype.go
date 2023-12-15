@@ -1,14 +1,21 @@
 package types
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 const (
+	// MediaTypeDockerPrefix is used to identify Docker media types.
+	MediaTypeDockerPrefix = "application/vnd.docker."
 	// MediaTypeDocker2Manifest is the media type when pulling manifests from a v2 registry.
 	MediaTypeDocker2Manifest = "application/vnd.docker.distribution.manifest.v2+json"
 	// MediaTypeDocker2ManifestList is the media type when pulling a manifest list from a v2 registry.
 	MediaTypeDocker2ManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
 	// MediaTypeDocker2ImageConfig is for the configuration json object media type.
 	MediaTypeDocker2ImageConfig = "application/vnd.docker.container.image.v1+json"
+	// MediaTypeOCIPrefix is used to identify OCI media types.
+	MediaTypeOCIPrefix = "application/vnd.oci."
 	// MediaTypeOCI1Manifest OCI v1 manifest media type.
 	MediaTypeOCI1Manifest = "application/vnd.oci.image.manifest.v1+json"
 	// MediaTypeOCI1ManifestList OCI v1 manifest list media type.
@@ -69,4 +76,44 @@ func MediaTypeImage(mt string) bool {
 		return true
 	}
 	return false
+}
+
+// mtDetect is a combination of index and image manifest contents.
+// The fields JSON is able to unmarshal help detect the media type of the raw manifest.
+type mtDetect struct {
+	SchemaVersion int          `json:"schemaVersion"`
+	MediaType     string       `json:"mediaType,omitempty"`
+	Manifests     []Descriptor `json:"manifests"`
+	Config        Descriptor   `json:"config"`
+	Layers        []Descriptor `json:"layers"`
+}
+
+// MediaTypeDetect determines the most likely media type for a raw manifest.
+// The returned string is empty if detection fails.
+func MediaTypeDetect(raw []byte) string {
+	m := mtDetect{}
+	err := json.Unmarshal(raw, &m)
+	if err != nil {
+		return ""
+	}
+	// MediaType should be defined which makes this easy
+	if m.MediaType != "" {
+		return m.MediaType
+	}
+	// Index/ManifestList will have the Manifests slice defined
+	if len(m.Manifests) > 0 {
+		if strings.HasPrefix(m.Manifests[0].MediaType, MediaTypeDockerPrefix) {
+			return MediaTypeDocker2ManifestList
+		}
+		return MediaTypeOCI1ManifestList
+	}
+	// Fall back to image manifest with a config and layers.
+	// Both are required in v2, but could be missing from bad clients.
+	if m.Config.MediaType == "" {
+		return "" // may be docker schema v1 which isn't supported
+	}
+	if strings.HasPrefix(m.Config.MediaType, MediaTypeDockerPrefix) {
+		return MediaTypeDocker2Manifest
+	}
+	return MediaTypeOCI1Manifest
 }
