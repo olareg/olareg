@@ -32,7 +32,9 @@ func (s *server) blobGet(repoStr, arg string) http.HandlerFunc {
 		}
 		rdr, err := repo.BlobGet(d)
 		if err != nil {
-			s.log.Info("failed to open blob", "err", err, "repo", repoStr, "digest", d.String())
+			if r.Method != http.MethodHead {
+				s.log.Debug("failed to open blob", "err", err, "repo", repoStr, "digest", d.String())
+			}
 			if errors.Is(err, types.ErrNotFound) {
 				w.WriteHeader(http.StatusNotFound)
 				_ = types.ErrRespJSON(w, types.ErrInfoBlobUnknown("blob was not found"))
