@@ -63,6 +63,4 @@ type BlobCreator interface {
 	Digest() digest.Digest
 	// Verify ensures a digest matches the content.
 	Verify(digest.Digest) error
-	// TempFilename returns the assigned temp filename.
-	TempFilename() string
 }

@@ -33,8 +33,8 @@ func New(conf Config) http.Handler {
 		s.conf.ManifestLimit = manifestLimitDefault
 	}
 	switch conf.StoreType {
-	// case StoreMem:
-	// 	s.store = store.NewMem()
+	case StoreMem:
+		s.store = store.NewMem()
 	case StoreDir:
 		if s.conf.RootDir == "" {
 			s.conf.RootDir = "."
