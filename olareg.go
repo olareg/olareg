@@ -60,30 +60,45 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		// handle v2 ping
 		s.v2Ping(resp, req)
 		return
-	} else if matches, ok := matchV2(pathEl, "...", "tags", "list"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
-		// handle tag listing
-		s.tagList(matches[0]).ServeHTTP(resp, req)
-		return
+	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok {
+		// handle manifest
+		if req.Method == http.MethodGet || req.Method == http.MethodHead {
+			s.manifestGet(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
+		} else if req.Method == http.MethodPut {
+			s.manifestPut(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
+		} else {
+			resp.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "*"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle blob get
 		s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
+		return
+	} else if matches, ok := matchV2(pathEl, "...", "tags", "list"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
+		// handle tag listing
+		s.tagList(matches[0]).ServeHTTP(resp, req)
 		return
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads"); ok && req.Method == http.MethodPost {
 		// handle blob post
 		s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
 		return
-	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok && req.Method == http.MethodPut {
-		// handle blob put
-		s.blobUploadPut(matches[0], matches[1]).ServeHTTP(resp, req)
-		return
-	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
-		// handle manifest get
-		s.manifestGet(matches[0], matches[1]).ServeHTTP(resp, req)
-		return
-	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok && req.Method == http.MethodPut {
-		// handle manifest put
-		s.manifestPut(matches[0], matches[1]).ServeHTTP(resp, req)
-		return
+	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok {
+		// handle blob upload methods
+		if req.Method == http.MethodPatch {
+			s.blobUploadPatch(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
+		} else if req.Method == http.MethodPut {
+			s.blobUploadPut(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
+		} else if req.Method == http.MethodGet {
+			s.blobUploadGet(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
+		} else {
+			resp.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 	} else {
 		resp.WriteHeader(http.StatusNotFound)
 		// TODO: remove response, this is for debugging/development

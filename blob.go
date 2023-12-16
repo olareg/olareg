@@ -5,9 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,6 +75,39 @@ type blobUploadState struct {
 	Offset int64 `json:"offset"`
 }
 
+func (s *server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		blobUploadMu.Lock()
+		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
+		blobUploadMu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
+			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
+			return
+		}
+
+		curEnd := bc.Size()
+		stateJSON, err := json.Marshal(blobUploadState{Offset: curEnd})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Error("failed to marshal new state", "err", err)
+			bc.Cancel()
+			return
+		}
+		state := base64.RawURLEncoding.EncodeToString(stateJSON)
+		loc := url.URL{
+			Path: r.URL.Path,
+		}
+		locQ := url.Values{}
+		locQ.Set("state", state)
+		loc.RawQuery = locQ.Encode()
+		w.Header().Add("Location", loc.String())
+		w.Header().Add("Range", fmt.Sprintf("0-%d", curEnd-1))
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
 func (s *server) blobUploadPost(repoStr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// start a new upload session with the backend storage and track as current upload
@@ -89,8 +125,9 @@ func (s *server) blobUploadPost(repoStr string) http.HandlerFunc {
 		// TODO: check for mount=digest&from=repo, consider allowing anonymous blob mounts
 		bOpts := []store.BlobOpt{}
 		dStr := r.URL.Query().Get("digest")
+		var d digest.Digest
 		if dStr != "" {
-			d, err := digest.Parse(dStr)
+			d, err = digest.Parse(dStr)
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("invalid digest format"))
@@ -105,8 +142,34 @@ func (s *server) blobUploadPost(repoStr string) http.HandlerFunc {
 			s.log.Error("create blob", "err", err)
 			return
 		}
-		// TODO: handle monolithic upload when dStr is defined
-
+		// handle monolithic upload in the POST
+		if dStr != "" {
+			_, err = io.Copy(bc, r.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Info("failed to copy blob content", "repo", repoStr, "digest", dStr, "err", err)
+				return
+			}
+			err = bc.Verify(d)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("digest mismatch"))
+				return
+			}
+			err = bc.Close()
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Info("failed to close blob", "repo", repoStr, "err", err)
+			}
+			loc, err := url.JoinPath("/v2", repoStr, "blobs", d.String())
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Error("failed to build location header", "repo", repoStr, "err", err)
+				return
+			}
+			w.Header().Set("location", loc)
+			w.WriteHeader(http.StatusCreated)
+		}
 		// generate a session to track blob upload between requests
 		sb := make([]byte, 16)
 		_, err = rand.Read(sb)
@@ -147,34 +210,8 @@ func (s *server) blobUploadPost(repoStr string) http.HandlerFunc {
 	}
 }
 
-func (s *server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
+func (s *server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// repo is not needed since upload session tracks upload to repo
-		// repo := s.store.RepoGet(repoStr)
-		d, err := digest.Parse(r.URL.Query().Get("digest"))
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("invalid or missing digest"))
-			s.log.Error("invalid or missing digest", "err", err, "repo", repoStr, "sessionID", sessionID, "digest", r.URL.Query().Get("digest"))
-			return
-		}
-		stateStr := r.URL.Query().Get("state")
-		state := blobUploadState{}
-		stateB, err := base64.RawURLEncoding.DecodeString(stateStr)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid state"))
-			s.log.Error("invalid state", "err", err, "repo", repoStr, "sessionID", sessionID, "state", r.URL.Query().Get("state"))
-			return
-		}
-		err = json.Unmarshal(stateB, &state)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid state"))
-			s.log.Error("invalid state", "err", err, "repo", repoStr, "sessionID", sessionID, "state", r.URL.Query().Get("state"))
-			return
-		}
-		// TODO: check for range header
 		blobUploadMu.Lock()
 		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
 		blobUploadMu.Unlock()
@@ -184,6 +221,118 @@ func (s *server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
 			return
 		}
+		// check range if provided
+		cr := r.Header.Get("content-range")
+		if !blobValidRange(cr, bc.Size()) {
+			w.Header().Set("range", fmt.Sprintf("0-%d", bc.Size()-1))
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			_ = types.ErrRespJSON(w, types.ErrInfoSizeInvalid(fmt.Sprintf("range is not valid, current range is 0-%d", bc.Size()-1)))
+			s.log.Debug("blob patch content range invalid", "repo", repoStr, "sessionID", sessionID, "range", cr, "curEnd", bc.Size())
+			return
+		}
+		// check state variable
+		stateStr := r.URL.Query().Get("state")
+		stateIn := blobUploadState{}
+		stateB, err := base64.RawURLEncoding.DecodeString(stateStr)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid state"))
+			s.log.Error("invalid state", "err", err, "repo", repoStr, "sessionID", sessionID, "state", r.URL.Query().Get("state"))
+			return
+		}
+		err = json.Unmarshal(stateB, &stateIn)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid state"))
+			s.log.Error("invalid state", "err", err, "repo", repoStr, "sessionID", sessionID, "state", r.URL.Query().Get("state"))
+			return
+		}
+		if stateIn.Offset != bc.Size() {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid state"))
+			s.log.Error("invalid state size", "repo", repoStr, "sessionID", sessionID, "state", r.URL.Query().Get("state"), "sizeState", stateIn.Offset, "sizeCur", bc.Size())
+			return
+		}
+		// write bytes to blob
+		_, err = io.Copy(bc, r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Error("failed to write blob", "err", err, "repo", repoStr, "sessionID", sessionID)
+			return
+		}
+		curEnd := bc.Size()
+		stateJSON, err := json.Marshal(blobUploadState{Offset: curEnd})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Error("failed to marshal new state", "err", err)
+			bc.Cancel()
+			return
+		}
+		state := base64.RawURLEncoding.EncodeToString(stateJSON)
+		loc := url.URL{
+			Path: r.URL.Path,
+		}
+		locQ := url.Values{}
+		locQ.Set("state", state)
+		loc.RawQuery = locQ.Encode()
+		w.Header().Add("Location", loc.String())
+		w.Header().Add("Range", fmt.Sprintf("0-%d", curEnd-1))
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
+func (s *server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		blobUploadMu.Lock()
+		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
+		blobUploadMu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
+			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
+			return
+		}
+		// check range if provided
+		cr := r.Header.Get("content-range")
+		if !blobValidRange(cr, bc.Size()) {
+			w.Header().Set("range", fmt.Sprintf("0-%d", bc.Size()-1))
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			_ = types.ErrRespJSON(w, types.ErrInfoSizeInvalid(fmt.Sprintf("range is not valid, current range is 0-%d", bc.Size()-1)))
+			s.log.Debug("blob put content range invalid", "repo", repoStr, "sessionID", sessionID, "range", cr, "curEnd", bc.Size())
+			return
+		}
+		// parse digest
+		d, err := digest.Parse(r.URL.Query().Get("digest"))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("invalid or missing digest"))
+			s.log.Error("invalid or missing digest", "err", err, "repo", repoStr, "sessionID", sessionID, "digest", r.URL.Query().Get("digest"))
+			return
+		}
+		// check state
+		stateStr := r.URL.Query().Get("state")
+		stateIn := blobUploadState{}
+		stateB, err := base64.RawURLEncoding.DecodeString(stateStr)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid state"))
+			s.log.Error("invalid state", "err", err, "repo", repoStr, "sessionID", sessionID, "state", r.URL.Query().Get("state"))
+			return
+		}
+		err = json.Unmarshal(stateB, &stateIn)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid state"))
+			s.log.Error("invalid state", "err", err, "repo", repoStr, "sessionID", sessionID, "state", r.URL.Query().Get("state"))
+			return
+		}
+		if stateIn.Offset != bc.Size() {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid state"))
+			s.log.Error("invalid state size", "repo", repoStr, "sessionID", sessionID, "state", r.URL.Query().Get("state"), "sizeState", stateIn.Offset, "sizeCur", bc.Size())
+			return
+		}
+		// copy blob content
 		_, err = io.Copy(bc, r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -193,10 +342,10 @@ func (s *server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 		// verify the digest and close or cancel
 		err = bc.Verify(d)
 		if err != nil {
+			s.log.Error("invalid digest", "err", err, "repo", repoStr, "sessionID", sessionID, "expected", bc.Digest().String(), "received", d.String(), "size", bc.Size())
 			bc.Cancel()
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid digest, expected: "+bc.Digest().String()))
-			s.log.Error("invalid digest", "err", err, "repo", repoStr, "sessionID", sessionID, "expected", bc.Digest().String(), "received", d.String())
 			return
 		}
 		err = bc.Close()
@@ -218,4 +367,22 @@ func (s *server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 		delete(blobUploadSessions, repoStr+":"+sessionID)
 		blobUploadMu.Unlock()
 	}
+}
+
+func blobValidRange(cr string, curSize int64) bool {
+	if cr == "" {
+		return true // no range, streaming patch allowed
+	}
+	i := strings.Index(cr, "-")
+	if i < 1 {
+		return false // invalid range header
+	}
+	crStart, err := strconv.ParseInt(cr[:i], 10, 64)
+	if err != nil {
+		return false
+	}
+	if crStart != curSize {
+		return false
+	}
+	return true
 }
