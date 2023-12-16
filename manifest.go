@@ -17,6 +17,44 @@ import (
 	"github.com/olareg/olareg/types"
 )
 
+func (s *server) manifestDelete(repoStr, arg string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
+			return
+		}
+		index, err := repo.IndexGet()
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			_ = types.ErrRespJSON(w, types.ErrInfoNameUnknown("repository does not exist"))
+			return
+		}
+		// get descriptor for arg from index
+		desc, err := index.GetDesc(arg)
+		if err != nil || desc.Digest.String() == "" {
+			s.log.Debug("failed to get descriptor", "err", err, "repo", repoStr, "arg", arg)
+			w.WriteHeader(http.StatusNotFound)
+			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
+			return
+		}
+		// delete the digest or tag
+		err = repo.IndexRm(desc)
+		if err != nil {
+			s.log.Debug("failed to remove manifest", "repo", repoStr, "arg", arg, "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
 func (s *server) manifestGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		repo, err := s.store.RepoGet(repoStr)

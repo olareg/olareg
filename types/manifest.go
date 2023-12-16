@@ -94,15 +94,24 @@ func (i Index) GetDesc(arg string) (Descriptor, error) {
 		if err != nil {
 			return dRet, err
 		}
+		// return a matching descriptor, but stripped of any annotations to avoid mixing with tags
 		for _, d := range i.Manifests {
 			if d.Digest == dig {
-				return d, nil
+				return Descriptor{
+					MediaType: d.MediaType,
+					Digest:    d.Digest,
+					Size:      d.Size,
+				}, nil
 			}
 		}
 		if i.childManifests != nil {
 			for _, d := range i.childManifests {
 				if d.Digest == dig {
-					return d, nil
+					return Descriptor{
+						MediaType: d.MediaType,
+						Digest:    d.Digest,
+						Size:      d.Size,
+					}, nil
 				}
 			}
 		}
