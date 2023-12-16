@@ -68,21 +68,30 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		} else if req.Method == http.MethodPut {
 			s.manifestPut(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
+		} else if req.Method == http.MethodDelete {
+			s.manifestDelete(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
 		} else {
 			resp.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-	} else if matches, ok := matchV2(pathEl, "...", "blobs", "*"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
-		// handle blob get
-		s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
-		return
+	} else if matches, ok := matchV2(pathEl, "...", "blobs", "*"); ok {
+		if req.Method == http.MethodGet || req.Method == http.MethodHead {
+			// handle blob get
+			s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
+		} else if matches[1] == "uploads" && req.Method == http.MethodPost {
+			// handle blob post
+			s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
+			return
+		} else {
+			// other methods are not allowed (delete is done by GC)
+			resp.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 	} else if matches, ok := matchV2(pathEl, "...", "tags", "list"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle tag listing
 		s.tagList(matches[0]).ServeHTTP(resp, req)
-		return
-	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads"); ok && req.Method == http.MethodPost {
-		// handle blob post
-		s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
 		return
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok {
 		// handle blob upload methods
