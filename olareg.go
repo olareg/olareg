@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/internal/store"
 )
@@ -21,7 +22,7 @@ var (
 )
 
 // New runs an http handler
-func New(conf Config) http.Handler {
+func New(conf config.Config) http.Handler {
 	s := &server{
 		conf: conf,
 		log:  conf.Log,
@@ -33,19 +34,19 @@ func New(conf Config) http.Handler {
 		s.conf.ManifestLimit = manifestLimitDefault
 	}
 	switch conf.StoreType {
-	case StoreMem:
-		s.store = store.NewMem()
-	case StoreDir:
+	case config.StoreMem:
+		s.store = store.NewMem(s.conf, store.WithLog(s.log))
+	case config.StoreDir:
 		if s.conf.RootDir == "" {
 			s.conf.RootDir = "."
 		}
-		s.store = store.NewDir(s.conf.RootDir, store.WithDirLog(s.log))
+		s.store = store.NewDir(s.conf, store.WithLog(s.log))
 	}
 	return s
 }
 
 type server struct {
-	conf  Config
+	conf  config.Config
 	store store.Store
 	log   slog.Logger
 	// TODO: add context?
@@ -86,6 +87,16 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			return
 		} else {
 			// other methods are not allowed (delete is done by GC)
+			resp.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok && !s.conf.DisableReferrers {
+		if req.Method == http.MethodGet || req.Method == http.MethodHead {
+			// handle referrer get
+			s.referrerGet(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
+		} else {
+			// other methods are not allowed
 			resp.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}

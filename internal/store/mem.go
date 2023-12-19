@@ -8,18 +8,24 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/olareg/olareg/config"
+	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/types"
 )
 
 type mem struct {
-	mu    sync.Mutex
-	repos map[string]*memRepo
+	mu               sync.Mutex
+	repos            map[string]*memRepo
+	disableReferrers bool
+	log              slog.Logger
 }
 
 type memRepo struct {
-	mu    sync.Mutex
-	index types.Index
-	blobs map[digest.Digest][]byte
+	mu               sync.Mutex
+	index            types.Index
+	blobs            map[digest.Digest][]byte
+	disableReferrers bool
+	log              slog.Logger
 }
 
 type memRepoUpload struct {
@@ -30,10 +36,20 @@ type memRepoUpload struct {
 	mr     *memRepo
 }
 
-func NewMem() Store {
-	return &mem{
-		repos: map[string]*memRepo{},
+func NewMem(conf config.Config, opts ...Opts) Store {
+	sc := storeConf{}
+	for _, opt := range opts {
+		opt(&sc)
 	}
+	m := &mem{
+		repos:            map[string]*memRepo{},
+		disableReferrers: conf.DisableReferrers,
+		log:              sc.log,
+	}
+	if m.log == nil {
+		m.log = slog.Null{}
+	}
+	return m
 }
 
 func (m *mem) RepoGet(repoStr string) (Repo, error) {
@@ -46,7 +62,9 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 		index: types.Index{
 			Manifests: []types.Descriptor{},
 		},
-		blobs: map[digest.Digest][]byte{},
+		blobs:            map[digest.Digest][]byte{},
+		disableReferrers: m.disableReferrers,
+		log:              m.log,
 	}
 	m.repos[repoStr] = mr
 	return mr, nil
@@ -55,6 +73,27 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 // IndexGet returns the current top level index for a repo.
 func (mr *memRepo) IndexGet() (types.Index, error) {
 	return mr.index, nil
+}
+
+// IndexAnnotate sets an annotation on the index.
+// Setting the value to an empty string deletes the key from the annotations.
+func (mr *memRepo) IndexAnnotate(key, value string) error {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	if value == "" {
+		if mr.index.Annotations == nil {
+			return nil
+		} else {
+			delete(mr.index.Annotations, key)
+		}
+	} else {
+		if mr.index.Annotations == nil {
+			mr.index.Annotations = map[string]string{key: value}
+		} else {
+			mr.index.Annotations[key] = value
+		}
+	}
+	return nil
 }
 
 // IndexAdd adds a new entry to the index and writes the change to index.json.

@@ -1,6 +1,8 @@
 package types
 
 import (
+	"encoding/json"
+
 	// imports required for go-digest
 	_ "crypto/sha256"
 	_ "crypto/sha512"
@@ -119,6 +121,23 @@ func (i Index) GetDesc(arg string) (Descriptor, error) {
 	return dRet, ErrNotFound
 }
 
+// GetByAnnotation finds an entry with a matching annotation.
+func (i *Index) GetByAnnotation(key, val string) (Descriptor, error) {
+	var dRet Descriptor
+	if i.Manifests == nil {
+		return dRet, ErrNotFound
+	}
+	for _, d := range i.Manifests {
+		if d.Annotations == nil {
+			continue
+		}
+		if cur, ok := d.Annotations[key]; ok && (val == "" || val == cur) {
+			return d, nil
+		}
+	}
+	return dRet, ErrNotFound
+}
+
 // AddDesc adds an entry to the Index with deduplication.
 // If a descriptor exists but a tag is being added, the tag is added to the existing descriptor.
 // If the descriptor exists as a child, it is removed from the child entries.
@@ -179,6 +198,7 @@ func (i *Index) AddDesc(d Descriptor, opts ...IndexOpt) {
 
 // RmDesc deletes a descriptor from the index.
 // If the descriptor has the tag value set, only the tagged entry is deleted.
+// TODO: If the descriptor has the referrers annotation set, the entry with a matching annotation is deleted.
 // Otherwise all references to the digest are removed, including any tag and child references.
 func (i *Index) RmDesc(d Descriptor) {
 	tag := ""
@@ -212,4 +232,44 @@ func (i *Index) RmDesc(d Descriptor) {
 			}
 		}
 	}
+}
+
+type referrerParse struct {
+	MediaType    string            `json:"mediaType,omitempty"`
+	ArtifactType string            `json:"artifactType,omitempty"`
+	Config       *Descriptor       `json:"config"`
+	Subject      *Descriptor       `json:"subject,omitempty"`
+	Annotations  map[string]string `json:"annotations,omitempty"`
+}
+
+// ManifestReferrerDescriptor parses a manifest to generate the descriptor used in the referrer response.
+// Two descriptors are returned, the subject, and the entry for the referrers response.
+// The descriptor should be provided with a valid MediaType and Digest, otherwise they will be generated as a best effort.
+func ManifestReferrerDescriptor(raw []byte, d Descriptor) (Descriptor, Descriptor, error) {
+	rd := d
+	subject := Descriptor{}
+	referrer := referrerParse{}
+	err := json.Unmarshal(raw, &referrer)
+	if err != nil {
+		return subject, rd, err
+	}
+	if referrer.Subject == nil || referrer.Subject.Digest == "" {
+		return subject, rd, ErrNotFound
+	}
+	subject = *referrer.Subject
+	// build descriptor, pulling up artifact type and annotations
+	if referrer.MediaType != "" {
+		rd.MediaType = referrer.MediaType
+	}
+	if rd.Digest == "" {
+		rd.Digest = digest.Canonical.FromBytes(raw)
+	}
+	rd.Size = int64(len(raw))
+	if referrer.ArtifactType != "" {
+		rd.ArtifactType = referrer.ArtifactType
+	} else if referrer.Config != nil {
+		rd.ArtifactType = referrer.Config.MediaType
+	}
+	rd.Annotations = referrer.Annotations
+	return subject, rd, nil
 }

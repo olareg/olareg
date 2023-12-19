@@ -1,4 +1,5 @@
-package olareg
+// Package config contains data types for configuration of olareg.
+package config
 
 import (
 	"fmt"
@@ -6,8 +7,6 @@ import (
 
 	"github.com/olareg/olareg/internal/slog"
 )
-
-// TODO: add config struct
 
 type Store int
 
@@ -18,10 +17,11 @@ const (
 )
 
 type Config struct {
-	StoreType     Store
-	RootDir       string
-	Log           slog.Logger
-	ManifestLimit int64
+	StoreType        Store
+	RootDir          string
+	Log              slog.Logger
+	ManifestLimit    int64
+	DisableReferrers bool
 	// TODO: TLS and listener options? not needed here if only providing handler
 	// TODO: GC policy, delete untagged? timeouts for partial blobs?
 	// TODO: proxy settings, pull only, or push+pull cache

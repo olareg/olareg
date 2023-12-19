@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/olareg/olareg"
+	"github.com/olareg/olareg/config"
 )
 
 type serveOpts struct {
@@ -37,12 +38,12 @@ func newServeCmd(root *rootOpts) *cobra.Command {
 }
 
 func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
-	var storeType olareg.Store
+	var storeType config.Store
 	err := storeType.UnmarshalText([]byte(opts.storeType))
 	if err != nil {
 		return fmt.Errorf("unable to parse store type %s: %w", opts.storeType, err)
 	}
-	conf := olareg.Config{
+	conf := config.Config{
 		StoreType: storeType,
 		RootDir:   opts.storeDir,
 		Log:       opts.root.log,

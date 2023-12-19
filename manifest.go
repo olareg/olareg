@@ -11,6 +11,10 @@ import (
 	"strings"
 	"time"
 
+	// imports required for go-digest
+	_ "crypto/sha256"
+	_ "crypto/sha512"
+
 	"github.com/opencontainers/go-digest"
 
 	"github.com/olareg/olareg/internal/store"
@@ -43,6 +47,33 @@ func (s *server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			w.WriteHeader(http.StatusNotFound)
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
 			return
+		}
+		// if referrers is enabled, get the manifest to check for a subject
+		if !s.conf.DisableReferrers {
+			// wrap in a func to allow a return from errors without breaking the actual delete
+			err = func() error {
+				rdr, err := repo.BlobGet(desc.Digest)
+				if err != nil {
+					return err
+				}
+				raw, err := io.ReadAll(rdr)
+				_ = rdr.Close()
+				if err != nil {
+					return err
+				}
+				subject, refDesc, err := types.ManifestReferrerDescriptor(raw, desc)
+				if err != nil {
+					return err
+				}
+				err = s.referrerDelete(repo, subject.Digest, refDesc)
+				if err != nil {
+					return err
+				}
+				return nil
+			}()
+			if err != nil {
+				s.log.Info("failed to delete referrer", "repo", repoStr, "arg", arg, "err", err)
+			}
 		}
 		// delete the digest or tag
 		err = repo.IndexRm(desc)
@@ -201,11 +232,25 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to read manifest", "repo", repoStr, "arg", arg, "err", err)
 			return
 		}
+		// verify / set digest
+		dAlgo := digest.Canonical
+		if dExpect != "" {
+			dAlgo = dExpect.Algorithm()
+		}
+		d := dAlgo.FromBytes(mRaw)
+		if dExpect != "" && d != dExpect {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest mismatch, expected "+d.String()))
+			s.log.Debug("content digest did not match request", "repo", repoStr, "arg", arg, "expect", d.String())
+			return
+		}
 		// if mt == "", detect media type
 		if mt == "" {
 			mt = types.MediaTypeDetect(mRaw)
 		}
 		// parse and validate image or index contents
+		var subject digest.Digest
+		var referrer *types.Descriptor
 		switch mt {
 		case types.MediaTypeOCI1Manifest, types.MediaTypeDocker2Manifest:
 			m := types.Manifest{}
@@ -223,6 +268,19 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				_ = types.ErrRespJSON(w, eList...)
 				s.log.Debug("manifest blobs missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
 				return
+			}
+			if m.Subject != nil && m.Subject.Digest != "" && !s.conf.DisableReferrers {
+				subject = m.Subject.Digest
+				referrer = &types.Descriptor{
+					MediaType:    mt,
+					ArtifactType: m.ArtifactType,
+					Size:         int64(len(mRaw)),
+					Digest:       d,
+					Annotations:  m.Annotations,
+				}
+				if m.ArtifactType == "" {
+					referrer.ArtifactType = m.Config.MediaType
+				}
 			}
 		case types.MediaTypeOCI1ManifestList, types.MediaTypeDocker2ManifestList:
 			m := types.Index{}
@@ -242,22 +300,20 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				s.log.Debug("child manifests missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
 				return
 			}
+			if m.Subject != nil && m.Subject.Digest != "" && !s.conf.DisableReferrers {
+				subject = m.Subject.Digest
+				referrer = &types.Descriptor{
+					MediaType:    mt,
+					ArtifactType: m.ArtifactType,
+					Size:         int64(len(mRaw)),
+					Digest:       d,
+					Annotations:  m.Annotations,
+				}
+			}
 		default:
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("unsupported media type: "+mt))
 			s.log.Debug("unsupported media type", "repo", repoStr, "arg", arg, "mediaType", mt)
-			return
-		}
-		// verify / set digest
-		dAlgo := digest.Canonical
-		if dExpect != "" {
-			dAlgo = dExpect.Algorithm()
-		}
-		d := dAlgo.FromBytes(mRaw)
-		if dExpect != "" && d != dExpect {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest mismatch, expected "+d.String()))
-			s.log.Debug("content digest did not match request", "repo", repoStr, "arg", arg, "expect", d.String())
 			return
 		}
 		// push to blob store
@@ -295,6 +351,16 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Info("failed to create index entry", "repo", repoStr, "arg", arg, "err", err)
 			return
+		}
+		// push/update referrer if detected
+		if subject != "" {
+			err = s.referrerAdd(repo, subject, *referrer)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Info("failed to add referrer", "repo", repoStr, "arg", arg, "err", err)
+				return
+			}
+			w.Header().Set("OCI-Subject", subject.String())
 		}
 		// set the location header
 		loc, err := url.JoinPath("/v2", repoStr, "manifests", d.String())

@@ -16,6 +16,7 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/types"
 )
@@ -29,21 +30,23 @@ const (
 )
 
 type dir struct {
-	mu    sync.Mutex
-	root  string
-	repos map[string]*dirRepo // TODO: switch to storing these in a cache that expires from memory
-	log   slog.Logger
+	mu               sync.Mutex
+	root             string
+	repos            map[string]*dirRepo // TODO: switch to storing these in a cache that expires from memory
+	log              slog.Logger
+	disableReferrers bool
 }
 
 type dirRepo struct {
-	timeCheck time.Time
-	timeMod   time.Time
-	mu        sync.Mutex
-	name      string
-	path      string
-	exists    bool
-	index     types.Index
-	log       slog.Logger
+	timeCheck        time.Time
+	timeMod          time.Time
+	mu               sync.Mutex
+	name             string
+	path             string
+	exists           bool
+	index            types.Index
+	log              slog.Logger
+	disableReferrers bool
 }
 
 type dirRepoUpload struct {
@@ -56,29 +59,21 @@ type dirRepoUpload struct {
 	filename string
 }
 
-// OptDir includes options for the directory store.
-type OptDir func(*dir)
-
 // NewDir returns a directory store.
-func NewDir(root string, opts ...OptDir) Store {
-	d := &dir{
-		root:  root,
-		repos: map[string]*dirRepo{},
-	}
+func NewDir(conf config.Config, opts ...Opts) Store {
+	sc := storeConf{}
 	for _, opt := range opts {
-		opt(d)
+		opt(&sc)
+	}
+	d := &dir{
+		root:  conf.RootDir,
+		repos: map[string]*dirRepo{},
+		log:   sc.log,
 	}
 	if d.log == nil {
 		d.log = slog.Null{}
 	}
 	return d
-}
-
-// WithDirLog includes a logger on the directory store.
-func WithDirLog(log slog.Logger) OptDir {
-	return func(d *dir) {
-		d.log = log
-	}
 }
 
 // TODO: include options for memory caching, allowed methods.
@@ -93,9 +88,10 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
 	}
 	dr := dirRepo{
-		path: filepath.Join(d.root, repoStr),
-		name: repoStr,
-		log:  d.log,
+		path:             filepath.Join(d.root, repoStr),
+		name:             repoStr,
+		log:              d.log,
+		disableReferrers: d.disableReferrers,
 	}
 	d.repos[repoStr] = &dr
 	statDir, err := os.Stat(dr.path)
@@ -281,6 +277,18 @@ func (dr *dirRepo) repoLoad(force, locked bool) error {
 		}
 	}
 	dr.timeMod = stat.ModTime()
+	if !dr.disableReferrers {
+		mod, err := referrerConvert(dr, &dr.index)
+		if err != nil {
+			return err
+		}
+		if mod {
+			err = dr.repoSave(true)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
