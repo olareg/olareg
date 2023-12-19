@@ -86,7 +86,6 @@ func (s *server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
 			return
 		}
-
 		curEnd := bc.Size()
 		stateJSON, err := json.Marshal(blobUploadState{Offset: curEnd})
 		if err != nil {
@@ -104,7 +103,7 @@ func (s *server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 		loc.RawQuery = locQ.Encode()
 		w.Header().Add("Location", loc.String())
 		w.Header().Add("Range", fmt.Sprintf("0-%d", curEnd-1))
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
