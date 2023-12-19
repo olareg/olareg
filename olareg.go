@@ -81,6 +81,10 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			// handle blob get
 			s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
+		} else if req.Method == http.MethodDelete && boolDefault(s.conf.API.BlobDelete.Enabled, false) {
+			// handle blob delete
+			s.blobDelete(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
 		} else if matches[1] == "uploads" && req.Method == http.MethodPost {
 			// handle blob post
 			s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
@@ -90,7 +94,7 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			resp.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok && !s.conf.DisableReferrers {
+	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok && boolDefault(s.conf.API.Referrer.Enabled, true) {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			// handle referrer get
 			s.referrerGet(matches[0], matches[1]).ServeHTTP(resp, req)
@@ -176,4 +180,11 @@ func (s *server) v2Ping(resp http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodHead {
 		_, _ = resp.Write([]byte("{}"))
 	}
+}
+
+func boolDefault(b *bool, def bool) bool {
+	if b != nil {
+		return *b
+	}
+	return def
 }

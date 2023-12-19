@@ -13,11 +13,13 @@ import (
 )
 
 type serveOpts struct {
-	root      *rootOpts
-	addr      string
-	port      int
-	storeType string
-	storeDir  string
+	root        *rootOpts
+	addr        string
+	port        int
+	storeType   string
+	storeDir    string
+	apiBlobDel  bool
+	apiReferrer bool
 }
 
 func newServeCmd(root *rootOpts) *cobra.Command {
@@ -34,6 +36,8 @@ func newServeCmd(root *rootOpts) *cobra.Command {
 	newCmd.Flags().IntVar(&opts.port, "port", 80, "listener port")
 	newCmd.Flags().StringVar(&opts.storeDir, "dir", ".", "root directory for storage")
 	newCmd.Flags().StringVar(&opts.storeType, "store-type", "dir", "storage type (dir, mem)")
+	newCmd.Flags().BoolVar(&opts.apiBlobDel, "api-blob-delete", false, "enable blob delete API")
+	newCmd.Flags().BoolVar(&opts.apiReferrer, "api-referrer", true, "enable referrer API")
 	return newCmd
 }
 
@@ -47,6 +51,10 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 		StoreType: storeType,
 		RootDir:   opts.storeDir,
 		Log:       opts.root.log,
+		API: config.ConfigAPI{
+			BlobDelete: config.ConfigAPIBlobDelete{Enabled: &opts.apiBlobDel},
+			Referrer:   config.ConfigAPIReferrer{Enabled: &opts.apiReferrer},
+		},
 	}
 	handler := olareg.New(conf)
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", opts.addr, opts.port))

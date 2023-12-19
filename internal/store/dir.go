@@ -30,23 +30,23 @@ const (
 )
 
 type dir struct {
-	mu               sync.Mutex
-	root             string
-	repos            map[string]*dirRepo // TODO: switch to storing these in a cache that expires from memory
-	log              slog.Logger
-	disableReferrers bool
+	mu    sync.Mutex
+	root  string
+	repos map[string]*dirRepo // TODO: switch to storing these in a cache that expires from memory
+	log   slog.Logger
+	conf  config.Config
 }
 
 type dirRepo struct {
-	timeCheck        time.Time
-	timeMod          time.Time
-	mu               sync.Mutex
-	name             string
-	path             string
-	exists           bool
-	index            types.Index
-	log              slog.Logger
-	disableReferrers bool
+	timeCheck time.Time
+	timeMod   time.Time
+	mu        sync.Mutex
+	name      string
+	path      string
+	exists    bool
+	index     types.Index
+	log       slog.Logger
+	conf      config.Config
 }
 
 type dirRepoUpload struct {
@@ -69,6 +69,7 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 		root:  conf.RootDir,
 		repos: map[string]*dirRepo{},
 		log:   sc.log,
+		conf:  conf,
 	}
 	if d.log == nil {
 		d.log = slog.Null{}
@@ -88,10 +89,10 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
 	}
 	dr := dirRepo{
-		path:             filepath.Join(d.root, repoStr),
-		name:             repoStr,
-		log:              d.log,
-		disableReferrers: d.disableReferrers,
+		path: filepath.Join(d.root, repoStr),
+		name: repoStr,
+		log:  d.log,
+		conf: d.conf,
 	}
 	d.repos[repoStr] = &dr
 	statDir, err := os.Stat(dr.path)
@@ -186,6 +187,26 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 	}, nil
 }
 
+// BlobDelete deletes an entry from the CAS.
+func (dr *dirRepo) BlobDelete(d digest.Digest) error {
+	if !dr.exists {
+		return fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
+	}
+	filename := filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded())
+	fi, err := os.Stat(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("failed to stat %s: %w", d.String(), types.ErrNotFound)
+		}
+		return fmt.Errorf("failed to stat %s: %w", d.String(), err)
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("invalid blob %s: %s is a directory", d.String(), filename)
+	}
+	err = os.Remove(filename)
+	return err
+}
+
 func (dr *dirRepo) repoInit() error {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
@@ -277,7 +298,7 @@ func (dr *dirRepo) repoLoad(force, locked bool) error {
 		}
 	}
 	dr.timeMod = stat.ModTime()
-	if !dr.disableReferrers {
+	if boolDefault(dr.conf.API.Referrer.Enabled, true) {
 		mod, err := referrerConvert(dr, &dr.index)
 		if err != nil {
 			return err
