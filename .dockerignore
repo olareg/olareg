@@ -1,6 +1,7 @@
 *
 !.git/
 !cmd/
+!config/
 !internal/
 !pkg/
 !types/
