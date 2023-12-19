@@ -373,6 +373,7 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("location", loc)
+		w.Header().Add("Docker-Content-Digest", d.String())
 		w.WriteHeader(http.StatusCreated)
 	}
 }
