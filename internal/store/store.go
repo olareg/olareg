@@ -32,6 +32,8 @@ type Repo interface {
 	BlobGet(d digest.Digest) (io.ReadSeekCloser, error)
 	// BlobCreate is used to create a new blob.
 	BlobCreate(opts ...BlobOpt) (BlobCreator, error)
+	// BlobDelete deletes an entry from the CAS.
+	BlobDelete(d digest.Digest) error
 }
 
 type BlobOpt func(*blobConfig)
@@ -264,4 +266,11 @@ func repoGetIndex(repo Repo, d types.Descriptor) (types.Index, error) {
 		return i, err
 	}
 	return i, nil
+}
+
+func boolDefault(b *bool, def bool) bool {
+	if b != nil {
+		return *b
+	}
+	return def
 }

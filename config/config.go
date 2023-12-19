@@ -17,17 +17,30 @@ const (
 )
 
 type Config struct {
-	StoreType        Store
-	RootDir          string
-	Log              slog.Logger
-	ManifestLimit    int64
-	DisableReferrers bool
+	StoreType     Store
+	RootDir       string
+	Log           slog.Logger
+	ManifestLimit int64
+	API           ConfigAPI
 	// TODO: TLS and listener options? not needed here if only providing handler
 	// TODO: GC policy, delete untagged? timeouts for partial blobs?
 	// TODO: proxy settings, pull only, or push+pull cache
 	// TODO: memory option to load from disk
 	// TODO: auth options (basic, bearer)
 	// TODO: allowed actions: get/head, put, delete, catalog
+}
+
+type ConfigAPI struct {
+	BlobDelete ConfigAPIBlobDelete
+	Referrer   ConfigAPIReferrer
+}
+
+type ConfigAPIBlobDelete struct {
+	Enabled *bool
+}
+
+type ConfigAPIReferrer struct {
+	Enabled *bool
 }
 
 func (s Store) MarshalText() ([]byte, error) {

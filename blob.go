@@ -64,6 +64,40 @@ func (s *server) blobGet(repoStr, arg string) http.HandlerFunc {
 	}
 }
 
+func (s *server) blobDelete(repoStr, arg string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
+			return
+		}
+		d, err := digest.Parse(arg)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest cannot be parsed"))
+			return
+		}
+		err = repo.BlobDelete(d)
+		if err != nil {
+			s.log.Debug("failed to delete blob", "err", err, "repo", repoStr, "digest", d.String())
+			if errors.Is(err, types.ErrNotFound) {
+				w.WriteHeader(http.StatusNotFound)
+				_ = types.ErrRespJSON(w, types.ErrInfoBlobUnknown("blob was not found"))
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
 // TODO: replace sessions with a cache that expires entries (with cancel) after some time and automatically cancels on shutdown.
 // TODO: cache can also limit concurrent sessions.
 var (

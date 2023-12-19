@@ -14,18 +14,18 @@ import (
 )
 
 type mem struct {
-	mu               sync.Mutex
-	repos            map[string]*memRepo
-	disableReferrers bool
-	log              slog.Logger
+	mu    sync.Mutex
+	repos map[string]*memRepo
+	log   slog.Logger
+	conf  config.Config
 }
 
 type memRepo struct {
-	mu               sync.Mutex
-	index            types.Index
-	blobs            map[digest.Digest][]byte
-	disableReferrers bool
-	log              slog.Logger
+	mu    sync.Mutex
+	index types.Index
+	blobs map[digest.Digest][]byte
+	log   slog.Logger
+	conf  config.Config
 }
 
 type memRepoUpload struct {
@@ -42,9 +42,9 @@ func NewMem(conf config.Config, opts ...Opts) Store {
 		opt(&sc)
 	}
 	m := &mem{
-		repos:            map[string]*memRepo{},
-		disableReferrers: conf.DisableReferrers,
-		log:              sc.log,
+		repos: map[string]*memRepo{},
+		log:   sc.log,
+		conf:  conf,
 	}
 	if m.log == nil {
 		m.log = slog.Null{}
@@ -62,9 +62,9 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 		index: types.Index{
 			Manifests: []types.Descriptor{},
 		},
-		blobs:            map[digest.Digest][]byte{},
-		disableReferrers: m.disableReferrers,
-		log:              m.log,
+		blobs: map[digest.Digest][]byte{},
+		log:   m.log,
+		conf:  m.conf,
 	}
 	m.repos[repoStr] = mr
 	return mr, nil
@@ -141,6 +141,18 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 		expect: conf.expect,
 		mr:     mr,
 	}, nil
+}
+
+// BlobDelete deletes an entry from the CAS.
+func (mr *memRepo) BlobDelete(d digest.Digest) error {
+	mr.mu.Lock()
+	_, ok := mr.blobs[d]
+	delete(mr.blobs, d)
+	mr.mu.Unlock()
+	if !ok {
+		return types.ErrNotFound
+	}
+	return nil
 }
 
 // Write sends data to the buffer.
