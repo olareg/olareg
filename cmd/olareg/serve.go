@@ -18,6 +18,8 @@ type serveOpts struct {
 	port        int
 	storeType   string
 	storeDir    string
+	apiPush     bool
+	apiDelete   bool
 	apiBlobDel  bool
 	apiReferrer bool
 }
@@ -36,6 +38,8 @@ func newServeCmd(root *rootOpts) *cobra.Command {
 	newCmd.Flags().IntVar(&opts.port, "port", 80, "listener port")
 	newCmd.Flags().StringVar(&opts.storeDir, "dir", ".", "root directory for storage")
 	newCmd.Flags().StringVar(&opts.storeType, "store-type", "dir", "storage type (dir, mem)")
+	newCmd.Flags().BoolVar(&opts.apiPush, "api-push", true, "enable push APIs")
+	newCmd.Flags().BoolVar(&opts.apiDelete, "api-delete", true, "enable delete APIs")
 	newCmd.Flags().BoolVar(&opts.apiBlobDel, "api-blob-delete", false, "enable blob delete API")
 	newCmd.Flags().BoolVar(&opts.apiReferrer, "api-referrer", true, "enable referrer API")
 	return newCmd
@@ -48,12 +52,16 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unable to parse store type %s: %w", opts.storeType, err)
 	}
 	conf := config.Config{
-		StoreType: storeType,
-		RootDir:   opts.storeDir,
-		Log:       opts.root.log,
+		Storage: config.ConfigStorage{
+			StoreType: storeType,
+			RootDir:   opts.storeDir,
+		},
+		Log: opts.root.log,
 		API: config.ConfigAPI{
-			BlobDelete: config.ConfigAPIBlobDelete{Enabled: &opts.apiBlobDel},
-			Referrer:   config.ConfigAPIReferrer{Enabled: &opts.apiReferrer},
+			PushEnabled:   &opts.apiPush,
+			DeleteEnabled: &opts.apiDelete,
+			Blob:          config.ConfigAPIBlob{DeleteEnabled: &opts.apiBlobDel},
+			Referrer:      config.ConfigAPIReferrer{Enabled: &opts.apiReferrer},
 		},
 	}
 	handler := olareg.New(conf)

@@ -209,9 +209,9 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			s.log.Debug("unsupported media type", "repo", repoStr, "arg", arg, "mediaType", mt)
 			return
 		}
-		if r.ContentLength > s.conf.ManifestLimit {
+		if r.ContentLength > s.conf.API.Manifest.Limit {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid(fmt.Sprintf("manifest too large, limited to %d bytes", s.conf.ManifestLimit)))
+			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid(fmt.Sprintf("manifest too large, limited to %d bytes", s.conf.API.Manifest.Limit)))
 			return
 		}
 		// parse arg
@@ -228,7 +228,7 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			}
 		}
 		// read manifest
-		rLimit := io.LimitReader(r.Body, s.conf.ManifestLimit)
+		rLimit := io.LimitReader(r.Body, s.conf.API.Manifest.Limit)
 		mRaw, err := io.ReadAll(rLimit)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
