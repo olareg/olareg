@@ -30,15 +30,15 @@ func New(conf config.Config) http.Handler {
 	if s.log == nil {
 		s.log = slog.Null{}
 	}
-	if s.conf.ManifestLimit <= 0 {
-		s.conf.ManifestLimit = manifestLimitDefault
+	if s.conf.API.Manifest.Limit <= 0 {
+		s.conf.API.Manifest.Limit = manifestLimitDefault
 	}
-	switch conf.StoreType {
+	switch conf.Storage.StoreType {
 	case config.StoreMem:
 		s.store = store.NewMem(s.conf, store.WithLog(s.log))
 	case config.StoreDir:
-		if s.conf.RootDir == "" {
-			s.conf.RootDir = "."
+		if s.conf.Storage.RootDir == "" {
+			s.conf.Storage.RootDir = "."
 		}
 		s.store = store.NewDir(s.conf, store.WithLog(s.log))
 	}
@@ -50,7 +50,7 @@ type server struct {
 	store store.Store
 	log   slog.Logger
 	// TODO: add context?
-	// TODO: implement memory store, disk cache, GC handling, etc for the non-disk and non-config data
+	// TODO: implement disk cache, GC handling, etc for the non-disk and non-config data
 }
 
 func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
@@ -66,10 +66,10 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			s.manifestGet(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
-		} else if req.Method == http.MethodPut {
+		} else if req.Method == http.MethodPut && boolDefault(s.conf.API.PushEnabled, true) {
 			s.manifestPut(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
-		} else if req.Method == http.MethodDelete {
+		} else if req.Method == http.MethodDelete && boolDefault(s.conf.API.DeleteEnabled, true) {
 			s.manifestDelete(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
 		} else {
@@ -81,11 +81,11 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			// handle blob get
 			s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
-		} else if req.Method == http.MethodDelete && boolDefault(s.conf.API.BlobDelete.Enabled, false) {
+		} else if req.Method == http.MethodDelete && boolDefault(s.conf.API.DeleteEnabled, true) && boolDefault(s.conf.API.Blob.DeleteEnabled, false) {
 			// handle blob delete
 			s.blobDelete(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
-		} else if matches[1] == "uploads" && req.Method == http.MethodPost {
+		} else if matches[1] == "uploads" && req.Method == http.MethodPost && boolDefault(s.conf.API.PushEnabled, true) {
 			// handle blob post
 			s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
 			return
@@ -108,7 +108,7 @@ func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		// handle tag listing
 		s.tagList(matches[0]).ServeHTTP(resp, req)
 		return
-	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok {
+	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok && boolDefault(s.conf.API.PushEnabled, true) {
 		// handle blob upload methods
 		if req.Method == http.MethodPatch {
 			s.blobUploadPatch(matches[0], matches[1]).ServeHTTP(resp, req)

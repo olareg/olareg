@@ -66,7 +66,7 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 		opt(&sc)
 	}
 	d := &dir{
-		root:  conf.RootDir,
+		root:  conf.Storage.RootDir,
 		repos: map[string]*dirRepo{},
 		log:   sc.log,
 		conf:  conf,

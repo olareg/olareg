@@ -11,17 +11,16 @@ import (
 type Store int
 
 const (
-	StoreMem    Store = iota // StoreMem only uses memory for an ephemeral registry
+	StoreUndef  Store = iota // undefined backend storage is the invalid zero value
+	StoreMem                 // StoreMem only uses memory for an ephemeral registry
 	StoreDir                 // StoreDir tracks each repository with a separate blob store
 	StoreShared              // StoreShared tracks the blobs in a single store for less disk usage
 )
 
 type Config struct {
-	StoreType     Store
-	RootDir       string
-	Log           slog.Logger
-	ManifestLimit int64
-	API           ConfigAPI
+	Storage ConfigStorage
+	API     ConfigAPI
+	Log     slog.Logger
 	// TODO: TLS and listener options? not needed here if only providing handler
 	// TODO: GC policy, delete untagged? timeouts for partial blobs?
 	// TODO: proxy settings, pull only, or push+pull cache
@@ -30,13 +29,25 @@ type Config struct {
 	// TODO: allowed actions: get/head, put, delete, catalog
 }
 
-type ConfigAPI struct {
-	BlobDelete ConfigAPIBlobDelete
-	Referrer   ConfigAPIReferrer
+type ConfigStorage struct {
+	StoreType Store
+	RootDir   string
 }
 
-type ConfigAPIBlobDelete struct {
-	Enabled *bool
+type ConfigAPI struct {
+	PushEnabled   *bool
+	DeleteEnabled *bool
+	Manifest      ConfigAPIManifest
+	Blob          ConfigAPIBlob
+	Referrer      ConfigAPIReferrer
+}
+
+type ConfigAPIManifest struct {
+	Limit int64
+}
+
+type ConfigAPIBlob struct {
+	DeleteEnabled *bool
 }
 
 type ConfigAPIReferrer struct {
