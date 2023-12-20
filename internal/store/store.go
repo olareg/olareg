@@ -181,7 +181,6 @@ func referrerConvert(repo Repo, index *types.Index) (bool, error) {
 			newD.Annotations = map[string]string{
 				types.AnnotReferrerSubject: subject.String(),
 			}
-			index.RmDesc(d)
 			index.AddDesc(newD)
 			delete(referrerAdd, subject)
 		} else {
