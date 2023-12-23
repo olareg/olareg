@@ -18,15 +18,20 @@ const (
 )
 
 type Config struct {
+	HTTP    ConfigHTTP
 	Storage ConfigStorage
 	API     ConfigAPI
 	Log     slog.Logger
-	// TODO: TLS and listener options? not needed here if only providing handler
 	// TODO: GC policy, delete untagged? timeouts for partial blobs?
 	// TODO: proxy settings, pull only, or push+pull cache
 	// TODO: memory option to load from disk
 	// TODO: auth options (basic, bearer)
-	// TODO: allowed actions: get/head, put, delete, catalog
+}
+
+type ConfigHTTP struct {
+	Addr     string // address and port to listen on, e.g. ":5000"
+	CertFile string // public certificate for https server (leave blank for http)
+	KeyFile  string // private key for https server (leave blank for http)
 }
 
 type ConfigStorage struct {

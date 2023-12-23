@@ -1,10 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"net"
-	"net/http"
-	"time"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -16,6 +17,8 @@ type serveOpts struct {
 	root        *rootOpts
 	addr        string
 	port        int
+	tlsCert     string
+	tlsKey      string
 	storeType   string
 	storeDir    string
 	apiPush     bool
@@ -35,7 +38,9 @@ func newServeCmd(root *rootOpts) *cobra.Command {
 		RunE:  opts.run,
 	}
 	newCmd.Flags().StringVar(&opts.addr, "addr", "", "listener interface or address")
-	newCmd.Flags().IntVar(&opts.port, "port", 80, "listener port")
+	newCmd.Flags().IntVar(&opts.port, "port", 5000, "listener port")
+	newCmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "TLS certificate for HTTPS")
+	newCmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "TLS key for HTTPS")
 	newCmd.Flags().StringVar(&opts.storeDir, "dir", ".", "root directory for storage")
 	newCmd.Flags().StringVar(&opts.storeType, "store-type", "dir", "storage type (dir, mem)")
 	newCmd.Flags().BoolVar(&opts.apiPush, "api-push", true, "enable push APIs")
@@ -52,6 +57,11 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unable to parse store type %s: %w", opts.storeType, err)
 	}
 	conf := config.Config{
+		HTTP: config.ConfigHTTP{
+			Addr:     fmt.Sprintf("%s:%d", opts.addr, opts.port),
+			CertFile: opts.tlsCert,
+			KeyFile:  opts.tlsKey,
+		},
 		Storage: config.ConfigStorage{
 			StoreType: storeType,
 			RootDir:   opts.storeDir,
@@ -64,21 +74,28 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 			Referrer:      config.ConfigAPIReferrer{Enabled: &opts.apiReferrer},
 		},
 	}
-	handler := olareg.New(conf)
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", opts.addr, opts.port))
-	if err != nil {
-		return fmt.Errorf("unable to start listener: %w", err)
-	}
-	opts.root.log.Info("listening for connections", "addr", opts.addr, "port", opts.port)
-	s := &http.Server{
-		ReadHeaderTimeout: 5 * time.Second,
-		Handler:           handler,
-	}
-	// TODO: add signal handler to shutdown
-	err = s.Serve(listener)
-	// TODO: handle different error responses, graceful exit should not error
+	s := olareg.New(conf)
+	// include signal handler to gracefully shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	cleanShutdown := make(chan struct{})
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		opts.root.log.Debug("Interrupt received, shutting down")
+		err := s.Shutdown(ctx)
+		if err != nil {
+			opts.root.log.Warn("graceful shutdown failed", "err", err)
+		}
+		// clean shutdown
+		cancel()
+		close(cleanShutdown)
+	}()
+	// run the server
+	err = s.Run(ctx)
 	if err != nil {
 		return err
 	}
+	<-cleanShutdown
 	return nil
 }

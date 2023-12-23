@@ -1,11 +1,16 @@
 package olareg
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/slog"
@@ -22,8 +27,8 @@ var (
 )
 
 // New runs an http handler
-func New(conf config.Config) http.Handler {
-	s := &server{
+func New(conf config.Config) *Server {
+	s := &Server{
 		conf: conf,
 		log:  conf.Log,
 	}
@@ -45,15 +50,51 @@ func New(conf config.Config) http.Handler {
 	return s
 }
 
-type server struct {
-	conf  config.Config
-	store store.Store
-	log   slog.Logger
-	// TODO: add context?
+type Server struct {
+	conf       config.Config
+	store      store.Store
+	log        slog.Logger
+	httpServer *http.Server
 	// TODO: implement disk cache, GC handling, etc for the non-disk and non-config data
 }
 
-func (s *server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+func (s *Server) Run(ctx context.Context) error {
+	if s.httpServer != nil {
+		return fmt.Errorf("server is already running, run shutdown first")
+	}
+	s.log.Info("launching server", "addr", s.conf.HTTP.Addr)
+	hs := &http.Server{
+		Addr:              s.conf.HTTP.Addr,
+		ReadHeaderTimeout: 5 * time.Second,
+		Handler:           s,
+	}
+	s.httpServer = hs
+	if ctx != nil {
+		hs.BaseContext = func(l net.Listener) context.Context { return ctx }
+	}
+	var err error
+	if s.conf.HTTP.CertFile != "" && s.conf.HTTP.KeyFile != "" {
+		err = hs.ListenAndServeTLS(s.conf.HTTP.CertFile, s.conf.HTTP.KeyFile)
+	} else {
+		err = hs.ListenAndServe()
+	}
+	// graceful exit should not error
+	if err != nil && errors.Is(err, http.ErrServerClosed) {
+		err = nil
+	}
+	return err
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer == nil {
+		return fmt.Errorf("server is not running")
+	}
+	err := s.httpServer.Shutdown(ctx)
+	s.httpServer = nil
+	return err
+}
+
+func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	// parse request path, cleaning traversal attacks, and stripping leading and trailing slash
 	pathEl := strings.Split(strings.Trim(path.Clean("/"+req.URL.Path), "/"), "/")
 	resp.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
@@ -173,7 +214,7 @@ func matchV2(pathEl []string, params ...string) ([]string, bool) {
 	return matches, true
 }
 
-func (s *server) v2Ping(resp http.ResponseWriter, req *http.Request) {
+func (s *Server) v2Ping(resp http.ResponseWriter, req *http.Request) {
 	resp.Header().Add("Content-Type", "application/json")
 	resp.Header().Add("Content-Length", "2")
 	resp.WriteHeader(200)

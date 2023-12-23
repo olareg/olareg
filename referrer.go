@@ -14,7 +14,7 @@ import (
 
 // referrerGet searches for the referrers response in the index.
 // All errors should return an empty response, no 404's should be generated.
-func (s *server) referrerGet(repoStr, arg string) http.HandlerFunc {
+func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// all errors should return an empty index
 		i := types.Index{
@@ -62,7 +62,7 @@ func (s *server) referrerGet(repoStr, arg string) http.HandlerFunc {
 }
 
 // referrerAdd adds a new referrer entry to a given subject.
-func (s *server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.Descriptor) error {
+func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.Descriptor) error {
 	index, err := repo.IndexGet()
 	if err != nil {
 		return err
@@ -132,7 +132,7 @@ func (s *server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 }
 
 // referrerDelete removes a referrer entry from a subject.
-func (s *server) referrerDelete(repo store.Repo, subject digest.Digest, desc types.Descriptor) error {
+func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc types.Descriptor) error {
 	// get the index.json
 	index, err := repo.IndexGet()
 	if err != nil {
