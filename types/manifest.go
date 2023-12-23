@@ -156,18 +156,15 @@ func (i *Index) AddDesc(d Descriptor, opts ...IndexOpt) {
 	}
 	// search for another descriptor to untag and referrers to delete
 	if tag != "" || referrer != "" {
-		mi := len(i.Manifests) - 1
-		for mi >= 0 {
+		for mi := len(i.Manifests) - 1; mi >= 0; mi-- {
 			if i.Manifests[mi].Digest != d.Digest && i.Manifests[mi].Annotations != nil {
 				if i.Manifests[mi].Annotations[AnnotRefName] == tag {
 					delete(i.Manifests[mi].Annotations, AnnotRefName)
 				}
 				if i.Manifests[mi].Annotations[AnnotReferrerSubject] == referrer {
 					i.Manifests = append(i.Manifests[:mi], i.Manifests[mi+1:]...)
-					continue
 				}
 			}
-			mi--
 		}
 	}
 	// remove child entry if found
