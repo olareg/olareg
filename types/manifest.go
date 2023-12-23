@@ -80,7 +80,7 @@ func (i *Index) AddChildren(children []Descriptor) {
 // GetDesc returns a descriptor for a tag or digest, including child descriptors.
 func (i Index) GetDesc(arg string) (Descriptor, error) {
 	var dRet Descriptor
-	if i.Manifests == nil {
+	if len(i.Manifests) == 0 {
 		return dRet, ErrNotFound
 	}
 	if RefTagRE.MatchString(arg) {
@@ -139,9 +139,10 @@ func (i *Index) GetByAnnotation(key, val string) (Descriptor, error) {
 }
 
 // AddDesc adds an entry to the Index with deduplication.
-// If a descriptor exists but a tag or referrer annotation are being added, an existing descriptor will be updated if found.
+// Alternate references to a tag or referrers response are removed.
+// If a descriptor exists but a tag or referrer annotation is being added, an existing descriptor will be updated.
 // If the descriptor exists as a child, it is removed from the child entries.
-// This method ignores and may lose other fields and annotations other than the OCI reference annotation.
+// This method ignores and may lose unrecognized fields and annotations.
 // The "WithChildren" option moves matching descriptors without annotations to child manifest list.
 func (i *Index) AddDesc(d Descriptor, opts ...IndexOpt) {
 	conf := indexConf{children: []Descriptor{}}
@@ -158,11 +159,25 @@ func (i *Index) AddDesc(d Descriptor, opts ...IndexOpt) {
 	if tag != "" || referrer != "" {
 		for mi := len(i.Manifests) - 1; mi >= 0; mi-- {
 			if i.Manifests[mi].Digest != d.Digest && i.Manifests[mi].Annotations != nil {
-				if i.Manifests[mi].Annotations[AnnotRefName] == tag {
-					delete(i.Manifests[mi].Annotations, AnnotRefName)
-				}
-				if i.Manifests[mi].Annotations[AnnotReferrerSubject] == referrer {
-					i.Manifests = append(i.Manifests[:mi], i.Manifests[mi+1:]...)
+				if tag != "" && i.Manifests[mi].Annotations[AnnotRefName] == tag {
+					// remote tag pointing to different digest
+					rmDesc := Descriptor{
+						MediaType: i.Manifests[mi].MediaType,
+						Digest:    i.Manifests[mi].Digest,
+						Size:      i.Manifests[mi].Size,
+						Annotations: map[string]string{
+							AnnotRefName: tag,
+						},
+					}
+					i.RmDesc(rmDesc)
+					// ensure mi is not past the end of the list after the next `mi--`
+					if mi > len(i.Manifests) {
+						mi = len(i.Manifests)
+					}
+				} else if referrer != "" && i.Manifests[mi].Annotations[AnnotReferrerSubject] == referrer {
+					// remove previous referrer response
+					i.Manifests[mi] = i.Manifests[len(i.Manifests)-1]
+					i.Manifests = i.Manifests[:len(i.Manifests)-1]
 				}
 			}
 		}
