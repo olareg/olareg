@@ -12,7 +12,7 @@ import (
 	"github.com/olareg/olareg/types"
 )
 
-func (s *server) tagList(repoStr string) http.HandlerFunc {
+func (s *Server) tagList(repoStr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {

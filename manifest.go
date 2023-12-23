@@ -21,7 +21,7 @@ import (
 	"github.com/olareg/olareg/types"
 )
 
-func (s *server) manifestDelete(repoStr, arg string) http.HandlerFunc {
+func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {
@@ -89,7 +89,7 @@ func (s *server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 	}
 }
 
-func (s *server) manifestGet(repoStr, arg string) http.HandlerFunc {
+func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {
@@ -176,7 +176,7 @@ func (s *server) manifestGet(repoStr, arg string) http.HandlerFunc {
 	}
 }
 
-func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
+func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tag := ""
 		var dExpect digest.Digest
@@ -378,7 +378,7 @@ func (s *server) manifestPut(repoStr, arg string) http.HandlerFunc {
 	}
 }
 
-func (s *server) manifestVerifyImage(repo store.Repo, m types.Manifest) []types.ErrorInfo {
+func (s *Server) manifestVerifyImage(repo store.Repo, m types.Manifest) []types.ErrorInfo {
 	// TODO: allow validation to be disabled
 	es := []types.ErrorInfo{}
 	r, err := repo.BlobGet(m.Config.Digest)
@@ -401,7 +401,7 @@ func (s *server) manifestVerifyImage(repo store.Repo, m types.Manifest) []types.
 	return nil
 }
 
-func (s *server) manifestVerifyIndex(repo store.Repo, m types.Index) []types.ErrorInfo {
+func (s *Server) manifestVerifyIndex(repo store.Repo, m types.Index) []types.ErrorInfo {
 	// TODO: allow validation to be disabled
 	es := []types.ErrorInfo{}
 	for _, d := range m.Manifests {

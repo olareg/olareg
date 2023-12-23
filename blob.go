@@ -24,7 +24,7 @@ import (
 	"github.com/olareg/olareg/types"
 )
 
-func (s *server) blobGet(repoStr, arg string) http.HandlerFunc {
+func (s *Server) blobGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {
@@ -64,7 +64,7 @@ func (s *server) blobGet(repoStr, arg string) http.HandlerFunc {
 	}
 }
 
-func (s *server) blobDelete(repoStr, arg string) http.HandlerFunc {
+func (s *Server) blobDelete(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {
@@ -109,7 +109,7 @@ type blobUploadState struct {
 	Offset int64 `json:"offset"`
 }
 
-func (s *server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
+func (s *Server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		blobUploadMu.Lock()
 		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
@@ -141,7 +141,7 @@ func (s *server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 	}
 }
 
-func (s *server) blobUploadPost(repoStr string) http.HandlerFunc {
+func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// start a new upload session with the backend storage and track as current upload
 		repo, err := s.store.RepoGet(repoStr)
@@ -243,7 +243,7 @@ func (s *server) blobUploadPost(repoStr string) http.HandlerFunc {
 	}
 }
 
-func (s *server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
+func (s *Server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		blobUploadMu.Lock()
 		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
@@ -314,7 +314,7 @@ func (s *server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 	}
 }
 
-func (s *server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
+func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		blobUploadMu.Lock()
 		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
