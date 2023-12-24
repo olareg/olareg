@@ -7,4 +7,5 @@
 !types/
 !go.*
 !*.go
+!vendor/
 !Makefile
