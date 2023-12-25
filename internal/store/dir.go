@@ -107,7 +107,9 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 
 // IndexGet returns the current top level index for a repo.
 func (dr *dirRepo) IndexGet() (types.Index, error) {
-	err := dr.repoLoad(false, false)
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
+	err := dr.repoLoad(false, true)
 	return dr.index, err
 }
 

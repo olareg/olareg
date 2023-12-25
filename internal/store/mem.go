@@ -72,6 +72,8 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 
 // IndexGet returns the current top level index for a repo.
 func (mr *memRepo) IndexGet() (types.Index, error) {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
 	return mr.index, nil
 }
 
