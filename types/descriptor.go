@@ -37,3 +37,21 @@ type Descriptor struct {
 	// ArtifactType is the media type of the artifact this descriptor refers to.
 	ArtifactType string `json:"artifactType,omitempty"`
 }
+
+// Copy returns a copy of the descriptor
+func (d Descriptor) Copy() Descriptor {
+	d2 := d
+	if d.URLs != nil {
+		d2.URLs = make([]string, len(d.URLs))
+		copy(d2.URLs, d.URLs)
+	}
+	if d.Data != nil {
+		d2.Data = make([]byte, len(d.Data))
+		copy(d2.Data, d.Data)
+	}
+	if d.Platform != nil {
+		p := d.Platform.Copy()
+		d2.Platform = &p
+	}
+	return d2
+}

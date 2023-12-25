@@ -77,6 +77,30 @@ func (i *Index) AddChildren(children []Descriptor) {
 	i.childManifests = append(i.childManifests, children...)
 }
 
+// Copy returns a deep copy of the index to avoid data races
+func (i Index) Copy() Index {
+	i2 := i
+	i2.Manifests = make([]Descriptor, len(i.Manifests))
+	for im := range i.Manifests {
+		i2.Manifests[im] = i.Manifests[im].Copy()
+	}
+	i2.childManifests = make([]Descriptor, len(i.childManifests))
+	for im := range i.childManifests {
+		i2.childManifests[im] = i.childManifests[im].Copy()
+	}
+	if i.Subject != nil {
+		d := i.Subject.Copy()
+		i2.Subject = &d
+	}
+	if i.Annotations != nil {
+		i2.Annotations = make(map[string]string)
+		for k, v := range i.Annotations {
+			i2.Annotations[k] = v
+		}
+	}
+	return i2
+}
+
 // GetDesc returns a descriptor for a tag or digest, including child descriptors.
 func (i Index) GetDesc(arg string) (Descriptor, error) {
 	var dRet Descriptor

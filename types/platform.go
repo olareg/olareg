@@ -20,3 +20,17 @@ type Platform struct {
 	// Features is an optional field specifying an array of strings, each listing a required CPU feature (for example `sse4` or `aes`).
 	Features []string `json:"features,omitempty"`
 }
+
+// Copy returns a memory safe copy of the Platform object
+func (p Platform) Copy() Platform {
+	p2 := p
+	if p.OSFeatures != nil {
+		p2.OSFeatures = make([]string, len(p.OSFeatures))
+		copy(p2.OSFeatures, p.OSFeatures)
+	}
+	if p.Features != nil {
+		p2.Features = make([]string, len(p.Features))
+		copy(p2.Features, p.Features)
+	}
+	return p2
+}

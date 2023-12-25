@@ -110,7 +110,8 @@ func (dr *dirRepo) IndexGet() (types.Index, error) {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
 	err := dr.repoLoad(false, true)
-	return dr.index, err
+	ic := dr.index.Copy()
+	return ic, err
 }
 
 // IndexAdd adds a new entry to the index and writes the change to index.json.
