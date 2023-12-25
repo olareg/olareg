@@ -74,7 +74,8 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 func (mr *memRepo) IndexGet() (types.Index, error) {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
-	return mr.index, nil
+	ic := mr.index.Copy()
+	return ic, nil
 }
 
 // IndexAnnotate sets an annotation on the index.
