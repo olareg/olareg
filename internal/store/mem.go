@@ -133,7 +133,10 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 	}
 	// if blob exists, return the appropriate error
 	if conf.expect != "" {
-		if _, ok := mr.blobs[conf.expect]; ok {
+		mr.mu.Lock()
+		_, ok := mr.blobs[conf.expect]
+		mr.mu.Unlock()
+		if ok {
 			return nil, types.ErrBlobExists
 		}
 	}
