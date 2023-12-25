@@ -321,22 +321,24 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 		}
 		// push to blob store
 		bc, err := repo.BlobCreate(store.BlobWithDigest(d))
-		if err != nil {
+		if err != nil && !errors.Is(err, types.ErrBlobExists) {
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Info("failed to create blob", "repo", repoStr, "arg", arg, "err", err)
 			return
-		}
-		_, err = bc.Write(mRaw)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			s.log.Info("failed to write blob", "repo", repoStr, "arg", arg, "err", err)
-			return
-		}
-		err = bc.Close()
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			s.log.Info("failed to close blob", "repo", repoStr, "arg", arg, "err", err)
-			return
+		} else if err == nil {
+			_, err = bc.Write(mRaw)
+			if err != nil {
+				_ = bc.Close()
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Info("failed to write blob", "repo", repoStr, "arg", arg, "err", err)
+				return
+			}
+			err = bc.Close()
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Info("failed to close blob", "repo", repoStr, "arg", arg, "err", err)
+				return
+			}
 		}
 		// add entry to index
 		desc := types.Descriptor{

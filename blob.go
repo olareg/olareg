@@ -155,9 +155,20 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr)
 			return
 		}
-		// TODO: check for mount=digest&from=repo, consider allowing anonymous blob mounts
+		// check for mount=digest&from=repo, consider allowing anonymous blob mounts
+		mountStr := r.URL.Query().Get("mount")
+		fromStr := r.URL.Query().Get("from")
+		if mountStr != "" && fromStr != "" {
+			if err := s.blobUploadMount(fromStr, repoStr, mountStr, w, r); err == nil {
+				return
+			}
+		}
+		// check for digest parameter
 		bOpts := []store.BlobOpt{}
 		dStr := r.URL.Query().Get("digest")
+		if dStr == "" && mountStr != "" {
+			dStr = mountStr // a failed blob mount is still used to define the digest
+		}
 		var d digest.Digest
 		if dStr != "" {
 			d, err = digest.Parse(dStr)
@@ -169,8 +180,21 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			}
 			bOpts = append(bOpts, store.BlobWithDigest(d))
 		}
+		// create a new blob in the store
 		bc, err := repo.BlobCreate(bOpts...)
 		if err != nil {
+			if errors.Is(err, types.ErrBlobExists) {
+				// blob exists, indicate it was created and return the location to get
+				loc, err := url.JoinPath("/v2", repoStr, "blobs", d.String())
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					s.log.Error("failed to build location header", "repo", repoStr, "err", err)
+					return
+				}
+				w.Header().Set("location", loc)
+				w.WriteHeader(http.StatusCreated)
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Error("create blob", "err", err)
 			return
@@ -241,6 +265,65 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 		w.Header().Add("Location", loc.String())
 		w.WriteHeader(http.StatusAccepted)
 	}
+}
+
+// blobUploadMount is a handler for blob mount attempts.
+// Any errors return the error without writing to the response.
+// This allows the registry to fall back to a standard blob push.
+// If the return is nil, the location header and created status are first be written to the response.
+func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.ResponseWriter, r *http.Request) error {
+	repoSrc, err := s.store.RepoGet(repoSrcStr)
+	if err != nil {
+		return err
+	}
+	repoTgt, err := s.store.RepoGet(repoTgtStr)
+	if err != nil {
+		return err
+	}
+	dig, err := digest.Parse(digStr)
+	if err != nil {
+		return err
+	}
+	bc, err := repoTgt.BlobCreate(store.BlobWithDigest(dig))
+	if err != nil {
+		if errors.Is(err, types.ErrBlobExists) {
+			// blob exists, indicate it was created and return the location to get
+			loc, err := url.JoinPath("/v2", repoTgtStr, "blobs", dig.String())
+			if err != nil {
+				s.log.Error("failed to build location header", "repo", repoTgtStr, "err", err)
+				return err
+			}
+			w.Header().Set("location", loc)
+			w.WriteHeader(http.StatusCreated)
+			return nil
+		}
+		return err
+	}
+	rdr, err := repoSrc.BlobGet(dig)
+	if err != nil {
+		bc.Cancel()
+		return err
+	}
+	// copy content from source repo
+	_, err = io.Copy(bc, rdr)
+	if err != nil {
+		bc.Cancel()
+		_ = rdr.Close()
+		return err
+	}
+	_ = rdr.Close()
+	err = bc.Close()
+	if err != nil {
+		return err
+	}
+	// write the success status and return nil
+	loc, err := url.JoinPath("/v2", repoTgtStr, "blobs", dig.String())
+	if err != nil {
+		return err
+	}
+	w.Header().Set("location", loc)
+	w.WriteHeader(http.StatusCreated)
+	return nil
 }
 
 func (s *Server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {

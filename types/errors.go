@@ -7,6 +7,8 @@ import (
 )
 
 var (
+	// ErrBlobExists is returned when attempting to create a blob that already exists.
+	ErrBlobExists = errors.New("blob exists")
 	// ErrNotFound is returned when a resource is not found.
 	ErrNotFound = errors.New("not found")
 	// ErrRepoNotAllowed is used when a repository name is not permitted.

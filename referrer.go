@@ -96,17 +96,19 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 	}
 	dig := digest.Canonical.FromBytes(iRaw)
 	bc, err := repo.BlobCreate(store.BlobWithDigest(dig))
-	if err != nil {
+	if err != nil && !errors.Is(err, types.ErrBlobExists) {
 		return err
 	}
-	_, err = bc.Write(iRaw)
-	if err != nil {
-		_ = bc.Close()
-		return err
-	}
-	err = bc.Close()
-	if err != nil {
-		return err
+	if err == nil {
+		_, err = bc.Write(iRaw)
+		if err != nil {
+			_ = bc.Close()
+			return err
+		}
+		err = bc.Close()
+		if err != nil {
+			return err
+		}
 	}
 	// create new descriptor for referrers response to add into index.json
 	dNew := types.Descriptor{
@@ -170,17 +172,19 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 	}
 	dig := digest.Canonical.FromBytes(iRaw)
 	bc, err := repo.BlobCreate(store.BlobWithDigest(dig))
-	if err != nil {
+	if err != nil && !errors.Is(err, types.ErrBlobExists) {
 		return err
 	}
-	_, err = bc.Write(iRaw)
-	if err != nil {
-		_ = bc.Close()
-		return err
-	}
-	err = bc.Close()
-	if err != nil {
-		return err
+	if err == nil {
+		_, err = bc.Write(iRaw)
+		if err != nil {
+			_ = bc.Close()
+			return err
+		}
+		err = bc.Close()
+		if err != nil {
+			return err
+		}
 	}
 	// create new descriptor for referrers response
 	dNew := types.Descriptor{
