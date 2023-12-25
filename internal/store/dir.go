@@ -156,6 +156,13 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 			return nil, err
 		}
 	}
+	// if blob exists, return the appropriate error
+	if conf.expect != "" {
+		_, err := os.Stat(filepath.Join(dr.path, blobsDir, conf.expect.Algorithm().String(), conf.expect.Encoded()))
+		if err == nil {
+			return nil, types.ErrBlobExists
+		}
+	}
 	// create a temp file in the repo blob store, under an upload folder
 	tmpDir := filepath.Join(dr.path, uploadDir)
 	uploadFH, err := os.Stat(tmpDir)

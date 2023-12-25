@@ -131,6 +131,12 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 	for _, opt := range opts {
 		opt(&conf)
 	}
+	// if blob exists, return the appropriate error
+	if conf.expect != "" {
+		if _, ok := mr.blobs[conf.expect]; ok {
+			return nil, types.ErrBlobExists
+		}
+	}
 	buffer := &bytes.Buffer{}
 	d := conf.algo.Digester()
 	w := io.MultiWriter(buffer, d.Hash())
