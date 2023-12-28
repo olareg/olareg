@@ -22,6 +22,10 @@ const (
 	MediaTypeOCI1ManifestList = "application/vnd.oci.image.index.v1+json"
 	// MediaTypeOCI1ImageConfig OCI v1 configuration json object media type.
 	MediaTypeOCI1ImageConfig = "application/vnd.oci.image.config.v1+json"
+	// MediaTypeOCI1Layer is the uncompressed layer for OCIv1.
+	MediaTypeOCI1Layer = "application/vnd.oci.image.layer.v1.tar"
+	// MediaTypeOCI1LayerGzip is the gzip compressed layer for OCI v1.
+	MediaTypeOCI1LayerGzip = "application/vnd.oci.image.layer.v1.tar+gzip"
 	// MediaTypeDocker2ForeignLayer is the default compressed layer for foreign layers in docker schema2.
 	MediaTypeDocker2ForeignLayer = "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip"
 	// MediaTypeOCI1ForeignLayer is the foreign layer for OCI v1.
@@ -30,6 +34,8 @@ const (
 	MediaTypeOCI1ForeignLayerGzip = "application/vnd.oci.image.layer.nondistributable.v1.tar+gzip"
 	// MediaTypeOCI1ForeignLayerZstd is the zstd compressed foreign layer for OCI v1.
 	MediaTypeOCI1ForeignLayerZstd = "application/vnd.oci.image.layer.nondistributable.v1.tar+zstd"
+	// MediaTypeOCI1Empty is used for blobs containing the empty JSON data `{}`.
+	MediaTypeOCI1Empty = "application/vnd.oci.empty.v1+json"
 )
 
 // MediaTypeBase cleans the Content-Type header to return only the lower case base media type.
