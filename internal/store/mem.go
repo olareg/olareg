@@ -2,8 +2,13 @@ package store
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/opencontainers/go-digest"
@@ -25,6 +30,7 @@ type memRepo struct {
 	index types.Index
 	blobs map[digest.Digest][]byte
 	log   slog.Logger
+	path  string
 	conf  config.Config
 }
 
@@ -60,14 +66,59 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 	}
 	mr := &memRepo{
 		index: types.Index{
-			Manifests: []types.Descriptor{},
+			SchemaVersion: 2,
+			MediaType:     types.MediaTypeOCI1ManifestList,
+			Manifests:     []types.Descriptor{},
+			Annotations:   map[string]string{},
 		},
 		blobs: map[digest.Digest][]byte{},
 		log:   m.log,
 		conf:  m.conf,
 	}
+	if boolDefault(m.conf.API.Referrer.Enabled, true) {
+		mr.index.Annotations[types.AnnotReferrerConvert] = "true"
+	}
+	if m.conf.Storage.RootDir != "" {
+		mr.path = filepath.Join(m.conf.Storage.RootDir, repoStr)
+		err := mr.repoGetIndex()
+		if err != nil {
+			return nil, err
+		}
+	}
 	m.repos[repoStr] = mr
 	return mr, nil
+}
+
+func (mr *memRepo) repoGetIndex() error {
+	// initialize index from backend dir if available
+	// validate directory is an OCI Layout
+	statIndex, errIndex := os.Stat(filepath.Join(mr.path, indexFile))
+	//#nosec G304 internal method is only called with filenames within admin provided path.
+	layoutBytes, errLayout := os.ReadFile(filepath.Join(mr.path, layoutFile))
+	if errIndex != nil || errLayout != nil || statIndex.IsDir() || !layoutVerify(layoutBytes) {
+		return nil
+	}
+	// read the index.json
+	fh, err := os.Open(filepath.Join(mr.path, indexFile))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer fh.Close()
+	parseIndex := types.Index{}
+	err = json.NewDecoder(fh).Decode(&parseIndex)
+	if err != nil {
+		return err
+	}
+	mr.index = parseIndex
+	// ingest to load child descriptors and configure referrers
+	_, err = indexIngest(mr, &mr.index, mr.conf, true)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // IndexGet returns the current top level index for a repo.
@@ -78,37 +129,16 @@ func (mr *memRepo) IndexGet() (types.Index, error) {
 	return ic, nil
 }
 
-// IndexAnnotate sets an annotation on the index.
-// Setting the value to an empty string deletes the key from the annotations.
-func (mr *memRepo) IndexAnnotate(key, value string) error {
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-	if value == "" {
-		if mr.index.Annotations == nil {
-			return nil
-		} else {
-			delete(mr.index.Annotations, key)
-		}
-	} else {
-		if mr.index.Annotations == nil {
-			mr.index.Annotations = map[string]string{key: value}
-		} else {
-			mr.index.Annotations[key] = value
-		}
-	}
-	return nil
-}
-
-// IndexAdd adds a new entry to the index and writes the change to index.json.
-func (mr *memRepo) IndexAdd(desc types.Descriptor, opts ...types.IndexOpt) error {
+// IndexInsert adds a new entry to the index and writes the change to index.json.
+func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) error {
 	mr.mu.Lock()
 	mr.index.AddDesc(desc, opts...)
 	mr.mu.Unlock()
 	return nil
 }
 
-// IndexRm removes an entry from the index and writes the change to index.json.
-func (mr *memRepo) IndexRm(desc types.Descriptor) error {
+// IndexRemove removes an entry from the index and writes the change to index.json.
+func (mr *memRepo) IndexRemove(desc types.Descriptor) error {
 	mr.mu.Lock()
 	mr.index.RmDesc(desc)
 	mr.mu.Unlock()
@@ -117,13 +147,35 @@ func (mr *memRepo) IndexRm(desc types.Descriptor) error {
 
 // BlobGet returns a reader to an entry from the CAS.
 func (mr *memRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
-	mr.mu.Lock()
+	return mr.blobGet(d, false)
+}
+
+func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error) {
+	if !locked {
+		mr.mu.Lock()
+		defer mr.mu.Unlock()
+	}
 	b, ok := mr.blobs[d]
-	mr.mu.Unlock()
 	if ok {
+		// when there is a directory backing, nil indicates an explicit delete or blob doesn't exist
+		if b == nil {
+			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
+		}
 		return types.BytesReadCloser{Reader: bytes.NewReader(b)}, nil
 	}
-	return nil, types.ErrNotFound
+	// else try to load from backing dir
+	if mr.path != "" {
+		fh, err := os.Open(filepath.Join(mr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
+		if err != nil {
+			if os.IsNotExist(err) {
+				mr.blobs[d] = nil // explicitly mark as not found to skip future attempts
+				return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
+			}
+			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
+		}
+		return fh, nil
+	}
+	return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
 }
 
 // BlobCreate is used to create a new blob.
@@ -137,7 +189,10 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 	// if blob exists, return the appropriate error
 	if conf.expect != "" {
 		mr.mu.Lock()
-		_, ok := mr.blobs[conf.expect]
+		b, ok := mr.blobs[conf.expect]
+		if b == nil {
+			ok = false
+		}
 		mr.mu.Unlock()
 		if ok {
 			return nil, types.ErrBlobExists
@@ -158,11 +213,26 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 // BlobDelete deletes an entry from the CAS.
 func (mr *memRepo) BlobDelete(d digest.Digest) error {
 	mr.mu.Lock()
+	defer mr.mu.Unlock()
 	_, ok := mr.blobs[d]
-	delete(mr.blobs, d)
-	mr.mu.Unlock()
+	if ok {
+		if mr.path != "" {
+			mr.blobs[d] = nil
+		} else {
+			delete(mr.blobs, d)
+		}
+	}
 	if !ok {
-		return types.ErrNotFound
+		if mr.path == "" {
+			return types.ErrNotFound
+		}
+		if mr.path != "" {
+			_, err := os.Stat(filepath.Join(mr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
+			if err != nil && errors.Is(err, fs.ErrNotExist) {
+				return types.ErrNotFound
+			}
+			mr.blobs[d] = nil
+		}
 	}
 	return nil
 }

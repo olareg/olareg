@@ -3,8 +3,10 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"regexp"
+	"time"
 
 	// imports required for go-digest
 	_ "crypto/sha256"
@@ -12,8 +14,21 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/types"
+)
+
+const (
+	freqCheck  = time.Second
+	indexFile  = "index.json"
+	layoutFile = "oci-layout"
+	blobsDir   = "blobs"
+	uploadDir  = "_uploads"
+)
+
+var (
+	referrerTagRe = regexp.MustCompile(`^(sha256|sha512)-([0-9a-f]{64})$`)
 )
 
 type Store interface {
@@ -23,17 +38,20 @@ type Store interface {
 type Repo interface {
 	// IndexGet returns the current top level index for a repo.
 	IndexGet() (types.Index, error)
-	// IndexAdd adds a new entry to the index and writes the change to index.json.
-	IndexAdd(desc types.Descriptor, opts ...types.IndexOpt) error
-	// IndexRm removes an entry from the index and writes the change to index.json.
-	IndexRm(desc types.Descriptor) error
+	// IndexInsert adds a new entry to the index and writes the change to index.json.
+	IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) error
+	// IndexRemove deletes an entry from the index and writes the change to index.json.
+	IndexRemove(desc types.Descriptor) error
 
 	// BlobGet returns a reader to an entry from the CAS.
 	BlobGet(d digest.Digest) (io.ReadSeekCloser, error)
 	// BlobCreate is used to create a new blob.
 	BlobCreate(opts ...BlobOpt) (BlobCreator, error)
-	// BlobDelete deletes an entry from the CAS.
+	// BlobDelete removes an entry from the CAS.
 	BlobDelete(d digest.Digest) error
+
+	// blobGet is an internal method for accessing blobs from other store methods.
+	blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error)
 }
 
 type BlobOpt func(*blobConfig)
@@ -84,160 +102,226 @@ func WithLog(log slog.Logger) Opts {
 	}
 }
 
-var (
-	referrerTagRe = regexp.MustCompile(`^(sha256|sha512)-([0-9a-f]{64})$`)
-)
-
-// referrerConvert runs when repo loaded to ensure fallback tags have been have been converted to referrers.
-// return bool value indicates if index was changed.
-func referrerConvert(repo Repo, index *types.Index) (bool, error) {
-	// if index already converted, return
-	if index.Annotations != nil && index.Annotations[types.AnnotReferrerConvert] == "true" {
-		return false, nil
+// indexIngest processes an index, adding child descriptors, and converting referrers if appropriate.
+// return is true when index has been modified.
+func indexIngest(repo Repo, index *types.Index, conf config.Config, locked bool) (bool, error) {
+	mod := false
+	// error if referrer API not enabled and annotation indicates this is already converted, this repo should not writable
+	if !boolDefault(conf.API.Referrer.Enabled, true) && index.Annotations != nil && index.Annotations[types.AnnotReferrerConvert] == "true" {
+		return mod, fmt.Errorf("index.json has referrers converted with the API disabled")
 	}
-	// gather a list of descriptors to convert and already converted referrers
-	convertList := []types.Descriptor{}
-	referrerList := map[string]types.Descriptor{}
-	for _, d := range index.Manifests {
-		if d.MediaType == types.MediaTypeOCI1ManifestList && d.Annotations != nil {
-			if referrerTagRe.MatchString(d.Annotations[types.AnnotRefName]) {
-				convertList = append(convertList, d)
+	// ensure index has schema and media type
+	if index.SchemaVersion != 2 {
+		index.SchemaVersion = 2
+		mod = true
+	}
+	if index.MediaType != types.MediaTypeOCI1ManifestList {
+		index.MediaType = types.MediaTypeOCI1ManifestList
+		mod = true
+	}
+
+	seen := map[digest.Digest]bool{}
+	scanChildren := []types.Descriptor{}
+	referrerResponse := map[string]types.Descriptor{}
+	digestTags := []types.Descriptor{}
+	// loop over manifests
+	for _, desc := range index.Manifests {
+		desc := desc
+		seen[desc.Digest] = true
+		if desc.MediaType == types.MediaTypeOCI1ManifestList && desc.Annotations != nil {
+			if referrerTagRe.MatchString(desc.Annotations[types.AnnotRefName]) {
+				digestTags = append(digestTags, desc)
 			}
-			if d.Annotations[types.AnnotReferrerSubject] != "" {
-				referrerList[d.Annotations[types.AnnotReferrerSubject]] = d
+			if desc.Annotations[types.AnnotReferrerSubject] != "" {
+				referrerResponse[desc.Annotations[types.AnnotReferrerSubject]] = desc
 			}
 		}
+		if types.MediaTypeIndex(desc.MediaType) {
+			scanChildren = append(scanChildren, desc)
+		}
 	}
-	// if no entries to convert, mark index as done
-	if len(convertList) == 0 {
+
+	// convert referrers
+	if boolDefault(conf.API.Referrer.Enabled, true) && (index.Annotations == nil || index.Annotations[types.AnnotReferrerConvert] != "true") {
+		// for each fallback tag, validate it
+		addResp := map[string][]types.Descriptor{}
+		rmDesc := []types.Descriptor{}
+		for _, desc := range digestTags {
+			curResp, err := repoGetIndex(repo, desc, locked)
+			if err != nil || curResp.Manifests == nil {
+				continue
+			}
+			valid, refSubj, refResp := indexValidReferrer(repo, curResp, locked)
+			// check for a different response already in the index
+			if valid {
+				if resp, ok := referrerResponse[refSubj.String()]; ok && resp.Digest != desc.Digest {
+					valid = false
+				}
+			}
+			// if the response is good, convert to a referrer
+			if valid {
+				newDesc := desc
+				newDesc.Annotations = map[string]string{
+					types.AnnotReferrerSubject: refSubj.String(),
+				}
+				index.AddDesc(newDesc)
+				mod = true
+			}
+			// if the response cannot be quickly converted, save for later
+			if !valid {
+				for refSubj := range refResp {
+					addResp[refSubj.String()] = append(addResp[refSubj.String()], refResp[refSubj]...)
+				}
+				rmDesc = append(rmDesc, desc)
+			}
+		}
+
+		// generate new responses when needed
+		for subj, respList := range addResp {
+			if refDesc, ok := referrerResponse[subj]; ok {
+				resp, err := repoGetIndex(repo, refDesc, locked)
+				if err == nil && resp.Manifests != nil {
+					respList = append(respList, resp.Manifests...)
+				}
+			}
+			resp := types.Index{
+				SchemaVersion: 2,
+				MediaType:     types.MediaTypeOCI1ManifestList,
+				Manifests:     referrerListDedup(respList),
+			}
+			respRaw, err := json.Marshal(resp)
+			if err != nil {
+				return mod, fmt.Errorf("failed to marshal referrers response: %w", err)
+			}
+			dig := digest.Canonical.FromBytes(respRaw)
+			bc, err := repo.BlobCreate(BlobWithDigest(dig))
+			if err != nil {
+				return mod, err
+			}
+			_, err = bc.Write(respRaw)
+			if err != nil {
+				_ = bc.Close()
+				return mod, err
+			}
+			err = bc.Close()
+			if err != nil {
+				return mod, err
+			}
+			index.AddDesc(types.Descriptor{
+				MediaType: types.MediaTypeOCI1ManifestList,
+				Digest:    dig,
+				Size:      int64(len(respRaw)),
+				Annotations: map[string]string{
+					types.AnnotReferrerSubject: subj,
+				},
+			})
+			mod = true
+		}
+		// cleanup processed fallback tags
+		for _, d := range rmDesc {
+			index.RmDesc(d)
+		}
 		if index.Annotations == nil {
 			index.Annotations = map[string]string{types.AnnotReferrerConvert: "true"}
 		} else {
 			index.Annotations[types.AnnotReferrerConvert] = "true"
 		}
-		return true, nil
+		mod = true
 	}
-	// convert each referrer
-	referrerAdd := map[digest.Digest][]types.Descriptor{}
-	rmLater := []types.Descriptor{}
-	for _, d := range convertList {
-		// get each manifest, parse for subject
-		i, err := repoGetIndex(repo, d)
-		if err != nil || i.Manifests == nil {
+
+	// load child descriptors
+	for len(scanChildren) > 0 {
+		childIndex, err := repoGetIndex(repo, scanChildren[0], locked)
+		if err != nil {
+			scanChildren = scanChildren[1:]
 			continue
 		}
-		var subject digest.Digest
-		quickConvert := true
-		for _, id := range i.Manifests {
-			rdr, err := repo.BlobGet(id.Digest)
-			if err != nil {
-				// errors result in entry being dropped from response list
-				quickConvert = false
-				continue
+		if childIndex.Manifests != nil {
+			for _, desc := range childIndex.Manifests {
+				if !seen[desc.Digest] {
+					index.AddChildren([]types.Descriptor{desc})
+					if types.MediaTypeIndex(desc.MediaType) {
+						scanChildren = append(scanChildren, desc)
+					}
+					seen[desc.Digest] = true
+				}
 			}
-			raw, err := io.ReadAll(rdr)
-			_ = rdr.Close()
-			if err != nil {
-				quickConvert = false
-				continue
-			}
-			curSubject, refDesc, err := types.ManifestReferrerDescriptor(raw, id)
-			if err != nil {
-				quickConvert = false
-				continue
-			}
-			// ensure all referrers point to the same subject
-			if subject == "" {
-				subject = curSubject.Digest
-			} else if subject != curSubject.Digest {
-				quickConvert = false
-			}
-			// ensure all descriptors match expected contents
-			if quickConvert {
-				if id.MediaType != refDesc.MediaType || id.Size != refDesc.Size || id.ArtifactType != refDesc.ArtifactType || len(id.Annotations) != len(refDesc.Annotations) {
-					quickConvert = false
-				} else if refDesc.Annotations != nil {
-					for k, v := range refDesc.Annotations {
-						if id.Annotations[k] != v {
-							quickConvert = false
-						}
+		}
+		scanChildren = scanChildren[1:]
+	}
+
+	return mod, nil
+}
+
+// indexValidReferrer checks all descriptors in an index to be correct for the referrer response.
+// Any entries for a different subject, or with incorrect values (pulled up artifactType and annotations) are flagged as invalid.
+// The return is true for valid responses, the digest is for the subject if valid.
+// The returned map is of subjects with a list of descriptors to include in the referrers response to that subject.
+// Errors getting manifests are ignored and those descriptors referencing those manifests are discarded.
+func indexValidReferrer(repo Repo, index types.Index, locked bool) (bool, digest.Digest, map[digest.Digest][]types.Descriptor) {
+	var subject digest.Digest
+	valid := true
+	responses := map[digest.Digest][]types.Descriptor{}
+	for _, desc := range index.Manifests {
+		rdr, err := repo.blobGet(desc.Digest, locked)
+		if err != nil {
+			// errors result in entry being dropped from response list
+			valid = false
+			continue
+		}
+		raw, err := io.ReadAll(rdr)
+		_ = rdr.Close()
+		if err != nil {
+			valid = false
+			continue
+		}
+		refSubj, refDesc, err := types.ManifestReferrerDescriptor(raw, desc)
+		if err != nil {
+			valid = false
+			continue
+		}
+		// ensure all referrers point to the same subject
+		if subject == "" {
+			subject = refSubj.Digest
+		} else if subject != refSubj.Digest {
+			valid = false
+		}
+		// ensure all descriptors match expected contents
+		if valid {
+			if desc.MediaType != refDesc.MediaType || desc.Size != refDesc.Size || desc.ArtifactType != refDesc.ArtifactType || len(desc.Annotations) != len(refDesc.Annotations) {
+				valid = false
+			} else if refDesc.Annotations != nil {
+				for k, v := range refDesc.Annotations {
+					if desc.Annotations[k] != v {
+						valid = false
 					}
 				}
 			}
-			// add descriptor to the list of referrers for this digest
-			referrerAdd[curSubject.Digest] = append(referrerAdd[curSubject.Digest], refDesc)
 		}
-		// if there is also an entry for the same subject using the referrer annotation, to a different response
-		if rld, ok := referrerList[subject.String()]; ok && rld.Digest != d.Digest {
-			quickConvert = false
-			i, err := repoGetIndex(repo, rld)
-			if err == nil && i.Manifests != nil {
-				referrerAdd[subject] = append(referrerAdd[subject], i.Manifests...)
-			}
-		}
-		if quickConvert {
-			// well formed referrer response, just need to update the descriptor in the index
-			newD := d
-			newD.Annotations = map[string]string{
-				types.AnnotReferrerSubject: subject.String(),
-			}
-			index.AddDesc(newD)
-			delete(referrerAdd, subject)
-		} else {
-			rmLater = append(rmLater, d)
-		}
+		// add descriptor to the list of referrers for this digest
+		responses[refSubj.Digest] = append(responses[refSubj.Digest], refDesc)
 	}
-	// for each referrerAdd subject, build a new index with descriptor list
-	for subject, rl := range referrerAdd {
-		referrerListDedup(rl)
-		i := types.Index{
-			SchemaVersion: 2,
-			MediaType:     types.MediaTypeOCI1ManifestList,
-			Manifests:     rl,
-		}
-		iRaw, err := json.Marshal(i)
-		if err != nil {
-			return true, err
-		}
-		dig := digest.Canonical.FromBytes(iRaw)
-		bc, err := repo.BlobCreate(BlobWithDigest(dig))
-		if err != nil {
-			return true, err
-		}
-		_, err = bc.Write(iRaw)
-		if err != nil {
-			_ = bc.Close()
-			return true, err
-		}
-		err = bc.Close()
-		if err != nil {
-			return true, err
-		}
-		index.AddDesc(types.Descriptor{
-			MediaType: types.MediaTypeOCI1ManifestList,
-			Digest:    dig,
-			Size:      int64(len(iRaw)),
-			Annotations: map[string]string{
-				types.AnnotReferrerSubject: subject.String(),
-			},
-		})
+	if !valid {
+		subject = ""
 	}
-	// prune digest tags that were converted to new descriptors
-	for _, d := range rmLater {
-		index.RmDesc(d)
-	}
-	// mark index as being converted
-	if index.Annotations == nil {
-		index.Annotations = map[string]string{types.AnnotReferrerConvert: "true"}
-	} else {
-		index.Annotations[types.AnnotReferrerConvert] = "true"
-	}
-	return true, nil
+	return valid, subject, responses
 }
 
-func referrerListDedup(rl []types.Descriptor) {
+func layoutVerify(b []byte) bool {
+	l := types.Layout{}
+	err := json.Unmarshal(b, &l)
+	if err != nil {
+		return false
+	}
+	if l.Version != types.LayoutVersion {
+		return false
+	}
+	return true
+}
+
+func referrerListDedup(rl []types.Descriptor) []types.Descriptor {
 	if rl == nil {
-		return
+		return nil
 	}
 	seen := map[digest.Digest]bool{}
 	i := 0
@@ -251,11 +335,12 @@ func referrerListDedup(rl []types.Descriptor) {
 		seen[rl[i].Digest] = true
 		i++
 	}
+	return rl
 }
 
-func repoGetIndex(repo Repo, d types.Descriptor) (types.Index, error) {
+func repoGetIndex(repo Repo, d types.Descriptor, locked bool) (types.Index, error) {
 	i := types.Index{}
-	rdr, err := repo.BlobGet(d.Digest)
+	rdr, err := repo.blobGet(d.Digest, locked)
 	if err != nil {
 		return i, err
 	}

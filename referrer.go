@@ -16,14 +16,14 @@ import (
 // All errors should return an empty response, no 404's should be generated.
 func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// all errors should return an empty index
+		// most errors should return an empty index
 		i := types.Index{
 			SchemaVersion: 2,
 			MediaType:     types.MediaTypeOCI1ManifestList,
 		}
 		repo, err := s.store.RepoGet(repoStr)
-		w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
 		if err != nil {
+			w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(i)
 			if !errors.Is(err, types.ErrRepoNotAllowed) {
@@ -33,10 +33,17 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 		}
 		index, err := repo.IndexGet()
 		if err != nil {
+			w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(i)
 			return
 		}
+		if index.Annotations == nil || index.Annotations[types.AnnotReferrerConvert] != "true" {
+			// referrers are not enabled for this repo, this is the one case for a 404
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
 		d, err := index.GetByAnnotation(types.AnnotReferrerSubject, arg)
 		if err != nil {
 			// not found, empty response
@@ -67,7 +74,7 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 	if err != nil {
 		return err
 	}
-	i := types.Index{
+	refResp := types.Index{
 		SchemaVersion: 2,
 		MediaType:     types.MediaTypeOCI1ManifestList,
 	}
@@ -83,14 +90,14 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 		if err != nil {
 			return err
 		}
-		err = json.Unmarshal(iRaw, &i)
+		err = json.Unmarshal(iRaw, &refResp)
 		if err != nil {
 			return err
 		}
 	}
 	// add descriptor to index and push into blob store
-	i.AddDesc(desc)
-	iRaw, err := json.Marshal(i)
+	refResp.AddDesc(desc)
+	iRaw, err := json.Marshal(refResp)
 	if err != nil {
 		return err
 	}
@@ -119,14 +126,8 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 			types.AnnotReferrerSubject: subject.String(),
 		},
 	}
-	// delete old descriptor if it exists
-	if dOld.Digest != "" {
-		err = repo.IndexRm(dOld)
-		if err != nil {
-			return err
-		}
-	}
-	err = repo.IndexAdd(dNew)
+	// adding the new response also deletes the previous response
+	err = repo.IndexInsert(dNew, types.IndexWithChildren(refResp.Manifests))
 	if err != nil {
 		return err
 	}
@@ -153,30 +154,30 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 	if err != nil {
 		return err
 	}
-	iRaw, err := io.ReadAll(rdr)
+	refRespRaw, err := io.ReadAll(rdr)
 	_ = rdr.Close()
 	if err != nil {
 		return err
 	}
-	i := types.Index{}
-	err = json.Unmarshal(iRaw, &i)
+	refResp := types.Index{}
+	err = json.Unmarshal(refRespRaw, &refResp)
 	if err != nil {
 		return err
 	}
 	// remove descriptor from response
-	i.RmDesc(desc)
+	refResp.RmDesc(desc)
 	// push response back to blob store with a new digest
-	iRaw, err = json.Marshal(i)
+	refRespRaw, err = json.Marshal(refResp)
 	if err != nil {
 		return err
 	}
-	dig := digest.Canonical.FromBytes(iRaw)
+	dig := digest.Canonical.FromBytes(refRespRaw)
 	bc, err := repo.BlobCreate(store.BlobWithDigest(dig))
 	if err != nil && !errors.Is(err, types.ErrBlobExists) {
 		return err
 	}
 	if err == nil {
-		_, err = bc.Write(iRaw)
+		_, err = bc.Write(refRespRaw)
 		if err != nil {
 			_ = bc.Close()
 			return err
@@ -189,18 +190,14 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 	// create new descriptor for referrers response
 	dNew := types.Descriptor{
 		MediaType: types.MediaTypeOCI1ManifestList,
-		Size:      int64(len(iRaw)),
+		Size:      int64(len(refRespRaw)),
 		Digest:    dig,
 		Annotations: map[string]string{
 			types.AnnotReferrerSubject: subject.String(),
 		},
 	}
-	// delete old descriptor and add the new
-	err = repo.IndexRm(dOld)
-	if err != nil {
-		return err
-	}
-	err = repo.IndexAdd(dNew)
+	// adding the new response also deletes the previous response
+	err = repo.IndexInsert(dNew, types.IndexWithChildren(refResp.Manifests))
 	if err != nil {
 		return err
 	}

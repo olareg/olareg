@@ -2,8 +2,10 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,14 +21,6 @@ import (
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/types"
-)
-
-const (
-	freqCheck  = time.Second
-	indexFile  = "index.json"
-	layoutFile = "oci-layout"
-	blobsDir   = "blobs"
-	uploadDir  = "_uploads"
 )
 
 type dir struct {
@@ -77,7 +71,7 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 	return d
 }
 
-// TODO: include options for memory caching, allowed methods.
+// TODO: include options for memory caching.
 
 func (d *dir) RepoGet(repoStr string) (Repo, error) {
 	d.mu.Lock()
@@ -98,7 +92,9 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 	statDir, err := os.Stat(dr.path)
 	if err == nil && statDir.IsDir() {
 		statIndex, errIndex := os.Stat(filepath.Join(dr.path, indexFile))
-		if errIndex == nil && !statIndex.IsDir() && verifyLayout(filepath.Join(dr.path, layoutFile)) {
+		//#nosec G304 internal method is only called with filenames within admin provided path.
+		layoutBytes, errLayout := os.ReadFile(filepath.Join(dr.path, layoutFile))
+		if errIndex == nil && errLayout == nil && !statIndex.IsDir() && layoutVerify(layoutBytes) {
 			dr.exists = true
 		}
 	}
@@ -109,29 +105,38 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 func (dr *dirRepo) IndexGet() (types.Index, error) {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
-	err := dr.repoLoad(false, true)
+	err := dr.indexLoad(false, true)
+	if err != nil && errors.Is(err, types.ErrNotFound) {
+		err = nil // ignore not found errors
+	}
 	ic := dr.index.Copy()
 	return ic, err
 }
 
-// IndexAdd adds a new entry to the index and writes the change to index.json.
-func (dr *dirRepo) IndexAdd(desc types.Descriptor, opts ...types.IndexOpt) error {
+// IndexInsert adds a new entry to the index and writes the change to index.json.
+func (dr *dirRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) error {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
+	_ = dr.indexLoad(false, true)
 	dr.index.AddDesc(desc, opts...)
-	return dr.repoSave(true)
+	return dr.indexSave(true)
 }
 
-// IndexRm removes an entry from the index and writes the change to index.json.
-func (dr *dirRepo) IndexRm(desc types.Descriptor) error {
+// IndexRemove removes an entry from the index and writes the change to index.json.
+func (dr *dirRepo) IndexRemove(desc types.Descriptor) error {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
+	_ = dr.indexLoad(false, true)
 	dr.index.RmDesc(desc)
-	return dr.repoSave(true)
+	return dr.indexSave(true)
 }
 
 // BlobGet returns a reader to an entry from the CAS.
 func (dr *dirRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
+	return dr.blobGet(d, false)
+}
+
+func (dr *dirRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error) {
 	if !dr.exists {
 		return nil, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
@@ -154,7 +159,7 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 		opt(&conf)
 	}
 	if !dr.exists {
-		err := dr.repoInit()
+		err := dr.repoInit(false)
 		if err != nil {
 			return nil, err
 		}
@@ -217,9 +222,12 @@ func (dr *dirRepo) BlobDelete(d digest.Digest) error {
 	return err
 }
 
-func (dr *dirRepo) repoInit() error {
-	dr.mu.Lock()
-	defer dr.mu.Unlock()
+func (dr *dirRepo) repoInit(locked bool) error {
+	if !locked {
+		dr.mu.Lock()
+		defer dr.mu.Unlock()
+		locked = true
+	}
 	if dr.exists {
 		return nil
 	}
@@ -235,29 +243,10 @@ func (dr *dirRepo) repoInit() error {
 			return fmt.Errorf("failed to create repo directory %s: %w", dr.path, err)
 		}
 	}
-	indexName := filepath.Join(dr.path, indexFile)
-	fi, err = os.Stat(indexName)
-	if err == nil && fi.IsDir() {
-		return fmt.Errorf("index.json is a directory: %s", indexName)
-	}
-	// create an index if it doesn't exist, but don't overwrite data
-	if err != nil {
-		i := types.Index{
-			SchemaVersion: 2,
-			Manifests:     []types.Descriptor{},
-		}
-		iJSON, err := json.Marshal(i)
-		if err != nil {
-			return err
-		}
-		//#nosec G306 file permissions are intentionally world readable.
-		err = os.WriteFile(indexName, iJSON, 0644)
-		if err != nil {
-			return err
-		}
-	}
 	layoutName := filepath.Join(dr.path, layoutFile)
-	if !verifyLayout(layoutName) {
+	//#nosec G304 internal method is only called with filenames within admin provided path.
+	layoutBytes, err := os.ReadFile(layoutName)
+	if err != nil || !layoutVerify(layoutBytes) {
 		l := types.Layout{Version: types.LayoutVersion}
 		lJSON, err := json.Marshal(l)
 		if err != nil {
@@ -269,20 +258,48 @@ func (dr *dirRepo) repoInit() error {
 			return err
 		}
 	}
+	// create index if it doesn't exist
+	indexName := filepath.Join(dr.path, indexFile)
+	fi, err = os.Stat(indexName)
+	if err == nil && fi.IsDir() {
+		return fmt.Errorf("index.json is a directory: %s", indexName)
+	}
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		err = dr.indexSave(locked)
+	}
+	if err != nil {
+		return err
+	}
 	dr.exists = true
 	return nil
 }
 
-func (dr *dirRepo) repoLoad(force, locked bool) error {
+func (dr *dirRepo) indexLoad(force, locked bool) error {
 	if !locked {
 		dr.mu.Lock()
 		defer dr.mu.Unlock()
+		locked = true
 	}
 	if !force && time.Since(dr.timeCheck) < freqCheck {
 		return nil
 	}
+	if dr.index.MediaType == "" && len(dr.index.Manifests) == 0 {
+		// default values for the index if the load fails (does not exist or unparsable)
+		dr.index = types.Index{
+			SchemaVersion: 2,
+			MediaType:     types.MediaTypeOCI1ManifestList,
+			Manifests:     []types.Descriptor{},
+			Annotations:   map[string]string{},
+		}
+		if boolDefault(dr.conf.API.Referrer.Enabled, true) {
+			dr.index.Annotations[types.AnnotReferrerConvert] = "true"
+		}
+	}
 	fh, err := os.Open(filepath.Join(dr.path, indexFile))
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%v%.0w", err, types.ErrNotFound)
+		}
 		return err
 	}
 	defer fh.Close()
@@ -292,76 +309,45 @@ func (dr *dirRepo) repoLoad(force, locked bool) error {
 	}
 	dr.timeCheck = time.Now()
 	if dr.timeMod == stat.ModTime() {
+		// file is unchanged from previous loaded version
 		return nil
 	}
-	err = json.NewDecoder(fh).Decode(&dr.index)
+	parseIndex := types.Index{}
+	err = json.NewDecoder(fh).Decode(&parseIndex)
 	if err != nil {
 		return err
 	}
-	dr.exists = true
-	for _, d := range dr.index.Manifests {
-		if types.MediaTypeIndex(d.MediaType) {
-			err = dr.repoLoadIndex(d)
-			if err != nil {
-				return err // TODO: after dropping 1.19 support, join multiple errors into one return
-			}
-		}
-	}
+	dr.index = parseIndex
 	dr.timeMod = stat.ModTime()
-	if boolDefault(dr.conf.API.Referrer.Enabled, true) {
-		mod, err := referrerConvert(dr, &dr.index)
+	dr.exists = true
+
+	mod, err := indexIngest(dr, &dr.index, dr.conf, locked)
+	if err != nil {
+		return err
+	}
+	if mod {
+		err = dr.indexSave(locked)
 		if err != nil {
 			return err
 		}
-		if mod {
-			err = dr.repoSave(true)
-			if err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }
 
-func (dr *dirRepo) repoLoadIndex(d types.Descriptor) error {
-	rdr, err := dr.BlobGet(d.Digest)
-	if err != nil {
-		return err
-	}
-	i := types.Index{}
-	err = json.NewDecoder(rdr).Decode(&i)
-	_ = rdr.Close() // close here rather than defer, to avoid open fh during recursion
-	if err != nil {
-		return err
-	}
-	dr.index.AddChildren(i.Manifests)
-	for _, di := range i.Manifests {
-		if types.MediaTypeIndex(di.MediaType) {
-			err = dr.repoLoadIndex(di)
-			if err != nil {
-				return err // TODO: after dropping 1.19 support, join multiple errors into one return
-			}
-		}
-	}
-	return nil
-}
-
-func (dr *dirRepo) repoSave(locked bool) error {
+func (dr *dirRepo) indexSave(locked bool) error {
 	if !locked {
 		dr.mu.Lock()
 		defer dr.mu.Unlock()
 	}
+	// force minimal settings on the index
+	dr.index.SchemaVersion = 2
+	dr.index.MediaType = types.MediaTypeOCI1ManifestList
 	fh, err := os.CreateTemp(dr.path, "index.json.*")
 	if err != nil {
 		return err
 	}
+	defer fh.Close()
 	err = json.NewEncoder(fh).Encode(dr.index)
-	if err != nil {
-		_ = fh.Close()
-		_ = os.Remove(fh.Name())
-		return err
-	}
-	err = fh.Close()
 	if err != nil {
 		_ = os.Remove(fh.Name())
 		return err
@@ -371,6 +357,11 @@ func (dr *dirRepo) repoSave(locked bool) error {
 		_ = os.Remove(fh.Name())
 		return err
 	}
+	fi, err := fh.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat index.json for tracking mod time: %w", err)
+	}
+	dr.timeMod = fi.ModTime()
 	return nil
 }
 
@@ -437,11 +428,6 @@ func (dru *dirRepoUpload) Verify(expect digest.Digest) error {
 	return nil
 }
 
-// TempFilename returns the assigned temp filename.
-func (dru *dirRepoUpload) TempFilename() string {
-	return dru.filename
-}
-
 func stringsHasAny(list []string, check ...string) bool {
 	for _, l := range list {
 		for _, c := range check {
@@ -451,21 +437,4 @@ func stringsHasAny(list []string, check ...string) bool {
 		}
 	}
 	return false
-}
-
-func verifyLayout(filename string) bool {
-	//#nosec G304 internal method is only called with filenames within admin provided path.
-	b, err := os.ReadFile(filename)
-	if err != nil {
-		return false
-	}
-	l := types.Layout{}
-	err = json.Unmarshal(b, &l)
-	if err != nil {
-		return false
-	}
-	if l.Version != types.LayoutVersion {
-		return false
-	}
-	return true
 }
