@@ -79,7 +79,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			}
 		}
 		// delete the digest or tag
-		err = repo.IndexRm(desc)
+		err = repo.IndexRemove(desc)
 		if err != nil {
 			s.log.Debug("failed to remove manifest", "repo", repoStr, "arg", arg, "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -351,7 +351,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				types.AnnotRefName: tag,
 			}
 		}
-		err = repo.IndexAdd(desc, addOpts...)
+		err = repo.IndexInsert(desc, addOpts...)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Info("failed to create index entry", "repo", repoStr, "arg", arg, "err", err)
