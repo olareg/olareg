@@ -21,6 +21,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/olareg/olareg/config"
+	"github.com/olareg/olareg/internal/copy"
 	"github.com/olareg/olareg/types"
 )
 
@@ -31,10 +32,18 @@ func TestServer(t *testing.T) {
 		t.Errorf("failed to generate sample data: %v", err)
 		return
 	}
+	existingRepo := "testrepo"
+	existingTag := "v2"
 	tempDir := t.TempDir()
+	err = copy.Copy(tempDir+"/"+existingRepo, "./testdata/"+existingRepo)
+	if err != nil {
+		t.Errorf("failed to copy %s to tempDir: %v", existingRepo, err)
+		return
+	}
 	ttServer := []struct {
-		name string
-		conf config.Config
+		name     string
+		conf     config.Config
+		existing bool
 	}{
 		{
 			name: "Mem",
@@ -45,6 +54,16 @@ func TestServer(t *testing.T) {
 			},
 		},
 		{
+			name: "Mem with Dir",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					RootDir:   "./testdata",
+				},
+			},
+			existing: true,
+		},
+		{
 			name: "Dir",
 			conf: config.Config{
 				Storage: config.ConfigStorage{
@@ -52,6 +71,7 @@ func TestServer(t *testing.T) {
 					RootDir:   tempDir,
 				},
 			},
+			existing: true,
 		},
 	}
 	for _, tcServer := range ttServer {
@@ -64,6 +84,132 @@ func TestServer(t *testing.T) {
 				name string
 				fn   func(*testing.T, *Server)
 			}{
+				{
+					name: "Tag List",
+					fn: func(*testing.T, *Server) {
+						if !tcServer.existing {
+							return
+						}
+						resp, err := testAPITagsList(t, s, existingRepo, nil)
+						if err != nil {
+							return
+						}
+						tl := types.TagList{}
+						b, err := io.ReadAll(resp.Body)
+						if err != nil {
+							t.Errorf("failed to read tag body: %v", err)
+							return
+						}
+						err = json.Unmarshal(b, &tl)
+						if err != nil {
+							t.Errorf("failed to parse tag body: %v", err)
+							return
+						}
+						if len(tl.Tags) < 1 || tl.Name != existingRepo {
+							t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
+						}
+					},
+				},
+				{
+					name: "Tag List Missing",
+					fn: func(*testing.T, *Server) {
+						resp, err := testClientRun(t, s, "GET", "/v2/missing/tags/list", nil,
+							testClientRespStatus(http.StatusOK, http.StatusNotFound),
+						)
+						if err != nil || resp.Code == http.StatusNotFound {
+							return
+						}
+						tl := types.TagList{}
+						b, err := io.ReadAll(resp.Body)
+						if err != nil {
+							t.Errorf("failed to read tag body: %v", err)
+							return
+						}
+						err = json.Unmarshal(b, &tl)
+						if err != nil {
+							t.Errorf("failed to parse tag body: %v", err)
+							return
+						}
+						if len(tl.Tags) > 0 || tl.Name != "missing" {
+							t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
+						}
+					},
+				},
+				{
+					name: "Pull Existing Image and Referrers",
+					fn: func(t *testing.T, s *Server) {
+						if !tcServer.existing {
+							return
+						}
+						// fetch index
+						resp, err := testAPIManifestGet(t, s, existingRepo, existingTag, nil)
+						if err != nil {
+							return
+						}
+						digI, err := digest.Parse(resp.Header().Get("Docker-Content-Digest"))
+						if err != nil {
+							t.Errorf("unable to parse index digest, %s: %v", resp.Header().Get("Docker-Content-Digest"), err)
+							return
+						}
+						b, err := io.ReadAll(resp.Body)
+						if err != nil {
+							t.Errorf("failed to read body: %v", err)
+							return
+						}
+						i := types.Index{}
+						err = json.Unmarshal(b, &i)
+						if err != nil {
+							t.Errorf("failed to unmarshal index: %v", err)
+							return
+						}
+						if len(i.Manifests) < 1 {
+							t.Errorf("failed to find any manifests in index: %v", i)
+							return
+						}
+						// fetch platform specific manifest
+						descM := i.Manifests[0]
+						resp, err = testAPIManifestGet(t, s, existingRepo, descM.Digest.String(), nil)
+						if err != nil {
+							return
+						}
+						b, err = io.ReadAll(resp.Body)
+						if err != nil {
+							t.Errorf("failed to read body: %v", err)
+							return
+						}
+						m := types.Manifest{}
+						err = json.Unmarshal(b, &m)
+						if err != nil {
+							t.Errorf("failed to unmarshal manifest: %v", err)
+							return
+						}
+						// fetch config blob
+						descC := m.Config
+						_, err = testAPIBlobGet(t, s, existingRepo, descC.Digest, nil)
+						if err != nil {
+							return
+						}
+						// list referrers
+						resp, err = testAPIReferrersList(t, s, existingRepo, digI, nil)
+						if err != nil {
+							return
+						}
+						b, err = io.ReadAll(resp.Body)
+						if err != nil {
+							t.Errorf("failed to read body: %v", err)
+							return
+						}
+						rr := types.Index{}
+						err = json.Unmarshal(b, &rr)
+						if err != nil {
+							t.Errorf("failed to unmarshal referrers response: %v", err)
+							return
+						}
+						if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) < 2 {
+							t.Errorf("referrers response should be an index, schema 2, and at least 2 manifests: %v", rr)
+						}
+					},
+				},
 				{
 					name: "AMD64",
 					fn: func(t *testing.T, s *Server) {
@@ -82,6 +228,10 @@ func TestServer(t *testing.T) {
 						_ = testSampleEntryPull(t, s, *sd["index"], "index", "index")
 					},
 				},
+				// TODO: test tag listing before and after pushing manifest
+				// TODO: test deleting manifests and blobs
+				// TODO: test blob chunked upload, monolithic upload, and stream upload
+				// TODO: test pushing manifest with subject and querying referrers
 			}
 			for _, tc := range tt {
 				tc := tc
@@ -92,7 +242,6 @@ func TestServer(t *testing.T) {
 			}
 		})
 	}
-	_ = sd
 }
 
 type testClient func(req *http.Request) (*httptest.ResponseRecorder, error)
@@ -204,7 +353,7 @@ func testSampleEntryPush(t *testing.T, s *Server, se sampleEntry, repo, tag stri
 	var err error
 	for dig, be := range se.blob {
 		t.Run("BlobPostPut", func(t *testing.T) {
-			err = testAPIBlobPostPut(t, s, repo, dig, be)
+			_, err = testAPIBlobPostPut(t, s, repo, dig, be)
 		})
 		if err != nil {
 			return err
@@ -216,7 +365,7 @@ func testSampleEntryPush(t *testing.T, s *Server, se sampleEntry, repo, tag stri
 			digOrTag = tag
 		}
 		t.Run("ManifestPut", func(t *testing.T) {
-			err = testAPIManifestPut(t, s, repo, digOrTag, se.manifest[dig])
+			_, err = testAPIManifestPut(t, s, repo, digOrTag, se.manifest[dig])
 		})
 		if err != nil {
 			return err
@@ -233,7 +382,7 @@ func testSampleEntryPull(t *testing.T, s *Server, se sampleEntry, repo, tag stri
 			digOrTag = tag
 		}
 		t.Run("ManifestGet", func(t *testing.T) {
-			err = testAPIManifestGet(t, s, repo, digOrTag, se.manifest[dig])
+			_, err = testAPIManifestGet(t, s, repo, digOrTag, se.manifest[dig])
 		})
 		if err != nil {
 			return err
@@ -241,7 +390,7 @@ func testSampleEntryPull(t *testing.T, s *Server, se sampleEntry, repo, tag stri
 	}
 	for dig, be := range se.blob {
 		t.Run("BlobGet", func(t *testing.T) {
-			err = testAPIBlobGet(t, s, repo, dig, be)
+			_, err = testAPIBlobGet(t, s, repo, dig, be)
 		})
 		if err != nil {
 			return err
@@ -250,29 +399,48 @@ func testSampleEntryPull(t *testing.T, s *Server, se sampleEntry, repo, tag stri
 	return nil
 }
 
-func testAPIManifestGet(t *testing.T, s *Server, repo string, digOrTag string, manifest []byte) error {
+func testAPITagsList(t *testing.T, s *Server, repo string, body []byte) (*httptest.ResponseRecorder, error) {
+	tcgList := []testClientGen{
+		testClientRespStatus(http.StatusOK),
+	}
+	if body != nil {
+		tcgList = append(tcgList, testClientRespBody(body))
+	}
+	resp, err := testClientRun(t, s, "GET", "/v2/"+repo+"/tags/list", nil, tcgList...)
+	if err != nil {
+		if !errors.Is(err, errValidationFailed) {
+			t.Errorf("failed to send tag list: %v", err)
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+func testAPIManifestGet(t *testing.T, s *Server, repo string, digOrTag string, body []byte) (*httptest.ResponseRecorder, error) {
 	tcgList := []testClientGen{
 		testClientRespStatus(http.StatusOK),
 		testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 		testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 		testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
 		testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
-		testClientRespBody(manifest),
 	}
-	if mt := detectMediaType(manifest); mt != "" {
-		tcgList = append(tcgList, testClientRespHeader("Content-Type", mt))
+	if body != nil {
+		tcgList = append(tcgList, testClientRespBody(body))
+		if mt := detectMediaType(body); mt != "" {
+			tcgList = append(tcgList, testClientRespHeader("Content-Type", mt))
+		}
 	}
-	_, err := testClientRun(t, s, "GET", "/v2/"+repo+"/manifests/"+digOrTag, nil, tcgList...)
+	resp, err := testClientRun(t, s, "GET", "/v2/"+repo+"/manifests/"+digOrTag, nil, tcgList...)
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send manifest get: %v", err)
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return resp, nil
 }
 
-func testAPIManifestPut(t *testing.T, s *Server, repo string, digOrTag string, manifest []byte) error {
+func testAPIManifestPut(t *testing.T, s *Server, repo string, digOrTag string, manifest []byte) (*httptest.ResponseRecorder, error) {
 	tcgList := []testClientGen{
 		testClientRespStatus(http.StatusCreated),
 		testClientRespHeader("Location", ""),
@@ -280,35 +448,36 @@ func testAPIManifestPut(t *testing.T, s *Server, repo string, digOrTag string, m
 	if mt := detectMediaType(manifest); mt != "" {
 		tcgList = append(tcgList, testClientReqHeader("Content-Type", mt))
 	}
-	_, err := testClientRun(t, s, "PUT", "/v2/"+repo+"/manifests/"+digOrTag, manifest, tcgList...)
+	resp, err := testClientRun(t, s, "PUT", "/v2/"+repo+"/manifests/"+digOrTag, manifest, tcgList...)
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send manifest put: %v", err)
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return resp, nil
 }
 
-func testAPIBlobGet(t *testing.T, s *Server, repo string, dig digest.Digest, blob []byte) error {
-	_, err := testClientRun(t, s, "GET", "/v2/"+repo+"/blobs/"+dig.String(), nil,
-		testClientRespStatus(http.StatusOK),
-		testClientRespBody(blob),
-	)
+func testAPIBlobGet(t *testing.T, s *Server, repo string, dig digest.Digest, body []byte) (*httptest.ResponseRecorder, error) {
+	tcgList := []testClientGen{testClientRespStatus(http.StatusOK)}
+	if body != nil {
+		tcgList = append(tcgList, testClientRespBody(body))
+	}
+	resp, err := testClientRun(t, s, "GET", "/v2/"+repo+"/blobs/"+dig.String(), nil, tcgList...)
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send blob get: %v", err)
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return resp, nil
 }
 
-func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest, blob []byte) error {
+func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest, blob []byte) (*httptest.ResponseRecorder, error) {
 	u, err := url.Parse("/v2/" + repo + "/blobs/uploads/")
 	if err != nil {
 		t.Errorf("failed to parse blob post url: %v", err)
-		return err
+		return nil, err
 	}
 	resp, err := testClientRun(t, s, "POST", u.String(), nil,
 		testClientReqHeader("Content-Type", "application/octet-stream"),
@@ -318,23 +487,23 @@ func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest,
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send blob post: %v", err)
 		}
-		return err
+		return nil, err
 	}
 	loc := resp.Header().Get("Location")
 	if loc == "" {
 		t.Errorf("location header missing on blob POST")
-		return errValidationFailed
+		return nil, errValidationFailed
 	}
 	uLoc, err := url.Parse(loc)
 	if err != nil {
 		t.Errorf("failed to parse location header URL fragment %s: %v", loc, err)
-		return err
+		return nil, err
 	}
 	u = u.ResolveReference(uLoc)
 	q := u.Query()
 	q.Add("digest", dig.String())
 	u.RawQuery = q.Encode()
-	_, err = testClientRun(t, s, "PUT", u.String(), blob,
+	resp, err = testClientRun(t, s, "PUT", u.String(), blob,
 		testClientReqHeader("Content-Type", "application/octet-stream"),
 		testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(blob))),
 		testClientRespStatus(http.StatusCreated))
@@ -342,9 +511,27 @@ func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest,
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send blob put: %v", err)
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return resp, nil
+}
+
+func testAPIReferrersList(t *testing.T, s *Server, repo string, dig digest.Digest, body []byte) (*httptest.ResponseRecorder, error) {
+	tcgList := []testClientGen{
+		testClientRespStatus(http.StatusOK),
+		testClientRespHeader("Content-Type", types.MediaTypeOCI1ManifestList),
+	}
+	if body != nil {
+		tcgList = append(tcgList, testClientRespBody(body))
+	}
+	resp, err := testClientRun(t, s, "GET", "/v2/"+repo+"/referrers/"+dig.String(), nil, tcgList...)
+	if err != nil {
+		if !errors.Is(err, errValidationFailed) {
+			t.Errorf("failed to send referrers list: %v", err)
+		}
+		return nil, err
+	}
+	return resp, nil
 }
 
 type sampleData map[string]*sampleEntry
