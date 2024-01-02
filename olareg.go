@@ -193,7 +193,7 @@ func matchV2(pathEl []string, params ...string) ([]string, bool) {
 			// from current pos to num of path elements - remaining params
 			repoStr = strings.Join(pathEl[i:len(pathEl)-(len(params)-j-1)], "/")
 			// offset remaining path - remaining params - 1 (handle the later ++)
-			i += ((len(pathEl) - i) - (len(params) - j - 1) - 1)
+			i = len(pathEl) - (len(params) - j - 1) - 1
 			matches = append(matches, repoStr)
 		case "*": // match any single arg
 			matches = append(matches, pathEl[i])

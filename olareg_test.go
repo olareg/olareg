@@ -136,6 +136,36 @@ func TestServer(t *testing.T) {
 					},
 				},
 				{
+					name: "Path Traversal Attack",
+					fn: func(*testing.T, *Server) {
+						if !tcServer.existing {
+							return
+						}
+						resp, err := testClientRun(t, s, "GET", "/../../../v2/"+existingRepo+"/tags/list", nil,
+							testClientRespStatus(http.StatusOK),
+						)
+						if err != nil {
+							t.Errorf("failed to get tag with path traversal attack")
+							return
+						}
+
+						tl := types.TagList{}
+						b, err := io.ReadAll(resp.Body)
+						if err != nil {
+							t.Errorf("failed to read tag body: %v", err)
+							return
+						}
+						err = json.Unmarshal(b, &tl)
+						if err != nil {
+							t.Errorf("failed to parse tag body: %v", err)
+							return
+						}
+						if len(tl.Tags) < 1 || tl.Name != existingRepo {
+							t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
+						}
+					},
+				},
+				{
 					name: "Pull Existing Image and Referrers",
 					fn: func(t *testing.T, s *Server) {
 						if !tcServer.existing {
@@ -239,6 +269,89 @@ func TestServer(t *testing.T) {
 					t.Parallel()
 					tc.fn(t, s)
 				})
+			}
+		})
+	}
+}
+
+func TestMatchV2(t *testing.T) {
+	tt := []struct {
+		name        string
+		pathEl      []string
+		params      []string
+		expectMatch []string
+		expectOK    bool
+	}{
+		{
+			name:     "Mismatch v2",
+			pathEl:   []string{"v3", "repo", "manifests", "latest"},
+			params:   []string{"...", "manifests", "*"},
+			expectOK: false,
+		},
+		{
+			name:     "Mismatch string",
+			pathEl:   []string{"v2", "repo", "manifests", "latest"},
+			params:   []string{"...", "blobs", "*"},
+			expectOK: false,
+		},
+		{
+			name:     "Mismatch extra params",
+			pathEl:   []string{"v2", "repo", "manifests", "latest", "extra"},
+			params:   []string{"...", "manifests", "*"},
+			expectOK: false,
+		},
+		{
+			name:     "Mismatch short params",
+			pathEl:   []string{"v2", "repo", "manifests"},
+			params:   []string{"...", "manifests", "*"},
+			expectOK: false,
+		},
+		{
+			name:     "Mismatch empty repo",
+			pathEl:   []string{"v2", "manifests", "latest"},
+			params:   []string{"...", "manifests", "*"},
+			expectOK: false,
+		},
+		{
+			name:     "Invalid repo",
+			pathEl:   []string{"v2", "Repo", "manifests", "latest"},
+			params:   []string{"...", "manifests", "*"},
+			expectOK: false,
+		},
+		{
+			name:        "Single repo path",
+			pathEl:      []string{"v2", "repo", "manifests", "latest"},
+			params:      []string{"...", "manifests", "*"},
+			expectMatch: []string{"repo", "latest"},
+			expectOK:    true,
+		},
+		{
+			name:        "Multi repo path",
+			pathEl:      []string{"v2", "repo", "with", "sub", "path", "manifests", "latest"},
+			params:      []string{"...", "manifests", "*"},
+			expectMatch: []string{"repo/with/sub/path", "latest"},
+			expectOK:    true,
+		},
+	}
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			match, ok := matchV2(tc.pathEl, tc.params...)
+			if tc.expectOK != ok {
+				t.Errorf("unexpected OK: expected %t, received %t", tc.expectOK, ok)
+			}
+			if !tc.expectOK {
+				return
+			}
+			allMatch := len(tc.expectMatch) == len(match)
+			if allMatch {
+				for i, val := range tc.expectMatch {
+					if match[i] != val {
+						allMatch = false
+					}
+				}
+			}
+			if !allMatch {
+				t.Errorf("match did not match: expected %v, received %v", tc.expectMatch, match)
 			}
 		})
 	}
