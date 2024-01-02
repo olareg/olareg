@@ -47,8 +47,10 @@ func MediaTypeBase(orig string) string {
 // MediaTypeAccepts returns true when the descriptor is listed in the accept list.
 func MediaTypeAccepts(mt string, accepts []string) bool {
 	for _, a := range accepts {
-		if MediaTypeBase(a) == mt {
-			return true
+		for _, entry := range strings.Split(a, ",") {
+			if MediaTypeBase(entry) == mt {
+				return true
+			}
 		}
 	}
 	return false
