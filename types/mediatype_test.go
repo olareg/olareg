@@ -30,3 +30,46 @@ func TestMediaTypeBase(t *testing.T) {
 		})
 	}
 }
+
+func TestMediaTypeAccepts(t *testing.T) {
+	t.Parallel()
+	tt := []struct {
+		name    string
+		mt      string
+		accepts []string
+		expect  bool
+	}{
+		{
+			name:    "Single",
+			mt:      MediaTypeOCI1ManifestList,
+			accepts: []string{MediaTypeOCI1ManifestList},
+			expect:  true,
+		},
+		{
+			name:    "Missing",
+			mt:      MediaTypeOCI1Manifest,
+			accepts: []string{MediaTypeOCI1ManifestList},
+			expect:  false,
+		},
+		{
+			name:    "Multiple",
+			mt:      MediaTypeOCI1ManifestList,
+			accepts: []string{MediaTypeOCI1Manifest, MediaTypeOCI1ManifestList, MediaTypeDocker2Manifest, MediaTypeDocker2ManifestList},
+			expect:  true,
+		},
+		{
+			name:    "Comma separated",
+			mt:      MediaTypeOCI1ManifestList,
+			accepts: []string{"application/vnd.oci.image.manifest.v1+json; charset=utf-8, application/vnd.oci.image.index.v1+json; charset=utf-8"},
+			expect:  true,
+		},
+	}
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			result := MediaTypeAccepts(tc.mt, tc.accepts)
+			if tc.expect != result {
+				t.Errorf("invalid result: expected %t, received %t", tc.expect, result)
+			}
+		})
+	}
+}

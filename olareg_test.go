@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,6 +238,23 @@ func TestServer(t *testing.T) {
 						}
 						if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) < 2 {
 							t.Errorf("referrers response should be an index, schema 2, and at least 2 manifests: %v", rr)
+						}
+					},
+				},
+				{
+					name: "Pull with comma separated header",
+					fn: func(t *testing.T, s *Server) {
+						if !tcServer.existing {
+							return
+						}
+						tcgList := []testClientGen{
+							testClientRespStatus(http.StatusOK),
+							testClientReqHeader("Accept", strings.Join([]string{types.MediaTypeOCI1Manifest, types.MediaTypeOCI1ManifestList}, ", ")),
+							testClientReqHeader("Accept", strings.Join([]string{types.MediaTypeDocker2Manifest, types.MediaTypeDocker2ManifestList}, ", ")),
+						}
+						_, err := testClientRun(t, s, "GET", "/v2/"+existingRepo+"/manifests/"+existingTag, nil, tcgList...)
+						if err != nil {
+							t.Errorf("failed to get manifest: %v", err)
 						}
 					},
 				},
