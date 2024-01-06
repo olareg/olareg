@@ -49,7 +49,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		// if referrers is enabled, get the manifest to check for a subject
-		if boolDefault(s.conf.API.Referrer.Enabled, true) {
+		if *s.conf.API.Referrer.Enabled {
 			// wrap in a func to allow a return from errors without breaking the actual delete
 			err = func() error {
 				rdr, err := repo.BlobGet(desc.Digest)
@@ -272,7 +272,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				s.log.Debug("manifest blobs missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
 				return
 			}
-			if m.Subject != nil && m.Subject.Digest != "" && boolDefault(s.conf.API.Referrer.Enabled, true) {
+			if m.Subject != nil && m.Subject.Digest != "" && *s.conf.API.Referrer.Enabled {
 				subject = m.Subject.Digest
 				referrer = &types.Descriptor{
 					MediaType:    mt,
@@ -303,7 +303,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				s.log.Debug("child manifests missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
 				return
 			}
-			if m.Subject != nil && m.Subject.Digest != "" && boolDefault(s.conf.API.Referrer.Enabled, true) {
+			if m.Subject != nil && m.Subject.Digest != "" && *s.conf.API.Referrer.Enabled {
 				subject = m.Subject.Digest
 				referrer = &types.Descriptor{
 					MediaType:    mt,

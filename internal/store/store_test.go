@@ -55,40 +55,51 @@ func TestStore(t *testing.T) {
 	}
 	tt := []struct {
 		name         string
-		store        Store
+		conf         config.Config
 		testExisting bool
 	}{
 		{
 			name: "Mem",
-			store: NewMem(config.Config{
+			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
 				},
-			}),
+			},
 		},
 		{
 			name: "Mem with Dir",
-			store: NewMem(config.Config{
+			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
 					RootDir:   "../../testdata",
 				},
-			}),
+			},
 			testExisting: true,
 		},
 		{
 			name: "Dir",
-			store: NewDir(config.Config{
+			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreDir,
 					RootDir:   tempDir,
 				},
-			}),
+			},
 			testExisting: true,
 		},
 	}
 	for _, tc := range tt {
 		tc := tc
+		tc.conf.SetDefaults()
+		var s Store
+		switch tc.conf.Storage.StoreType {
+		case config.StoreDir:
+			s = NewDir(tc.conf)
+		case config.StoreMem:
+			s = NewMem(tc.conf)
+		default:
+			t.Errorf("unsupported store type: %d", tc.conf.Storage.StoreType)
+			return
+		}
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			t.Run("Existing", func(t *testing.T) {
@@ -97,7 +108,7 @@ func TestStore(t *testing.T) {
 				}
 				t.Parallel()
 				// query testrepo content
-				repo, err := tc.store.RepoGet(existingRepo)
+				repo, err := s.RepoGet(existingRepo)
 				if err != nil {
 					t.Errorf("failed to get repo %s: %v", existingRepo, err)
 					return
@@ -195,7 +206,7 @@ func TestStore(t *testing.T) {
 			t.Run("New", func(t *testing.T) {
 				t.Parallel()
 				// get new repo
-				repo, err := tc.store.RepoGet(newRepo)
+				repo, err := s.RepoGet(newRepo)
 				if err != nil {
 					t.Errorf("failed to get repo %s: %v", newRepo, err)
 					return

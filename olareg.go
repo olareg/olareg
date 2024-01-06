@@ -17,10 +17,6 @@ import (
 	"github.com/olareg/olareg/internal/store"
 )
 
-const (
-	manifestLimitDefault = 8388608 // 8MiB
-)
-
 var (
 	pathPart = `[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*`
 	rePath   = regexp.MustCompile(`^` + pathPart + `(?:\/` + pathPart + `)*$`)
@@ -32,19 +28,14 @@ func New(conf config.Config) *Server {
 		conf: conf,
 		log:  conf.Log,
 	}
+	s.conf.SetDefaults()
 	if s.log == nil {
 		s.log = slog.Null{}
 	}
-	if s.conf.API.Manifest.Limit <= 0 {
-		s.conf.API.Manifest.Limit = manifestLimitDefault
-	}
-	switch conf.Storage.StoreType {
+	switch s.conf.Storage.StoreType {
 	case config.StoreMem:
 		s.store = store.NewMem(s.conf, store.WithLog(s.log))
 	case config.StoreDir:
-		if s.conf.Storage.RootDir == "" {
-			s.conf.Storage.RootDir = "."
-		}
 		s.store = store.NewDir(s.conf, store.WithLog(s.log))
 	}
 	return s
@@ -107,10 +98,10 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			s.manifestGet(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
-		} else if req.Method == http.MethodPut && boolDefault(s.conf.API.PushEnabled, true) {
+		} else if req.Method == http.MethodPut && *s.conf.API.PushEnabled {
 			s.manifestPut(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
-		} else if req.Method == http.MethodDelete && boolDefault(s.conf.API.DeleteEnabled, true) {
+		} else if req.Method == http.MethodDelete && *s.conf.API.DeleteEnabled {
 			s.manifestDelete(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
 		} else {
@@ -122,11 +113,11 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			// handle blob get
 			s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
-		} else if req.Method == http.MethodDelete && boolDefault(s.conf.API.DeleteEnabled, true) && boolDefault(s.conf.API.Blob.DeleteEnabled, false) {
+		} else if req.Method == http.MethodDelete && *s.conf.API.DeleteEnabled && *s.conf.API.Blob.DeleteEnabled {
 			// handle blob delete
 			s.blobDelete(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
-		} else if matches[1] == "uploads" && req.Method == http.MethodPost && boolDefault(s.conf.API.PushEnabled, true) {
+		} else if matches[1] == "uploads" && req.Method == http.MethodPost && *s.conf.API.PushEnabled {
 			// handle blob post
 			s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
 			return
@@ -135,7 +126,7 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			resp.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok && boolDefault(s.conf.API.Referrer.Enabled, true) {
+	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok && *s.conf.API.Referrer.Enabled {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			// handle referrer get
 			s.referrerGet(matches[0], matches[1]).ServeHTTP(resp, req)
@@ -149,7 +140,7 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		// handle tag listing
 		s.tagList(matches[0]).ServeHTTP(resp, req)
 		return
-	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok && boolDefault(s.conf.API.PushEnabled, true) {
+	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok && *s.conf.API.PushEnabled {
 		// handle blob upload methods
 		if req.Method == http.MethodPatch {
 			s.blobUploadPatch(matches[0], matches[1]).ServeHTTP(resp, req)
@@ -221,11 +212,4 @@ func (s *Server) v2Ping(resp http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodHead {
 		_, _ = resp.Write([]byte("{}"))
 	}
-}
-
-func boolDefault(b *bool, def bool) bool {
-	if b != nil {
-		return *b
-	}
-	return def
 }

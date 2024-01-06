@@ -291,7 +291,7 @@ func (dr *dirRepo) indexLoad(force, locked bool) error {
 			Manifests:     []types.Descriptor{},
 			Annotations:   map[string]string{},
 		}
-		if boolDefault(dr.conf.API.Referrer.Enabled, true) {
+		if *dr.conf.API.Referrer.Enabled {
 			dr.index.Annotations[types.AnnotReferrerConvert] = "true"
 		}
 	}

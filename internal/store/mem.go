@@ -75,7 +75,7 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 		log:   m.log,
 		conf:  m.conf,
 	}
-	if boolDefault(m.conf.API.Referrer.Enabled, true) {
+	if *m.conf.API.Referrer.Enabled {
 		mr.index.Annotations[types.AnnotReferrerConvert] = "true"
 	}
 	if m.conf.Storage.RootDir != "" {
