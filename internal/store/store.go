@@ -107,7 +107,7 @@ func WithLog(log slog.Logger) Opts {
 func indexIngest(repo Repo, index *types.Index, conf config.Config, locked bool) (bool, error) {
 	mod := false
 	// error if referrer API not enabled and annotation indicates this is already converted, this repo should not writable
-	if !boolDefault(conf.API.Referrer.Enabled, true) && index.Annotations != nil && index.Annotations[types.AnnotReferrerConvert] == "true" {
+	if !*conf.API.Referrer.Enabled && index.Annotations != nil && index.Annotations[types.AnnotReferrerConvert] == "true" {
 		return mod, fmt.Errorf("index.json has referrers converted with the API disabled")
 	}
 	// ensure index has schema and media type
@@ -142,7 +142,7 @@ func indexIngest(repo Repo, index *types.Index, conf config.Config, locked bool)
 	}
 
 	// convert referrers
-	if boolDefault(conf.API.Referrer.Enabled, true) && (index.Annotations == nil || index.Annotations[types.AnnotReferrerConvert] != "true") {
+	if *conf.API.Referrer.Enabled && (index.Annotations == nil || index.Annotations[types.AnnotReferrerConvert] != "true") {
 		// for each fallback tag, validate it
 		addResp := map[string][]types.Descriptor{}
 		rmDesc := []types.Descriptor{}
@@ -350,11 +350,4 @@ func repoGetIndex(repo Repo, d types.Descriptor, locked bool) (types.Index, erro
 		return i, err
 	}
 	return i, nil
-}
-
-func boolDefault(b *bool, def bool) bool {
-	if b != nil {
-		return *b
-	}
-	return def
 }

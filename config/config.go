@@ -8,6 +8,10 @@ import (
 	"github.com/olareg/olareg/internal/slog"
 )
 
+const (
+	manifestLimitDefault = 8388608 // 8MiB
+)
+
 type Store int
 
 const (
@@ -57,6 +61,32 @@ type ConfigAPIBlob struct {
 
 type ConfigAPIReferrer struct {
 	Enabled *bool
+}
+
+func (c *Config) SetDefaults() {
+	t := true
+	f := false
+	if c.API.DeleteEnabled == nil {
+		c.API.DeleteEnabled = &t
+	}
+	if c.API.PushEnabled == nil {
+		c.API.PushEnabled = &t
+	}
+	if c.API.Blob.DeleteEnabled == nil {
+		c.API.Blob.DeleteEnabled = &f
+	}
+	if c.API.Referrer.Enabled == nil {
+		c.API.Referrer.Enabled = &t
+	}
+	if c.API.Manifest.Limit <= 0 {
+		c.API.Manifest.Limit = manifestLimitDefault
+	}
+	switch c.Storage.StoreType {
+	case StoreDir:
+		if c.Storage.RootDir == "" {
+			c.Storage.RootDir = "."
+		}
+	}
 }
 
 func (s Store) MarshalText() ([]byte, error) {
