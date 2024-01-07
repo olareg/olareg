@@ -131,6 +131,9 @@ func (mr *memRepo) IndexGet() (types.Index, error) {
 
 // IndexInsert adds a new entry to the index and writes the change to index.json.
 func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) error {
+	if *mr.conf.Storage.ReadOnly {
+		return types.ErrReadOnly
+	}
 	mr.mu.Lock()
 	mr.index.AddDesc(desc, opts...)
 	mr.mu.Unlock()
@@ -139,6 +142,9 @@ func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) er
 
 // IndexRemove removes an entry from the index and writes the change to index.json.
 func (mr *memRepo) IndexRemove(desc types.Descriptor) error {
+	if *mr.conf.Storage.ReadOnly {
+		return types.ErrReadOnly
+	}
 	mr.mu.Lock()
 	mr.index.RmDesc(desc)
 	mr.mu.Unlock()
@@ -180,6 +186,9 @@ func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 
 // BlobCreate is used to create a new blob.
 func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
+	if *mr.conf.Storage.ReadOnly {
+		return nil, types.ErrReadOnly
+	}
 	conf := blobConfig{
 		algo: digest.Canonical,
 	}
@@ -212,6 +221,9 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 
 // BlobDelete deletes an entry from the CAS.
 func (mr *memRepo) BlobDelete(d digest.Digest) error {
+	if *mr.conf.Storage.ReadOnly {
+		return types.ErrReadOnly
+	}
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
 	_, ok := mr.blobs[d]

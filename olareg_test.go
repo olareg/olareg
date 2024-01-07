@@ -41,10 +41,12 @@ func TestServer(t *testing.T) {
 		t.Errorf("failed to copy %s to tempDir: %v", existingRepo, err)
 		return
 	}
+	boolT := true
 	ttServer := []struct {
 		name     string
 		conf     config.Config
 		existing bool
+		readOnly bool
 	}{
 		{
 			name: "Mem",
@@ -73,6 +75,18 @@ func TestServer(t *testing.T) {
 				},
 			},
 			existing: true,
+		},
+		{
+			name: "Dir ReadOnly",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   tempDir,
+					ReadOnly:  &boolT,
+				},
+			},
+			existing: true,
+			readOnly: true,
 		},
 	}
 	for _, tcServer := range ttServer {
@@ -261,6 +275,10 @@ func TestServer(t *testing.T) {
 				{
 					name: "AMD64",
 					fn: func(t *testing.T, s *Server) {
+						if tcServer.readOnly {
+							t.Log("skipped read only")
+							return
+						}
 						if err := testSampleEntryPush(t, s, *sd["image-amd64"], "push-amd64", "v1"); err != nil {
 							return
 						}
@@ -270,10 +288,46 @@ func TestServer(t *testing.T) {
 				{
 					name: "Index",
 					fn: func(t *testing.T, s *Server) {
+						if tcServer.readOnly {
+							t.Log("skipped read only")
+							return
+						}
 						if err := testSampleEntryPush(t, s, *sd["index"], "index", "index"); err != nil {
 							return
 						}
 						_ = testSampleEntryPull(t, s, *sd["index"], "index", "index")
+					},
+				},
+				{
+					name: "Read Only Push",
+					fn: func(t *testing.T, s *Server) {
+						if !tcServer.readOnly {
+							t.Log("skipped read write")
+							return
+						}
+						// blob post should be forbidden
+						u, err := url.Parse("/v2/read-write/blobs/uploads/")
+						if err != nil {
+							t.Errorf("failed to parse blob post url: %v", err)
+							return
+						}
+						_, err = testClientRun(t, s, "POST", u.String(), nil,
+							testClientReqHeader("Content-Type", "application/octet-stream"),
+							testClientRespStatus(http.StatusForbidden))
+						if err != nil && !errors.Is(err, errValidationFailed) {
+							t.Errorf("failed to test blob post: %v", err)
+						}
+						// manifest post should be forbidden
+						tcgList := []testClientGen{
+							testClientRespStatus(http.StatusForbidden),
+						}
+						if mt := detectMediaType(sd["index"].manifest[sd["index"].manifestList[0]]); mt != "" {
+							tcgList = append(tcgList, testClientReqHeader("Content-Type", mt))
+						}
+						_, err = testClientRun(t, s, "PUT", "/v2/read-write/manifests/latest", sd["index"].manifest[sd["index"].manifestList[0]], tcgList...)
+						if err != nil && !errors.Is(err, errValidationFailed) {
+							t.Errorf("failed to send manifest put: %v", err)
+						}
 					},
 				},
 				// TODO: test tag listing before and after pushing manifest
@@ -481,6 +535,7 @@ func testClientRespHeader(k, v string) testClientGen {
 }
 
 func testSampleEntryPush(t *testing.T, s *Server, se sampleEntry, repo, tag string) error {
+	t.Helper()
 	var err error
 	for dig, be := range se.blob {
 		t.Run("BlobPostPut", func(t *testing.T) {
@@ -506,6 +561,7 @@ func testSampleEntryPush(t *testing.T, s *Server, se sampleEntry, repo, tag stri
 }
 
 func testSampleEntryPull(t *testing.T, s *Server, se sampleEntry, repo, tag string) error {
+	t.Helper()
 	var err error
 	for i, dig := range se.manifestList {
 		digOrTag := dig.String()
@@ -531,6 +587,7 @@ func testSampleEntryPull(t *testing.T, s *Server, se sampleEntry, repo, tag stri
 }
 
 func testAPITagsList(t *testing.T, s *Server, repo string, body []byte) (*httptest.ResponseRecorder, error) {
+	t.Helper()
 	tcgList := []testClientGen{
 		testClientRespStatus(http.StatusOK),
 	}
@@ -548,6 +605,7 @@ func testAPITagsList(t *testing.T, s *Server, repo string, body []byte) (*httpte
 }
 
 func testAPIManifestGet(t *testing.T, s *Server, repo string, digOrTag string, body []byte) (*httptest.ResponseRecorder, error) {
+	t.Helper()
 	tcgList := []testClientGen{
 		testClientRespStatus(http.StatusOK),
 		testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
@@ -572,6 +630,7 @@ func testAPIManifestGet(t *testing.T, s *Server, repo string, digOrTag string, b
 }
 
 func testAPIManifestPut(t *testing.T, s *Server, repo string, digOrTag string, manifest []byte) (*httptest.ResponseRecorder, error) {
+	t.Helper()
 	tcgList := []testClientGen{
 		testClientRespStatus(http.StatusCreated),
 		testClientRespHeader("Location", ""),
@@ -590,6 +649,7 @@ func testAPIManifestPut(t *testing.T, s *Server, repo string, digOrTag string, m
 }
 
 func testAPIBlobGet(t *testing.T, s *Server, repo string, dig digest.Digest, body []byte) (*httptest.ResponseRecorder, error) {
+	t.Helper()
 	tcgList := []testClientGen{testClientRespStatus(http.StatusOK)}
 	if body != nil {
 		tcgList = append(tcgList, testClientRespBody(body))
@@ -605,6 +665,7 @@ func testAPIBlobGet(t *testing.T, s *Server, repo string, dig digest.Digest, bod
 }
 
 func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest, blob []byte) (*httptest.ResponseRecorder, error) {
+	t.Helper()
 	u, err := url.Parse("/v2/" + repo + "/blobs/uploads/")
 	if err != nil {
 		t.Errorf("failed to parse blob post url: %v", err)
@@ -648,6 +709,7 @@ func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest,
 }
 
 func testAPIReferrersList(t *testing.T, s *Server, repo string, dig digest.Digest, body []byte) (*httptest.ResponseRecorder, error) {
+	t.Helper()
 	tcgList := []testClientGen{
 		testClientRespStatus(http.StatusOK),
 		testClientRespHeader("Content-Type", types.MediaTypeOCI1ManifestList),

@@ -41,6 +41,7 @@ type ConfigHTTP struct {
 type ConfigStorage struct {
 	StoreType Store
 	RootDir   string
+	ReadOnly  *bool
 }
 
 type ConfigAPI struct {
@@ -77,6 +78,9 @@ func (c *Config) SetDefaults() {
 	}
 	if c.API.Referrer.Enabled == nil {
 		c.API.Referrer.Enabled = &t
+	}
+	if c.Storage.ReadOnly == nil {
+		c.Storage.ReadOnly = &f
 	}
 	if c.API.Manifest.Limit <= 0 {
 		c.API.Manifest.Limit = manifestLimitDefault

@@ -21,6 +21,7 @@ type serveOpts struct {
 	tlsKey      string
 	storeType   string
 	storeDir    string
+	storeRO     bool
 	apiPush     bool
 	apiDelete   bool
 	apiBlobDel  bool
@@ -43,6 +44,7 @@ func newServeCmd(root *rootOpts) *cobra.Command {
 	newCmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "TLS key for HTTPS")
 	newCmd.Flags().StringVar(&opts.storeDir, "dir", ".", "root directory for storage")
 	newCmd.Flags().StringVar(&opts.storeType, "store-type", "dir", "storage type (dir, mem)")
+	newCmd.Flags().BoolVar(&opts.storeRO, "store-ro", false, "restrict storage as read-only")
 	newCmd.Flags().BoolVar(&opts.apiPush, "api-push", true, "enable push APIs")
 	newCmd.Flags().BoolVar(&opts.apiDelete, "api-delete", true, "enable delete APIs")
 	newCmd.Flags().BoolVar(&opts.apiBlobDel, "api-blob-delete", false, "enable blob delete API")
@@ -65,6 +67,7 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 		Storage: config.ConfigStorage{
 			StoreType: storeType,
 			RootDir:   opts.storeDir,
+			ReadOnly:  &opts.storeRO,
 		},
 		Log: opts.root.log,
 		API: config.ConfigAPI{

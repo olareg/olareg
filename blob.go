@@ -66,6 +66,11 @@ func (s *Server) blobGet(repoStr, arg string) http.HandlerFunc {
 
 func (s *Server) blobDelete(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if *s.conf.Storage.ReadOnly {
+			w.WriteHeader(http.StatusForbidden)
+			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
+			return
+		}
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
@@ -143,6 +148,11 @@ func (s *Server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 
 func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if *s.conf.Storage.ReadOnly {
+			w.WriteHeader(http.StatusForbidden)
+			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
+			return
+		}
 		// start a new upload session with the backend storage and track as current upload
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {
