@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 
@@ -15,6 +16,7 @@ import (
 
 func TestStore(t *testing.T) {
 	t.Parallel()
+	start := time.Now()
 	existingRepo := "testrepo"
 	existingTag := "v1"
 	newRepo := "new-repo"
@@ -138,6 +140,12 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to close blob reader: %v", err)
 				}
+				m, err := repo.blobMeta(desc.Digest, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on blob")
+				} else if m.mod.Equal(time.Time{}) {
+					t.Errorf("metadata mod time is not set")
+				}
 				// delete a manifest
 				err = repo.BlobDelete(desc.Digest)
 				if err != nil {
@@ -148,6 +156,10 @@ func TestStore(t *testing.T) {
 				if err == nil {
 					t.Errorf("blob get succeeded after delete")
 					_ = rdr.Close()
+				}
+				_, err = repo.blobMeta(desc.Digest, false)
+				if err == nil {
+					t.Errorf("get metadata on deleted blob did not fail")
 				}
 				// delete index entry
 				err = repo.IndexRemove(desc)
@@ -184,6 +196,12 @@ func TestStore(t *testing.T) {
 				err = rdr.Close()
 				if err != nil {
 					t.Errorf("blob close failed after create: %v", err)
+				}
+				m, err = repo.blobMeta(desc.Digest, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on recreated blob")
+				} else if m.mod.Equal(time.Time{}) {
+					t.Errorf("metadata mod time is not set")
 				}
 				// add index entry
 				desc.Annotations = map[string]string{
@@ -225,6 +243,10 @@ func TestStore(t *testing.T) {
 					t.Errorf("blob get on empty repo did not fail")
 					_ = rdr.Close()
 				}
+				_, err = repo.blobMeta(newBlobDigest, false)
+				if err == nil {
+					t.Errorf("blobMeta on empty repo did not fail")
+				}
 				// push blobs
 				bc, err := repo.BlobCreate(BlobWithDigest(newBlobDigest))
 				if err != nil {
@@ -245,6 +267,10 @@ func TestStore(t *testing.T) {
 				err = bc.Verify(newManifestDigest)
 				if err == nil {
 					t.Errorf("blob did not fail when verifying with manifest digest")
+				}
+				_, err = repo.blobMeta(newManifestDigest, false)
+				if err == nil {
+					t.Errorf("blobMeta on manifest after pushing blob did not fail")
 				}
 				bc, err = repo.BlobCreate()
 				if err != nil {
@@ -278,6 +304,13 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to close blob: %v", err)
 				}
+				m, err := repo.blobMeta(newBlobDigest, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+				if m.mod.Before(start) {
+					t.Errorf("new blob mod time is before test start")
+				}
 				rdr, err = repo.BlobGet(newManifestDigest)
 				if err != nil {
 					t.Errorf("failed to get manifest: %v", err)
@@ -292,6 +325,13 @@ func TestStore(t *testing.T) {
 				err = rdr.Close()
 				if err != nil {
 					t.Errorf("failed to close manifest: %v", err)
+				}
+				m, err = repo.blobMeta(newManifestDigest, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new manifest: %v", err)
+				}
+				if m.mod.Before(start) {
+					t.Errorf("new manifest mod time is before test start")
 				}
 				// add index entry
 				newDesc := types.Descriptor{

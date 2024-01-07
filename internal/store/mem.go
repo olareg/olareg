@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 
@@ -28,10 +29,15 @@ type mem struct {
 type memRepo struct {
 	mu    sync.Mutex
 	index types.Index
-	blobs map[digest.Digest][]byte
+	blobs map[digest.Digest]*memRepoBlob
 	log   slog.Logger
 	path  string
 	conf  config.Config
+}
+
+type memRepoBlob struct {
+	b []byte
+	m blobMeta
 }
 
 type memRepoUpload struct {
@@ -71,7 +77,7 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 			Manifests:     []types.Descriptor{},
 			Annotations:   map[string]string{},
 		},
-		blobs: map[digest.Digest][]byte{},
+		blobs: map[digest.Digest]*memRepoBlob{},
 		log:   m.log,
 		conf:  m.conf,
 	}
@@ -167,7 +173,7 @@ func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 		if b == nil {
 			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
 		}
-		return types.BytesReadCloser{Reader: bytes.NewReader(b)}, nil
+		return types.BytesReadCloser{Reader: bytes.NewReader(b.b)}, nil
 	}
 	// else try to load from backing dir
 	if mr.path != "" {
@@ -182,6 +188,37 @@ func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 		return fh, nil
 	}
 	return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
+}
+
+// blobMeta returns metadata on a blob.
+func (mr *memRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
+	if !locked {
+		mr.mu.Lock()
+		defer mr.mu.Unlock()
+	}
+	m := blobMeta{}
+	b, ok := mr.blobs[d]
+	if ok {
+		// when there is a directory backing, nil indicates an explicit delete or blob doesn't exist
+		if b == nil {
+			return m, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
+		}
+		return b.m, nil
+	}
+	// else try to load from backing dir
+	if mr.path != "" {
+		fi, err := os.Stat(filepath.Join(mr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
+		if err != nil {
+			if os.IsNotExist(err) {
+				mr.blobs[d] = nil // explicitly mark as not found to skip future attempts
+				return m, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
+			}
+			return m, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
+		}
+		m.mod = fi.ModTime()
+		return m, nil
+	}
+	return m, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
 }
 
 // BlobCreate is used to create a new blob.
@@ -260,7 +297,13 @@ func (mru *memRepoUpload) Close() error {
 	}
 	// relocate []byte to in memory blob store
 	mru.mr.mu.Lock()
-	mru.mr.blobs[mru.d.Digest()] = mru.buffer.Bytes()
+	mru.mr.blobs[mru.d.Digest()] = &memRepoBlob{
+		b: mru.buffer.Bytes(),
+		m: blobMeta{
+			mod: time.Now(),
+		},
+	}
+
 	mru.mr.mu.Unlock()
 	return nil
 }

@@ -156,6 +156,23 @@ func (dr *dirRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 	return fh, nil
 }
 
+// blobMeta returns metadata on a blob.
+func (dr *dirRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
+	m := blobMeta{}
+	if !dr.exists {
+		return m, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
+	}
+	fi, err := os.Stat(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return m, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
+		}
+		return m, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
+	}
+	m.mod = fi.ModTime()
+	return m, nil
+}
+
 // BlobCreate is used to create a new blob.
 func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 	if *dr.conf.Storage.ReadOnly {

@@ -52,6 +52,8 @@ type Repo interface {
 
 	// blobGet is an internal method for accessing blobs from other store methods.
 	blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error)
+	// blobMeta returns metadata on a blob.
+	blobMeta(d digest.Digest, locked bool) (blobMeta, error)
 }
 
 type BlobOpt func(*blobConfig)
@@ -86,6 +88,11 @@ type BlobCreator interface {
 	Digest() digest.Digest
 	// Verify ensures a digest matches the content.
 	Verify(digest.Digest) error
+}
+
+// blobMeta includes metadata available for blobs.
+type blobMeta struct {
+	mod time.Time
 }
 
 // Opts includes options for the directory store.
