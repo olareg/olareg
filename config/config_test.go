@@ -6,7 +6,7 @@ func TestSetDefaults(t *testing.T) {
 	c := Config{Storage: ConfigStorage{StoreType: StoreDir}}
 	c.SetDefaults()
 	if c.API.DeleteEnabled == nil || c.API.PushEnabled == nil || c.API.Blob.DeleteEnabled == nil ||
-		c.API.Referrer.Enabled == nil {
+		c.API.Referrer.Enabled == nil || c.Storage.ReadOnly == nil {
 		t.Errorf("bool default values should not be nil")
 	}
 	if c.API.Manifest.Limit == 0 {

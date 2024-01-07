@@ -115,6 +115,9 @@ func (dr *dirRepo) IndexGet() (types.Index, error) {
 
 // IndexInsert adds a new entry to the index and writes the change to index.json.
 func (dr *dirRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) error {
+	if *dr.conf.Storage.ReadOnly {
+		return types.ErrReadOnly
+	}
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
 	_ = dr.indexLoad(false, true)
@@ -124,6 +127,9 @@ func (dr *dirRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) er
 
 // IndexRemove removes an entry from the index and writes the change to index.json.
 func (dr *dirRepo) IndexRemove(desc types.Descriptor) error {
+	if *dr.conf.Storage.ReadOnly {
+		return types.ErrReadOnly
+	}
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
 	_ = dr.indexLoad(false, true)
@@ -152,6 +158,9 @@ func (dr *dirRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 
 // BlobCreate is used to create a new blob.
 func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
+	if *dr.conf.Storage.ReadOnly {
+		return nil, types.ErrReadOnly
+	}
 	conf := blobConfig{
 		algo: digest.Canonical,
 	}
@@ -204,6 +213,9 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 
 // BlobDelete deletes an entry from the CAS.
 func (dr *dirRepo) BlobDelete(d digest.Digest) error {
+	if *dr.conf.Storage.ReadOnly {
+		return types.ErrReadOnly
+	}
 	if !dr.exists {
 		return fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
@@ -325,7 +337,7 @@ func (dr *dirRepo) indexLoad(force, locked bool) error {
 	if err != nil {
 		return err
 	}
-	if mod {
+	if mod && !*dr.conf.Storage.ReadOnly {
 		err = dr.indexSave(locked)
 		if err != nil {
 			return err
@@ -335,6 +347,9 @@ func (dr *dirRepo) indexLoad(force, locked bool) error {
 }
 
 func (dr *dirRepo) indexSave(locked bool) error {
+	if *dr.conf.Storage.ReadOnly {
+		return types.ErrReadOnly
+	}
 	if !locked {
 		dr.mu.Lock()
 		defer dr.mu.Unlock()
