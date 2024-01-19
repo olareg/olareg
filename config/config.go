@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/olareg/olareg/internal/slog"
 )
@@ -26,9 +27,7 @@ type Config struct {
 	Storage ConfigStorage
 	API     ConfigAPI
 	Log     slog.Logger
-	// TODO: GC policy, delete untagged? timeouts for partial blobs?
 	// TODO: proxy settings, pull only, or push+pull cache
-	// TODO: memory option to load from disk
 	// TODO: auth options (basic, bearer)
 }
 
@@ -40,8 +39,18 @@ type ConfigHTTP struct {
 
 type ConfigStorage struct {
 	StoreType Store
-	RootDir   string
-	ReadOnly  *bool
+	RootDir   string   // root directory for filesystem backed storage
+	ReadOnly  *bool    // read only disables all writes to the backing filesystem
+	GC        ConfigGC // garbage collection policy
+}
+
+type ConfigGC struct {
+	Frequency         time.Duration // frequency to run garbage collection, disable gc with a negative value
+	GracePeriod       time.Duration // time to preserve recently pushed manifests and blobs, disable with a negative value
+	Untagged          *bool         // delete untagged manifests
+	EmptyRepo         *bool         // delete empty repo
+	ReferrersDangling *bool         // delete referrers when manifest does not exist
+	ReferrersWithSubj *bool         // delete referrers response when subject manifest is deleted
 }
 
 type ConfigAPI struct {
@@ -65,32 +74,38 @@ type ConfigAPIReferrer struct {
 }
 
 func (c *Config) SetDefaults() {
-	t := true
-	f := false
-	if c.API.DeleteEnabled == nil {
-		c.API.DeleteEnabled = &t
-	}
-	if c.API.PushEnabled == nil {
-		c.API.PushEnabled = &t
-	}
-	if c.API.Blob.DeleteEnabled == nil {
-		c.API.Blob.DeleteEnabled = &f
-	}
-	if c.API.Referrer.Enabled == nil {
-		c.API.Referrer.Enabled = &t
-	}
-	if c.Storage.ReadOnly == nil {
-		c.Storage.ReadOnly = &f
-	}
+	c.API.DeleteEnabled = boolDefault(c.API.DeleteEnabled, true)
+	c.API.PushEnabled = boolDefault(c.API.PushEnabled, true)
+	c.API.Blob.DeleteEnabled = boolDefault(c.API.Blob.DeleteEnabled, false)
+	c.API.Referrer.Enabled = boolDefault(c.API.Referrer.Enabled, true)
 	if c.API.Manifest.Limit <= 0 {
 		c.API.Manifest.Limit = manifestLimitDefault
 	}
+
+	c.Storage.ReadOnly = boolDefault(c.Storage.ReadOnly, false)
 	switch c.Storage.StoreType {
 	case StoreDir:
 		if c.Storage.RootDir == "" {
 			c.Storage.RootDir = "."
 		}
 	}
+	if c.Storage.GC.Frequency == 0 {
+		c.Storage.GC.Frequency = time.Minute * 15
+	}
+	if c.Storage.GC.GracePeriod == 0 {
+		c.Storage.GC.GracePeriod = time.Hour
+	}
+	c.Storage.GC.Untagged = boolDefault(c.Storage.GC.Untagged, false)
+	c.Storage.GC.EmptyRepo = boolDefault(c.Storage.GC.EmptyRepo, true)
+	c.Storage.GC.ReferrersDangling = boolDefault(c.Storage.GC.ReferrersDangling, false)
+	c.Storage.GC.ReferrersWithSubj = boolDefault(c.Storage.GC.ReferrersWithSubj, true)
+}
+
+func boolDefault(cur *bool, def bool) *bool {
+	if cur != nil {
+		return cur
+	}
+	return &def
 }
 
 func (s Store) MarshalText() ([]byte, error) {

@@ -54,6 +54,8 @@ type Repo interface {
 	blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error)
 	// blobMeta returns metadata on a blob.
 	blobMeta(d digest.Digest, locked bool) (blobMeta, error)
+	// gc runs the garbage collect
+	gc() error
 }
 
 type BlobOpt func(*blobConfig)

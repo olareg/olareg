@@ -397,6 +397,11 @@ func (dr *dirRepo) indexSave(locked bool) error {
 	return nil
 }
 
+// gc runs the garbage collect
+func (dr *dirRepo) gc() error {
+	return fmt.Errorf("not implemented")
+}
+
 // Write is used to push content into the blob.
 func (dru *dirRepoUpload) Write(p []byte) (int, error) {
 	if dru.w == nil {
