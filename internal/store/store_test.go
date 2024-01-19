@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -417,5 +418,552 @@ func TestStore(t *testing.T) {
 			})
 		})
 	}
+}
 
+func TestGarbageCollect(t *testing.T) {
+	var err error
+	// TODO: track description of each blob for error messages
+	// create test data to push
+	blobList := [][]byte{}
+	descList := []types.Descriptor{}
+	childList := []types.Descriptor{}
+	// - dangling blob
+	dataBlob := []byte("dangling blob")
+	digBlob := digest.Canonical.FromBytes(dataBlob)
+	blobList = append(blobList, dataBlob)
+	// - images
+	dataImageConf := []byte(`{}`)
+	digImageConf := digest.Canonical.FromBytes(dataImageConf)
+	blobList = append(blobList, dataImageConf)
+	imageCount := 4 // 2 index entries, tagged, and untagged
+	const (
+		imageChild1   = 0
+		imageChild2   = 1
+		imageTagged   = 2
+		imageUntagged = 3
+	)
+	dataImageLayer := make([][]byte, imageCount)
+	digImageLayer := make([]digest.Digest, imageCount)
+	dataImage := make([][]byte, imageCount)
+	digImage := make([]digest.Digest, imageCount)
+	for i := 0; i < imageCount; i++ {
+		dataImageLayer[i] = []byte(fmt.Sprintf("layer for image %d", i))
+		digImageLayer[i] = digest.Canonical.FromBytes(dataImageLayer[i])
+		dataImageMan := types.Manifest{
+			SchemaVersion: 2,
+			MediaType:     types.MediaTypeOCI1Manifest,
+			Config: types.Descriptor{
+				MediaType: types.MediaTypeOCI1ImageConfig,
+				Digest:    digImageConf,
+				Size:      int64(len(dataImageConf)),
+			},
+			Layers: []types.Descriptor{
+				{
+					MediaType: types.MediaTypeOCI1LayerGzip,
+					Digest:    digImageLayer[i],
+					Size:      int64(len(dataImageLayer[i])),
+				},
+			},
+		}
+		dataImage[i], err = json.Marshal(dataImageMan)
+		if err != nil {
+			t.Fatalf("failed to marshal image manifest: %v", err)
+		}
+		digImage[i] = digest.Canonical.FromBytes(dataImage[i])
+	}
+	blobList = append(blobList, dataImageLayer...)
+	blobList = append(blobList, dataImage...)
+	childList = append(childList,
+		types.Descriptor{
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digImage[imageChild1],
+			Size:      int64(len(dataImage[imageChild1])),
+		},
+		types.Descriptor{
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digImage[imageChild2],
+			Size:      int64(len(dataImage[imageChild2])),
+		},
+	)
+	descList = append(descList,
+		types.Descriptor{
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digImage[imageTagged],
+			Size:      int64(len(dataImage[imageTagged])),
+			Annotations: map[string]string{
+				types.AnnotRefName: "image-2",
+			},
+		},
+		types.Descriptor{
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digImage[imageUntagged],
+			Size:      int64(len(dataImage[imageUntagged])),
+		},
+	)
+	// - index of first two images
+	dataIndexMan := types.Index{
+		SchemaVersion: 2,
+		MediaType:     types.MediaTypeOCI1ManifestList,
+		Manifests: []types.Descriptor{
+			{
+				MediaType: types.MediaTypeOCI1Manifest,
+				Digest:    digImage[0],
+				Size:      int64(len(dataImage[0])),
+			},
+			{
+				MediaType: types.MediaTypeOCI1Manifest,
+				Digest:    digImage[1],
+				Size:      int64(len(dataImage[1])),
+			},
+		},
+	}
+	dataIndex, err := json.Marshal(dataIndexMan)
+	if err != nil {
+		t.Fatalf("failed to marshal index manifest: %v", err)
+	}
+	digIndex := digest.Canonical.FromBytes(dataIndex)
+	blobList = append(blobList, dataIndex)
+	descList = append(descList,
+		types.Descriptor{
+			MediaType: types.MediaTypeOCI1ManifestList,
+			Digest:    digIndex,
+			Size:      int64(len(dataIndex)),
+			Annotations: map[string]string{
+				types.AnnotRefName: "index-0",
+			},
+		},
+	)
+	// - referrers to various digests
+	digUnknown := digest.Canonical.FromString("unknown manifest digest")
+	artifactType := "application/vnd.example.test"
+	subjectList := map[digest.Digest][]types.Descriptor{}
+	referrerCount := 7
+	const (
+		referrerToChild1   = 0
+		referrerToChild2   = 1
+		referrerToTagged   = 2
+		referrerToUntagged = 3
+		referrerToIndex    = 4
+		referrerToDangling = 5
+		referrerToPruned   = 6
+	)
+	digReferrerLayer := make([]digest.Digest, referrerCount)
+	digReferrer := make([]digest.Digest, referrerCount)
+	subjReferrer := []types.Descriptor{
+		referrerToChild1: {
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digImage[imageChild1],
+			Size:      int64(len(dataImage[imageChild1])),
+		},
+		referrerToChild2: {
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digImage[imageChild2],
+			Size:      int64(len(dataImage[imageChild2])),
+		},
+		referrerToTagged: {
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digImage[imageTagged],
+			Size:      int64(len(dataImage[imageTagged])),
+		},
+		referrerToUntagged: {
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digImage[imageUntagged],
+			Size:      int64(len(dataImage[imageUntagged])),
+		},
+		referrerToIndex: {
+			MediaType: types.MediaTypeOCI1ManifestList,
+			Digest:    digIndex,
+			Size:      int64(len(dataIndex)),
+		},
+		referrerToDangling: {
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digUnknown,
+			Size:      42,
+		},
+		referrerToPruned: {
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    digBlob,
+			Size:      int64(len(dataBlob)),
+		},
+	}
+	for i, subj := range subjReferrer {
+		dataLayer := []byte(fmt.Sprintf("layer for referrer %d", i))
+		digLayer := digest.Canonical.FromBytes(dataLayer)
+		dataMan := types.Manifest{
+			SchemaVersion: 2,
+			MediaType:     types.MediaTypeOCI1Manifest,
+			ArtifactType:  artifactType,
+			Config: types.Descriptor{
+				MediaType: types.MediaTypeOCI1ImageConfig,
+				Digest:    digImageConf,
+				Size:      int64(len(dataImageConf)),
+			},
+			Layers: []types.Descriptor{
+				{
+					MediaType: types.MediaTypeOCI1LayerGzip,
+					Digest:    digLayer,
+					Size:      int64(len(dataLayer)),
+				},
+			},
+			Subject: &subj,
+		}
+		data, err := json.Marshal(dataMan)
+		if err != nil {
+			t.Fatalf("failed to marshal referrer: %v", err)
+		}
+		dig := digest.Canonical.FromBytes(data)
+		digReferrerLayer[i] = digLayer
+		digReferrer[i] = dig
+		blobList = append(blobList, dataLayer, data)
+		childList = append(childList, types.Descriptor{
+			MediaType: types.MediaTypeOCI1Manifest,
+			Digest:    dig,
+			Size:      int64(len(data)),
+		})
+		subjectList[subj.Digest] = append(subjectList[subj.Digest], types.Descriptor{
+			MediaType:    types.MediaTypeOCI1Manifest,
+			Digest:       dig,
+			Size:         int64(len(data)),
+			ArtifactType: artifactType,
+		})
+	}
+	// - circular index / referrer
+	dataCircularMan := types.Index{
+		SchemaVersion: 2,
+		MediaType:     types.MediaTypeOCI1ManifestList,
+		ArtifactType:  artifactType,
+		Manifests: []types.Descriptor{
+			{
+				MediaType: types.MediaTypeOCI1ManifestList,
+				Digest:    digIndex,
+				Size:      int64(len(dataIndex)),
+			},
+		},
+		Subject: &types.Descriptor{
+			MediaType: types.MediaTypeOCI1ManifestList,
+			Digest:    digIndex,
+			Size:      int64(len(dataIndex)),
+		},
+	}
+	dataCircular, err := json.Marshal(dataCircularMan)
+	if err != nil {
+		t.Fatalf("failed to marshal index manifest: %v", err)
+	}
+	digCircular := digest.Canonical.FromBytes(dataCircular)
+	blobList = append(blobList, dataCircular)
+	childList = append(childList, types.Descriptor{
+		MediaType: types.MediaTypeOCI1ManifestList,
+		Digest:    digCircular,
+		Size:      int64(len(dataCircular)),
+	})
+	subjectList[digIndex] = append(subjectList[digIndex], types.Descriptor{
+		MediaType:    types.MediaTypeOCI1ManifestList,
+		Digest:       digCircular,
+		Size:         int64(len(dataCircular)),
+		ArtifactType: artifactType,
+	})
+	// referrer responses
+	for subj, ml := range subjectList {
+		respMan := types.Index{
+			SchemaVersion: 2,
+			MediaType:     types.MediaTypeOCI1ManifestList,
+			Manifests:     ml,
+		}
+		resp, err := json.Marshal(respMan)
+		if err != nil {
+			t.Fatalf("failed to marshal referrer response: %v", err)
+		}
+		dig := digest.Canonical.FromBytes(resp)
+		blobList = append(blobList, resp)
+		descList = append(descList, types.Descriptor{
+			MediaType: types.MediaTypeOCI1ManifestList,
+			Digest:    dig,
+			Size:      int64(len(resp)),
+			Annotations: map[string]string{
+				types.AnnotReferrerSubject: subj.String(),
+			},
+		})
+	}
+	// create stores, with different GC policies, and expected blobs to exist or be deleted
+	boolT := true
+	boolF := false
+	tt := []struct {
+		name        string
+		conf        config.Config
+		expectExist []digest.Digest
+		expectMiss  []digest.Digest
+	}{
+		{
+			name: "Mem Untagged Dangling",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolF,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+			},
+		},
+		{
+			name: "Mem Untagged Dangling with Subj",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+		},
+		{
+			name: "Mem Tagged Dangling with Subj",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+		},
+		{
+			name: "Mem Tagged with Subj",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolT,
+						ReferrersWithSubj: &boolF,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+		},
+		{
+			name: "Mem Tagged",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolT,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+		},
+		{
+			name: "Mem Grace Period",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Hour,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolT,
+						ReferrersWithSubj: &boolF,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digCircular,
+				digBlob,
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+			expectMiss: []digest.Digest{},
+		},
+		// TODO: add more tests with other GC conf settings
+	}
+	for _, tc := range tt {
+		tc := tc
+		tc.conf.SetDefaults()
+		var s Store
+		switch tc.conf.Storage.StoreType {
+		case config.StoreDir:
+			s = NewDir(tc.conf)
+		case config.StoreMem:
+			s = NewMem(tc.conf)
+		default:
+			t.Errorf("unsupported store type: %d", tc.conf.Storage.StoreType)
+			return
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repo, err := s.RepoGet("test")
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
+			}
+			// push sample data
+			for _, blob := range blobList {
+				bc, err := repo.BlobCreate()
+				if err != nil {
+					t.Fatalf("failed to create blob: %v", err)
+				}
+				_, err = bc.Write(blob)
+				if err != nil {
+					t.Fatalf("failed to write blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Fatalf("failed to close blob: %v", err)
+				}
+			}
+			for i, desc := range descList {
+				opts := []types.IndexOpt{}
+				if i == len(descList)-1 {
+					// append all children on last entry
+					opts = append(opts, types.IndexWithChildren(childList))
+				}
+				err = repo.IndexInsert(desc, opts...)
+				if err != nil {
+					t.Fatalf("failed to insert descriptor: %v", err)
+				}
+			}
+			// run gc
+			err = repo.gc()
+			if err != nil {
+				t.Fatalf("failed to run GC: %v", err)
+			}
+			// check for blobs in expect lists
+			for _, dig := range tc.expectExist {
+				br, err := repo.BlobGet(dig)
+				if err != nil {
+					t.Errorf("failed to get expected blob %s: %v", dig.String(), err)
+				} else {
+					_ = br.Close()
+				}
+			}
+			for _, dig := range tc.expectMiss {
+				br, err := repo.BlobGet(dig)
+				if err == nil {
+					t.Errorf("received unexpected blob %s", dig.String())
+					_ = br.Close()
+				}
+			}
+		})
+	}
 }

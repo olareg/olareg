@@ -24,6 +24,8 @@ type mem struct {
 	repos map[string]*memRepo
 	log   slog.Logger
 	conf  config.Config
+	wg    sync.WaitGroup
+	stop  chan struct{}
 }
 
 type memRepo struct {
@@ -33,6 +35,7 @@ type memRepo struct {
 	log   slog.Logger
 	path  string
 	conf  config.Config
+	mod   time.Time
 }
 
 type memRepoBlob struct {
@@ -57,9 +60,14 @@ func NewMem(conf config.Config, opts ...Opts) Store {
 		repos: map[string]*memRepo{},
 		log:   sc.log,
 		conf:  conf,
+		stop:  make(chan struct{}),
 	}
 	if m.log == nil {
 		m.log = slog.Null{}
+	}
+	if m.conf.Storage.GC.Frequency > 0 {
+		m.wg.Add(1)
+		go m.gcTicker()
 	}
 	return m
 }
@@ -93,6 +101,70 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 	}
 	m.repos[repoStr] = mr
 	return mr, nil
+}
+
+func (m *mem) Close() error {
+	// signal to background jobs to exit
+	close(m.stop)
+	// mem is unusable after close, reset the repos to free memory and stop a running GC
+	m.mu.Lock()
+	m.repos = map[string]*memRepo{}
+	m.mu.Unlock()
+	// wait for background jobs to finish
+	m.wg.Wait()
+	return nil
+}
+
+// gcTicker is a goroutine to continuously run the GC on a schedule
+func (m *mem) gcTicker() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(m.conf.Storage.GC.Frequency)
+	for {
+		select {
+		case <-ticker.C:
+			_ = m.gc()
+		case <-m.stop:
+			ticker.Stop()
+			return
+		}
+	}
+}
+
+// run a GC on every repo
+func (m *mem) gc() error {
+	now := time.Now()
+	stop := now
+	if m.conf.Storage.GC.GracePeriod > 0 {
+		stop = stop.Add(m.conf.Storage.GC.GracePeriod * -1)
+	}
+	start := stop
+	if m.conf.Storage.GC.Frequency > 0 {
+		start = start.Add(m.conf.Storage.GC.Frequency * -1)
+	}
+	repoNames := make([]string, 0, len(m.repos))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// since the lock isn't held for the entire GC, build a list of repos to check
+	for r := range m.repos {
+		repoNames = append(repoNames, r)
+	}
+	for _, r := range repoNames {
+		repo, ok := m.repos[r]
+		if !ok {
+			continue
+		}
+		if repo.mod.Before(start) || repo.mod.After(stop) {
+			continue
+		}
+		// drop top level lock while GCing a single repo
+		m.mu.Unlock()
+		err := repo.gc()
+		m.mu.Lock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (mr *memRepo) repoGetIndex() error {
@@ -141,6 +213,7 @@ func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) er
 		return types.ErrReadOnly
 	}
 	mr.mu.Lock()
+	mr.mod = time.Now()
 	mr.index.AddDesc(desc, opts...)
 	mr.mu.Unlock()
 	return nil
@@ -152,6 +225,7 @@ func (mr *memRepo) IndexRemove(desc types.Descriptor) error {
 		return types.ErrReadOnly
 	}
 	mr.mu.Lock()
+	mr.mod = time.Now()
 	mr.index.RmDesc(desc)
 	mr.mu.Unlock()
 	return nil
@@ -283,6 +357,116 @@ func (mr *memRepo) BlobDelete(d digest.Digest) error {
 			mr.blobs[d] = nil
 		}
 	}
+	mr.mod = time.Now()
+	return nil
+}
+
+// gc runs the garbage collect
+func (mr *memRepo) gc() error {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	var cutoff time.Time
+	if mr.conf.Storage.GC.GracePeriod >= 0 {
+		cutoff = time.Now().Add(mr.conf.Storage.GC.GracePeriod * -1)
+	}
+	manifests := make([]types.Descriptor, 0, len(mr.index.Manifests))
+	subjects := map[digest.Digest]types.Descriptor{}
+	inIndex := map[digest.Digest]bool{}
+	// build a list of manifests and subjects to scan
+	for _, d := range mr.index.Manifests {
+		inIndex[d.Digest] = true
+		keep := false
+		// keep tagged entries or every entry if untagged entries are not GCed
+		if !*mr.conf.Storage.GC.Untagged || (d.Annotations != nil && d.Annotations[types.AnnotRefName] != "") {
+			keep = true
+		}
+		// keep new blobs
+		if !keep && mr.conf.Storage.GC.GracePeriod >= 0 && mr.blobs[d.Digest].m.mod.After(cutoff) {
+			keep = true
+		}
+		// referrers responses
+		if d.Annotations != nil && d.Annotations[types.AnnotReferrerSubject] != "" {
+			dig, _ := digest.Parse(d.Annotations[types.AnnotReferrerSubject])
+			subjExists := false
+			if _, ok := mr.blobs[dig]; dig != "" && ok {
+				subjExists = true
+			}
+			if *mr.conf.Storage.GC.ReferrersWithSubj && subjExists {
+				// track a map of responses only preserved when their subject remains
+				subjects[dig] = d.Copy()
+				keep = false
+			} else if !*mr.conf.Storage.GC.ReferrersDangling {
+				// keep if dangling aren't GCed
+				keep = true
+			} else if subjExists {
+				// subject exists but need to delete dangling
+				if mr.conf.Storage.GC.GracePeriod >= 0 && mr.blobs[d.Digest].m.mod.After(cutoff) {
+					// always keep new entries
+					keep = true
+				} else {
+					// else preserve only if subject remains
+					subjects[dig] = d.Copy()
+					keep = false
+				}
+			}
+		}
+		if keep {
+			manifests = append(manifests, d.Copy())
+		}
+	}
+	seen := map[digest.Digest]bool{}
+	// walk all manifests to note seen digests
+	for len(manifests) > 0 {
+		// work from tail to make deletes easier
+		d := manifests[len(manifests)-1]
+		manifests = manifests[:len(manifests)-1]
+		if _, ok := mr.blobs[d.Digest]; !ok || seen[d.Digest] {
+			// skip missing or already seen blobs
+			continue
+		}
+		seen[d.Digest] = true
+		// parse manifests for descriptors (manifests, config, layers)
+		if types.MediaTypeIndex(d.MediaType) {
+			man := types.Index{}
+			err := json.Unmarshal(mr.blobs[d.Digest].b, &man)
+			if err != nil {
+				continue
+			}
+			for _, child := range man.Manifests {
+				manifests = append(manifests, child.Copy())
+			}
+		} else if types.MediaTypeImage(d.MediaType) {
+			man := types.Manifest{}
+			err := json.Unmarshal(mr.blobs[d.Digest].b, &man)
+			if err != nil {
+				continue
+			}
+			seen[man.Config.Digest] = true
+			for _, layer := range man.Layers {
+				seen[layer.Digest] = true
+			}
+		}
+		// if there are referrers to this manifest
+		if referrer, ok := subjects[d.Digest]; ok {
+			manifests = append(manifests, referrer)
+		}
+	}
+	// clean old blobs that were not seen
+	for d := range mr.blobs {
+		if seen[d] {
+			continue
+		}
+		if mr.conf.Storage.GC.GracePeriod >= 0 && mr.blobs[d].m.mod.After(cutoff) && !inIndex[d] {
+			// keep recently uploaded blobs (manifests handled above)
+			continue
+		}
+		// prune from index
+		if inIndex[d] {
+			mr.index.RmDesc(types.Descriptor{Digest: d})
+		}
+		// prune from blob store
+		delete(mr.blobs, d)
+	}
 	return nil
 }
 
@@ -297,6 +481,7 @@ func (mru *memRepoUpload) Close() error {
 	}
 	// relocate []byte to in memory blob store
 	mru.mr.mu.Lock()
+	mru.mr.mod = time.Now()
 	mru.mr.blobs[mru.d.Digest()] = &memRepoBlob{
 		b: mru.buffer.Bytes(),
 		m: blobMeta{
