@@ -29,13 +29,13 @@ type mem struct {
 }
 
 type memRepo struct {
-	mu    sync.Mutex
-	index types.Index
-	blobs map[digest.Digest]*memRepoBlob
-	log   slog.Logger
-	path  string
-	conf  config.Config
-	mod   time.Time
+	mu      sync.Mutex
+	timeMod time.Time
+	index   types.Index
+	blobs   map[digest.Digest]*memRepoBlob
+	log     slog.Logger
+	path    string
+	conf    config.Config
 }
 
 type memRepoBlob struct {
@@ -65,7 +65,7 @@ func NewMem(conf config.Config, opts ...Opts) Store {
 	if m.log == nil {
 		m.log = slog.Null{}
 	}
-	if m.conf.Storage.GC.Frequency > 0 {
+	if !*m.conf.Storage.ReadOnly && m.conf.Storage.GC.Frequency > 0 {
 		m.wg.Add(1)
 		go m.gcTicker()
 	}
@@ -153,7 +153,7 @@ func (m *mem) gc() error {
 		if !ok {
 			continue
 		}
-		if repo.mod.Before(start) || repo.mod.After(stop) {
+		if repo.timeMod.Before(start) || repo.timeMod.After(stop) {
 			continue
 		}
 		// drop top level lock while GCing a single repo
@@ -213,7 +213,7 @@ func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) er
 		return types.ErrReadOnly
 	}
 	mr.mu.Lock()
-	mr.mod = time.Now()
+	mr.timeMod = time.Now()
 	mr.index.AddDesc(desc, opts...)
 	mr.mu.Unlock()
 	return nil
@@ -225,7 +225,7 @@ func (mr *memRepo) IndexRemove(desc types.Descriptor) error {
 		return types.ErrReadOnly
 	}
 	mr.mu.Lock()
-	mr.mod = time.Now()
+	mr.timeMod = time.Now()
 	mr.index.RmDesc(desc)
 	mr.mu.Unlock()
 	return nil
@@ -357,7 +357,7 @@ func (mr *memRepo) BlobDelete(d digest.Digest) error {
 			mr.blobs[d] = nil
 		}
 	}
-	mr.mod = time.Now()
+	mr.timeMod = time.Now()
 	return nil
 }
 
@@ -481,7 +481,7 @@ func (mru *memRepoUpload) Close() error {
 	}
 	// relocate []byte to in memory blob store
 	mru.mr.mu.Lock()
-	mru.mr.mod = time.Now()
+	mru.mr.timeMod = time.Now()
 	mru.mr.blobs[mru.d.Digest()] = &memRepoBlob{
 		b: mru.buffer.Bytes(),
 		m: blobMeta{
