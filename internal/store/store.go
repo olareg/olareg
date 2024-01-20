@@ -32,7 +32,12 @@ var (
 )
 
 type Store interface {
+	// RepoGet returns a repo from the store.
 	RepoGet(repoStr string) (Repo, error)
+
+	// Close releases resources used by the store.
+	// The store should not be used after being closed.
+	Close() error
 }
 
 type Repo interface {

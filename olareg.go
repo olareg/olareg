@@ -22,7 +22,8 @@ var (
 	rePath   = regexp.MustCompile(`^` + pathPart + `(?:\/` + pathPart + `)*$`)
 )
 
-// New runs an http handler
+// New returns a Server.
+// Ensure the resource is cleaned up with either [Server.Close] or [Server.Shutdown].
 func New(conf config.Config) *Server {
 	s := &Server{
 		conf: conf,
@@ -46,9 +47,20 @@ type Server struct {
 	store      store.Store
 	log        slog.Logger
 	httpServer *http.Server
-	// TODO: implement disk cache, GC handling, etc for the non-disk and non-config data
 }
 
+// Close is used to release the backend store resources.
+func (s *Server) Close() error {
+	if s.store == nil {
+		return fmt.Errorf("backend store was already closed")
+	}
+	err := s.store.Close()
+	s.store = nil
+	return err
+}
+
+// Run starts a listener and serves requests.
+// It only returns after a call to [Server.Shutdown].
 func (s *Server) Run(ctx context.Context) error {
 	if s.httpServer != nil {
 		return fmt.Errorf("server is already running, run shutdown first")
@@ -76,16 +88,30 @@ func (s *Server) Run(ctx context.Context) error {
 	return err
 }
 
+// Shutdown is used to stop the http listener and close the backend store.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.httpServer == nil {
 		return fmt.Errorf("server is not running")
 	}
 	err := s.httpServer.Shutdown(ctx)
 	s.httpServer = nil
+	if err != nil {
+		return err
+	}
+	if s.store != nil {
+		err = s.store.Close()
+		s.store = nil
+	}
 	return err
 }
 
+// ServeHTTP handles requests to the OCI registry.
 func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+	if s.store == nil {
+		s.log.Error("ServeHTTP called without a backend store")
+		resp.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	// parse request path, cleaning traversal attacks, and stripping leading and trailing slash
 	pathEl := strings.Split(strings.Trim(path.Clean("/"+req.URL.Path), "/"), "/")
 	resp.Header().Set("Docker-Distribution-API-Version", "registry/2.0")

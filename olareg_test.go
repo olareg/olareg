@@ -47,6 +47,7 @@ func TestServer(t *testing.T) {
 		conf     config.Config
 		existing bool
 		readOnly bool
+		testGC   bool
 	}{
 		{
 			name: "Mem",
@@ -72,9 +73,14 @@ func TestServer(t *testing.T) {
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreDir,
 					RootDir:   tempDir,
+					GC: config.ConfigGC{
+						Frequency:   time.Second * -1,
+						GracePeriod: time.Second * -1,
+					},
 				},
 			},
 			existing: true,
+			testGC:   true,
 		},
 		{
 			name: "Dir ReadOnly",
@@ -95,253 +101,261 @@ func TestServer(t *testing.T) {
 			t.Parallel()
 			// new server
 			s := New(tcServer.conf)
-			tt := []struct {
-				name string
-				fn   func(*testing.T, *Server)
-			}{
-				{
-					name: "Tag List",
-					fn: func(*testing.T, *Server) {
-						if !tcServer.existing {
-							return
-						}
-						resp, err := testAPITagsList(t, s, existingRepo, nil)
-						if err != nil {
-							return
-						}
-						tl := types.TagList{}
-						b, err := io.ReadAll(resp.Body)
-						if err != nil {
-							t.Errorf("failed to read tag body: %v", err)
-							return
-						}
-						err = json.Unmarshal(b, &tl)
-						if err != nil {
-							t.Errorf("failed to parse tag body: %v", err)
-							return
-						}
-						if len(tl.Tags) < 1 || tl.Name != existingRepo {
-							t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
-						}
-					},
-				},
-				{
-					name: "Tag List Missing",
-					fn: func(*testing.T, *Server) {
-						resp, err := testClientRun(t, s, "GET", "/v2/missing/tags/list", nil,
-							testClientRespStatus(http.StatusOK, http.StatusNotFound),
-						)
-						if err != nil || resp.Code == http.StatusNotFound {
-							return
-						}
-						tl := types.TagList{}
-						b, err := io.ReadAll(resp.Body)
-						if err != nil {
-							t.Errorf("failed to read tag body: %v", err)
-							return
-						}
-						err = json.Unmarshal(b, &tl)
-						if err != nil {
-							t.Errorf("failed to parse tag body: %v", err)
-							return
-						}
-						if len(tl.Tags) > 0 || tl.Name != "missing" {
-							t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
-						}
-					},
-				},
-				{
-					name: "Path Traversal Attack",
-					fn: func(*testing.T, *Server) {
-						if !tcServer.existing {
-							return
-						}
-						resp, err := testClientRun(t, s, "GET", "/../../../v2/"+existingRepo+"/tags/list", nil,
-							testClientRespStatus(http.StatusOK),
-						)
-						if err != nil {
-							t.Errorf("failed to get tag with path traversal attack")
-							return
-						}
+			t.Run("Tag List", func(t *testing.T) {
+				if !tcServer.existing {
+					return
+				}
+				t.Parallel()
+				resp, err := testAPITagsList(t, s, existingRepo, nil)
+				if err != nil {
+					return
+				}
+				tl := types.TagList{}
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read tag body: %v", err)
+					return
+				}
+				err = json.Unmarshal(b, &tl)
+				if err != nil {
+					t.Errorf("failed to parse tag body: %v", err)
+					return
+				}
+				if len(tl.Tags) < 1 || tl.Name != existingRepo {
+					t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
+				}
+			})
+			t.Run("Tag List Missing", func(t *testing.T) {
+				t.Parallel()
 
-						tl := types.TagList{}
-						b, err := io.ReadAll(resp.Body)
-						if err != nil {
-							t.Errorf("failed to read tag body: %v", err)
-							return
-						}
-						err = json.Unmarshal(b, &tl)
-						if err != nil {
-							t.Errorf("failed to parse tag body: %v", err)
-							return
-						}
-						if len(tl.Tags) < 1 || tl.Name != existingRepo {
-							t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
-						}
-					},
-				},
-				{
-					name: "Pull Existing Image and Referrers",
-					fn: func(t *testing.T, s *Server) {
-						if !tcServer.existing {
-							return
-						}
-						// fetch index
-						resp, err := testAPIManifestGet(t, s, existingRepo, existingTag, nil)
-						if err != nil {
-							return
-						}
-						digI, err := digest.Parse(resp.Header().Get("Docker-Content-Digest"))
-						if err != nil {
-							t.Errorf("unable to parse index digest, %s: %v", resp.Header().Get("Docker-Content-Digest"), err)
-							return
-						}
-						b, err := io.ReadAll(resp.Body)
-						if err != nil {
-							t.Errorf("failed to read body: %v", err)
-							return
-						}
-						i := types.Index{}
-						err = json.Unmarshal(b, &i)
-						if err != nil {
-							t.Errorf("failed to unmarshal index: %v", err)
-							return
-						}
-						if len(i.Manifests) < 1 {
-							t.Errorf("failed to find any manifests in index: %v", i)
-							return
-						}
-						// fetch platform specific manifest
-						descM := i.Manifests[0]
-						resp, err = testAPIManifestGet(t, s, existingRepo, descM.Digest.String(), nil)
-						if err != nil {
-							return
-						}
-						b, err = io.ReadAll(resp.Body)
-						if err != nil {
-							t.Errorf("failed to read body: %v", err)
-							return
-						}
-						m := types.Manifest{}
-						err = json.Unmarshal(b, &m)
-						if err != nil {
-							t.Errorf("failed to unmarshal manifest: %v", err)
-							return
-						}
-						// fetch config blob
-						descC := m.Config
-						_, err = testAPIBlobGet(t, s, existingRepo, descC.Digest, nil)
-						if err != nil {
-							return
-						}
-						// list referrers
-						resp, err = testAPIReferrersList(t, s, existingRepo, digI, nil)
-						if err != nil {
-							return
-						}
-						b, err = io.ReadAll(resp.Body)
-						if err != nil {
-							t.Errorf("failed to read body: %v", err)
-							return
-						}
-						rr := types.Index{}
-						err = json.Unmarshal(b, &rr)
-						if err != nil {
-							t.Errorf("failed to unmarshal referrers response: %v", err)
-							return
-						}
-						if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) < 2 {
-							t.Errorf("referrers response should be an index, schema 2, and at least 2 manifests: %v", rr)
-						}
-					},
-				},
-				{
-					name: "Pull with comma separated header",
-					fn: func(t *testing.T, s *Server) {
-						if !tcServer.existing {
-							return
-						}
-						tcgList := []testClientGen{
-							testClientRespStatus(http.StatusOK),
-							testClientReqHeader("Accept", strings.Join([]string{types.MediaTypeOCI1Manifest, types.MediaTypeOCI1ManifestList}, ", ")),
-							testClientReqHeader("Accept", strings.Join([]string{types.MediaTypeDocker2Manifest, types.MediaTypeDocker2ManifestList}, ", ")),
-						}
-						_, err := testClientRun(t, s, "GET", "/v2/"+existingRepo+"/manifests/"+existingTag, nil, tcgList...)
-						if err != nil {
-							t.Errorf("failed to get manifest: %v", err)
-						}
-					},
-				},
-				{
-					name: "AMD64",
-					fn: func(t *testing.T, s *Server) {
-						if tcServer.readOnly {
-							t.Log("skipped read only")
-							return
-						}
-						if err := testSampleEntryPush(t, s, *sd["image-amd64"], "push-amd64", "v1"); err != nil {
-							return
-						}
-						_ = testSampleEntryPull(t, s, *sd["image-amd64"], "push-amd64", "v1")
-					},
-				},
-				{
-					name: "Index",
-					fn: func(t *testing.T, s *Server) {
-						if tcServer.readOnly {
-							t.Log("skipped read only")
-							return
-						}
-						if err := testSampleEntryPush(t, s, *sd["index"], "index", "index"); err != nil {
-							return
-						}
-						_ = testSampleEntryPull(t, s, *sd["index"], "index", "index")
-					},
-				},
-				{
-					name: "Read Only Push",
-					fn: func(t *testing.T, s *Server) {
-						if !tcServer.readOnly {
-							t.Log("skipped read write")
-							return
-						}
-						// blob post should be forbidden
-						u, err := url.Parse("/v2/read-write/blobs/uploads/")
-						if err != nil {
-							t.Errorf("failed to parse blob post url: %v", err)
-							return
-						}
-						_, err = testClientRun(t, s, "POST", u.String(), nil,
-							testClientReqHeader("Content-Type", "application/octet-stream"),
-							testClientRespStatus(http.StatusForbidden))
-						if err != nil && !errors.Is(err, errValidationFailed) {
-							t.Errorf("failed to test blob post: %v", err)
-						}
-						// manifest post should be forbidden
-						tcgList := []testClientGen{
-							testClientRespStatus(http.StatusForbidden),
-						}
-						if mt := detectMediaType(sd["index"].manifest[sd["index"].manifestList[0]]); mt != "" {
-							tcgList = append(tcgList, testClientReqHeader("Content-Type", mt))
-						}
-						_, err = testClientRun(t, s, "PUT", "/v2/read-write/manifests/latest", sd["index"].manifest[sd["index"].manifestList[0]], tcgList...)
-						if err != nil && !errors.Is(err, errValidationFailed) {
-							t.Errorf("failed to send manifest put: %v", err)
-						}
-					},
-				},
-				// TODO: test tag listing before and after pushing manifest
-				// TODO: test deleting manifests and blobs
-				// TODO: test blob chunked upload, monolithic upload, and stream upload
-				// TODO: test pushing manifest with subject and querying referrers
-			}
-			for _, tc := range tt {
-				tc := tc
-				t.Run(tc.name, func(t *testing.T) {
-					t.Parallel()
-					tc.fn(t, s)
-				})
-			}
+				resp, err := testClientRun(t, s, "GET", "/v2/missing/tags/list", nil,
+					testClientRespStatus(http.StatusOK, http.StatusNotFound),
+				)
+				if err != nil || resp.Code == http.StatusNotFound {
+					return
+				}
+				tl := types.TagList{}
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read tag body: %v", err)
+					return
+				}
+				err = json.Unmarshal(b, &tl)
+				if err != nil {
+					t.Errorf("failed to parse tag body: %v", err)
+					return
+				}
+				if len(tl.Tags) > 0 || tl.Name != "missing" {
+					t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
+				}
+			})
+			t.Run("Path Traversal Attack", func(t *testing.T) {
+				if !tcServer.existing {
+					return
+				}
+				t.Parallel()
+				resp, err := testClientRun(t, s, "GET", "/../../../v2/"+existingRepo+"/tags/list", nil,
+					testClientRespStatus(http.StatusOK),
+				)
+				if err != nil {
+					t.Errorf("failed to get tag with path traversal attack")
+					return
+				}
+
+				tl := types.TagList{}
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read tag body: %v", err)
+					return
+				}
+				err = json.Unmarshal(b, &tl)
+				if err != nil {
+					t.Errorf("failed to parse tag body: %v", err)
+					return
+				}
+				if len(tl.Tags) < 1 || tl.Name != existingRepo {
+					t.Errorf("unexpected response (empty or repo mismatch): %v", tl)
+				}
+			})
+
+			t.Run("Pull Existing Image and Referrers", func(t *testing.T) {
+				if !tcServer.existing {
+					return
+				}
+				t.Parallel()
+				// fetch index
+				resp, err := testAPIManifestGet(t, s, existingRepo, existingTag, nil)
+				if err != nil {
+					return
+				}
+				digI, err := digest.Parse(resp.Header().Get("Docker-Content-Digest"))
+				if err != nil {
+					t.Errorf("unable to parse index digest, %s: %v", resp.Header().Get("Docker-Content-Digest"), err)
+					return
+				}
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				i := types.Index{}
+				err = json.Unmarshal(b, &i)
+				if err != nil {
+					t.Errorf("failed to unmarshal index: %v", err)
+					return
+				}
+				if len(i.Manifests) < 1 {
+					t.Errorf("failed to find any manifests in index: %v", i)
+					return
+				}
+				// fetch platform specific manifest
+				descM := i.Manifests[0]
+				resp, err = testAPIManifestGet(t, s, existingRepo, descM.Digest.String(), nil)
+				if err != nil {
+					return
+				}
+				b, err = io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				m := types.Manifest{}
+				err = json.Unmarshal(b, &m)
+				if err != nil {
+					t.Errorf("failed to unmarshal manifest: %v", err)
+					return
+				}
+				// fetch config blob
+				descC := m.Config
+				_, err = testAPIBlobGet(t, s, existingRepo, descC.Digest, nil)
+				if err != nil {
+					return
+				}
+				// list referrers
+				resp, err = testAPIReferrersList(t, s, existingRepo, digI, nil)
+				if err != nil {
+					return
+				}
+				b, err = io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				rr := types.Index{}
+				err = json.Unmarshal(b, &rr)
+				if err != nil {
+					t.Errorf("failed to unmarshal referrers response: %v", err)
+					return
+				}
+				if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) < 2 {
+					t.Errorf("referrers response should be an index, schema 2, and at least 2 manifests: %v", rr)
+				}
+			})
+			t.Run("Pull with comma separated header", func(t *testing.T) {
+				if !tcServer.existing {
+					return
+				}
+				t.Parallel()
+				tcgList := []testClientGen{
+					testClientRespStatus(http.StatusOK),
+					testClientReqHeader("Accept", strings.Join([]string{types.MediaTypeOCI1Manifest, types.MediaTypeOCI1ManifestList}, ", ")),
+					testClientReqHeader("Accept", strings.Join([]string{types.MediaTypeDocker2Manifest, types.MediaTypeDocker2ManifestList}, ", ")),
+				}
+				_, err := testClientRun(t, s, "GET", "/v2/"+existingRepo+"/manifests/"+existingTag, nil, tcgList...)
+				if err != nil {
+					t.Errorf("failed to get manifest: %v", err)
+				}
+			})
+			t.Run("AMD64", func(t *testing.T) {
+				if tcServer.readOnly {
+					return
+				}
+				t.Parallel()
+				if err := testSampleEntryPush(t, s, *sd["image-amd64"], "push-amd64", "v1"); err != nil {
+					return
+				}
+				_ = testSampleEntryPull(t, s, *sd["image-amd64"], "push-amd64", "v1")
+			})
+			t.Run("Index", func(t *testing.T) {
+				if tcServer.readOnly {
+					return
+				}
+				t.Parallel()
+				if err := testSampleEntryPush(t, s, *sd["index"], "index", "index"); err != nil {
+					return
+				}
+				_ = testSampleEntryPull(t, s, *sd["index"], "index", "index")
+			})
+			t.Run("Read Only Push", func(t *testing.T) {
+				if !tcServer.readOnly {
+					return
+				}
+				t.Parallel()
+				// blob post should be forbidden
+				u, err := url.Parse("/v2/read-write/blobs/uploads/")
+				if err != nil {
+					t.Errorf("failed to parse blob post url: %v", err)
+					return
+				}
+				_, err = testClientRun(t, s, "POST", u.String(), nil,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespStatus(http.StatusForbidden))
+				if err != nil && !errors.Is(err, errValidationFailed) {
+					t.Errorf("failed to test blob post: %v", err)
+				}
+				// manifest post should be forbidden
+				tcgList := []testClientGen{
+					testClientRespStatus(http.StatusForbidden),
+				}
+				if mt := detectMediaType(sd["index"].manifest[sd["index"].manifestList[0]]); mt != "" {
+					tcgList = append(tcgList, testClientReqHeader("Content-Type", mt))
+				}
+				_, err = testClientRun(t, s, "PUT", "/v2/read-write/manifests/latest", sd["index"].manifest[sd["index"].manifestList[0]], tcgList...)
+				if err != nil && !errors.Is(err, errValidationFailed) {
+					t.Errorf("failed to send manifest put: %v", err)
+				}
+			})
+			t.Run("Garbage Collect", func(t *testing.T) {
+				if !tcServer.testGC {
+					return
+				}
+				// this test is not parallel because the server is closed and restarted
+				// push two images
+				if err := testSampleEntryPush(t, s, *sd["image-amd64"], "gc", "amd64"); err != nil {
+					return
+				}
+				if err := testSampleEntryPush(t, s, *sd["image-arm64"], "gc", "arm64"); err != nil {
+					return
+				}
+				// delete one manifest
+				if _, err := testAPIManifestRm(t, s, "gc", sd["image-arm64"].manifestList[0].String()); err != nil {
+					t.Fatalf("failed to remove manifest: %v", err)
+				}
+				// close server and recreate
+				if err := s.Close(); err != nil {
+					t.Errorf("failed to close server: %v", err)
+				}
+				s = New(tcServer.conf)
+				// verify get
+				if err := testSampleEntryPull(t, s, *sd["image-amd64"], "gc", "amd64"); err != nil {
+					t.Errorf("failed to pull entry after recreating server: %v", err)
+				}
+				// verify GC
+				for dig := range sd["image-arm64"].blob {
+					if _, ok := sd["image-amd64"].blob[dig]; ok {
+						continue // skip dup blobs
+					}
+					_, err := testClientRun(t, s, "GET", "/v2/gc/blobs/"+dig.String(), nil,
+						testClientRespStatus(http.StatusNotFound))
+					if err != nil {
+						t.Errorf("did not receive a not-found error on a GC blob: %v", err)
+					}
+				}
+			})
+			// TODO: test tag listing before and after pushing manifest
+			// TODO: test deleting manifests and blobs
+			// TODO: test blob chunked upload, monolithic upload, and stream upload
+			// TODO: test pushing manifest with subject and querying referrers
 		})
 	}
 }
@@ -642,6 +656,21 @@ func testAPIManifestPut(t *testing.T, s *Server, repo string, digOrTag string, m
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send manifest put: %v", err)
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+func testAPIManifestRm(t *testing.T, s *Server, repo string, digOrTag string) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+	tcgList := []testClientGen{
+		testClientRespStatus(http.StatusAccepted),
+	}
+	resp, err := testClientRun(t, s, "DELETE", "/v2/"+repo+"/manifests/"+digOrTag, nil, tcgList...)
+	if err != nil {
+		if !errors.Is(err, errValidationFailed) {
+			t.Errorf("failed to send manifest delete: %v", err)
 		}
 		return nil, err
 	}

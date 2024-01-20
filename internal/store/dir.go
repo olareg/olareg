@@ -29,12 +29,14 @@ type dir struct {
 	repos map[string]*dirRepo // TODO: switch to storing these in a cache that expires from memory
 	log   slog.Logger
 	conf  config.Config
+	wg    sync.WaitGroup
+	stop  chan struct{}
 }
 
 type dirRepo struct {
+	mu        sync.Mutex
 	timeCheck time.Time
 	timeMod   time.Time
-	mu        sync.Mutex
 	name      string
 	path      string
 	exists    bool
@@ -64,9 +66,14 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 		repos: map[string]*dirRepo{},
 		log:   sc.log,
 		conf:  conf,
+		stop:  make(chan struct{}),
 	}
 	if d.log == nil {
 		d.log = slog.Null{}
+	}
+	if !*d.conf.Storage.ReadOnly && d.conf.Storage.GC.Frequency > 0 {
+		d.wg.Add(1)
+		go d.gcTicker()
 	}
 	return d
 }
@@ -99,6 +106,76 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 		}
 	}
 	return &dr, nil
+}
+
+func (d *dir) Close() error {
+	// signal to background jobs to exit
+	close(d.stop)
+	d.mu.Lock()
+	if !*d.conf.Storage.ReadOnly {
+		// perform a final GC of each repo
+		for _, dr := range d.repos {
+			_ = dr.gc()
+		}
+	}
+	// the store is unusable after close, reset the repos to quickly stop a running GC
+	d.repos = map[string]*dirRepo{}
+	// wait for background jobs to finish
+	d.mu.Unlock()
+	d.wg.Wait()
+	return nil
+}
+
+// gcTicker is a goroutine to continuously run the GC on a schedule
+func (d *dir) gcTicker() {
+	defer d.wg.Done()
+	ticker := time.NewTicker(d.conf.Storage.GC.Frequency)
+	for {
+		select {
+		case <-ticker.C:
+			_ = d.gc()
+		case <-d.stop:
+			ticker.Stop()
+			return
+		}
+	}
+}
+
+// run a GC on every repo
+func (d *dir) gc() error {
+	now := time.Now()
+	stop := now
+	if d.conf.Storage.GC.GracePeriod > 0 {
+		stop = stop.Add(d.conf.Storage.GC.GracePeriod * -1)
+	}
+	start := stop
+	if d.conf.Storage.GC.Frequency > 0 {
+		start = start.Add(d.conf.Storage.GC.Frequency * -1)
+	}
+	repoNames := make([]string, 0, len(d.repos))
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// since the lock isn't held for the entire GC, build a list of repos to check
+	for r := range d.repos {
+		repoNames = append(repoNames, r)
+	}
+	for _, r := range repoNames {
+		repo, ok := d.repos[r]
+		if !ok {
+			continue
+		}
+		if repo.timeMod.Before(start) || repo.timeMod.After(stop) {
+			continue
+		}
+		// drop top level lock while GCing a single repo
+		d.mu.Unlock()
+		err := repo.gc()
+		d.mu.Lock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IndexGet returns the current top level index for a repo.
@@ -399,7 +476,142 @@ func (dr *dirRepo) indexSave(locked bool) error {
 
 // gc runs the garbage collect
 func (dr *dirRepo) gc() error {
-	return fmt.Errorf("not implemented")
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
+	locked := true
+	var cutoff time.Time
+	if dr.conf.Storage.GC.GracePeriod >= 0 {
+		cutoff = time.Now().Add(dr.conf.Storage.GC.GracePeriod * -1)
+	}
+	manifests := make([]types.Descriptor, 0, len(dr.index.Manifests))
+	subjects := map[digest.Digest]types.Descriptor{}
+	inIndex := map[digest.Digest]bool{}
+	// build a list of manifests and subjects to scan
+	for _, d := range dr.index.Manifests {
+		inIndex[d.Digest] = true
+		keep := false
+		// keep tagged entries or every entry if untagged entries are not GCed
+		if !*dr.conf.Storage.GC.Untagged || (d.Annotations != nil && d.Annotations[types.AnnotRefName] != "") {
+			keep = true
+		}
+		// keep new blobs
+		if !keep && dr.conf.Storage.GC.GracePeriod >= 0 {
+			if meta, err := dr.blobMeta(d.Digest, locked); err == nil && meta.mod.After(cutoff) {
+				keep = true
+			}
+		}
+		// referrers responses
+		if d.Annotations != nil && d.Annotations[types.AnnotReferrerSubject] != "" {
+			dig, _ := digest.Parse(d.Annotations[types.AnnotReferrerSubject])
+			subjExists := (dig != "")
+			if _, err := dr.blobMeta(dig, locked); subjExists && err != nil {
+				subjExists = false
+			}
+			if *dr.conf.Storage.GC.ReferrersWithSubj && subjExists {
+				// track a map of responses only preserved when their subject remains
+				subjects[dig] = d.Copy()
+				keep = false
+			} else if !*dr.conf.Storage.GC.ReferrersDangling {
+				// keep if dangling aren't GCed
+				keep = true
+			} else if subjExists {
+				// subject exists but need to delete dangling
+				if meta, err := dr.blobMeta(d.Digest, locked); err == nil && dr.conf.Storage.GC.GracePeriod >= 0 && meta.mod.After(cutoff) {
+					// always keep new entries
+					keep = true
+				} else {
+					// else preserve only if subject remains
+					subjects[dig] = d.Copy()
+					keep = false
+				}
+			}
+		}
+		if keep {
+			manifests = append(manifests, d.Copy())
+		}
+	}
+	seen := map[digest.Digest]bool{}
+	// walk all manifests to note seen digests
+	for len(manifests) > 0 {
+		// work from tail to make deletes easier
+		d := manifests[len(manifests)-1]
+		manifests = manifests[:len(manifests)-1]
+		if seen[d.Digest] {
+			continue
+		}
+		br, err := dr.blobGet(d.Digest, locked)
+		if err != nil {
+			continue
+		}
+		seen[d.Digest] = true
+		// parse manifests for descriptors (manifests, config, layers)
+		if types.MediaTypeIndex(d.MediaType) {
+			man := types.Index{}
+			err = json.NewDecoder(br).Decode(&man)
+			errClose := br.Close()
+			if err != nil || errClose != nil {
+				continue
+			}
+			for _, child := range man.Manifests {
+				manifests = append(manifests, child.Copy())
+			}
+		} else if types.MediaTypeImage(d.MediaType) {
+			man := types.Manifest{}
+			err = json.NewDecoder(br).Decode(&man)
+			errClose := br.Close()
+			if err != nil || errClose != nil {
+				continue
+			}
+			seen[man.Config.Digest] = true
+			for _, layer := range man.Layers {
+				seen[layer.Digest] = true
+			}
+		}
+		// if there are referrers to this manifest
+		if referrer, ok := subjects[d.Digest]; ok {
+			manifests = append(manifests, referrer)
+		}
+	}
+	// clean old blobs that were not seen
+	algoS, err := os.ReadDir(filepath.Join(dr.path, blobsDir))
+	if err != nil {
+		return fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir), err)
+	}
+	for _, algo := range algoS {
+		if !algo.IsDir() {
+			continue
+		}
+		encodeS, err := os.ReadDir(filepath.Join(dr.path, blobsDir, algo.Name()))
+		if err != nil {
+			return fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir, algo.Name()), err)
+		}
+		for _, encode := range encodeS {
+			d, err := digest.Parse(algo.Name() + ":" + encode.Name())
+			if err != nil {
+				// skip unparsable entries
+				continue
+			}
+			if seen[d] {
+				continue
+			}
+			filename := filepath.Join(dr.path, blobsDir, algo.Name(), encode.Name())
+			fi, err := os.Stat(filename)
+			if err != nil || fi.IsDir() {
+				continue
+			}
+			if dr.conf.Storage.GC.GracePeriod >= 0 && fi.ModTime().After(cutoff) && !inIndex[d] {
+				// keep recently uploaded blobs (manifests handled above)
+				continue
+			}
+			// prune from index
+			if inIndex[d] {
+				dr.index.RmDesc(types.Descriptor{Digest: d})
+			}
+			// attempt to prune from blob store, ignoring errors
+			_ = os.Remove(filename)
+		}
+	}
+	return nil
 }
 
 // Write is used to push content into the blob.
