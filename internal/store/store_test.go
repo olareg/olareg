@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -685,6 +686,7 @@ func TestGarbageCollect(t *testing.T) {
 		})
 	}
 	// create stores, with different GC policies, and expected blobs to exist or be deleted
+	tempDir := t.TempDir()
 	boolT := true
 	boolF := false
 	tt := []struct {
@@ -868,6 +870,215 @@ func TestGarbageCollect(t *testing.T) {
 			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Hour,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolT,
+						ReferrersWithSubj: &boolF,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digCircular,
+				digBlob,
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+			expectMiss: []digest.Digest{},
+		},
+		{
+			name: "Dir Untagged Dangling",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "untagged-dangling"),
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolF,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+			},
+		},
+		{
+			name: "Dir Untagged Dangling with Subj",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "untagged-dangling-subj"),
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+		},
+		{
+			name: "Dir Tagged Dangling with Subj",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "tagged-dangling-subj"),
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+		},
+		{
+			name: "Dir Tagged with Subj",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "tagged-subj"),
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolT,
+						ReferrersWithSubj: &boolF,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+		},
+		{
+			name: "Dir Tagged",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "tagged"),
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolT,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+			},
+		},
+		{
+			name: "Dir Grace Period",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "grace-period"),
 					GC: config.ConfigGC{
 						Frequency:         time.Second * -1,
 						GracePeriod:       time.Hour,
