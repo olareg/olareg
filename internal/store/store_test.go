@@ -18,7 +18,6 @@ import (
 
 func TestStore(t *testing.T) {
 	t.Parallel()
-	start := time.Now()
 	existingRepo := "testrepo"
 	existingTag := "v1"
 	newRepo := "new-repo"
@@ -225,6 +224,8 @@ func TestStore(t *testing.T) {
 			})
 			t.Run("New", func(t *testing.T) {
 				t.Parallel()
+				// subtract a second to deal with race conditions in the time granularity from directory storage
+				start := time.Now().Add(time.Second * -1)
 				// get new repo
 				repo, err := s.RepoGet(newRepo)
 				if err != nil {
@@ -311,7 +312,7 @@ func TestStore(t *testing.T) {
 					t.Errorf("failed to get metadata on new blob: %v", err)
 				}
 				if m.mod.Before(start) {
-					t.Errorf("new blob mod time is before test start")
+					t.Errorf("new blob mod time is before test start (%s < %s)", m.mod.String(), start.String())
 				}
 				rdr, err = repo.BlobGet(newManifestDigest)
 				if err != nil {
@@ -333,7 +334,7 @@ func TestStore(t *testing.T) {
 					t.Errorf("failed to get metadata on new manifest: %v", err)
 				}
 				if m.mod.Before(start) {
-					t.Errorf("new manifest mod time is before test start")
+					t.Errorf("new manifest mod time is before test start (%s < %s)", m.mod.String(), start.String())
 				}
 				// add index entry
 				newDesc := types.Descriptor{
