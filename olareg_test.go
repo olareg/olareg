@@ -316,7 +316,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("Garbage Collect", func(t *testing.T) {
-				if !tcServer.testGC {
+				if !tcServer.testGC || tcServer.readOnly {
 					return
 				}
 				// this test is not parallel because the server is closed and restarted
@@ -352,9 +352,58 @@ func TestServer(t *testing.T) {
 					}
 				}
 			})
+			t.Run("Blob Push Monolithic", func(t *testing.T) {
+				if tcServer.readOnly {
+					return
+				}
+				t.Parallel()
+				repo := "monolithic"
+				// send good blob
+				exBlob := []byte(`example monolithic content`)
+				exDigGood := digest.Canonical.FromBytes(exBlob)
+				u, err := url.Parse("/v2/" + repo + "/blobs/uploads/")
+				if err != nil {
+					t.Fatalf("failed to parse blob post url: %v", err)
+				}
+				q := u.Query()
+				q.Add("digest", exDigGood.String())
+				u.RawQuery = q.Encode()
+				_, err = testClientRun(t, s, "POST", u.String(), exBlob,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(exBlob))),
+					testClientRespStatus(http.StatusCreated),
+					testClientRespHeader("Location", ""))
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send blob post: %v", err)
+					}
+					return
+				}
+				_, err = testAPIBlobGet(t, s, repo, exDigGood, exBlob)
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to get pushed blob: %v", err)
+					}
+					return
+				}
+				// send a bad blob
+				exDigBad := digest.Canonical.FromString("bad blob digest")
+				q.Set("digest", exDigBad.String())
+				u.RawQuery = q.Encode()
+				_, err = testClientRun(t, s, "POST", u.String(), exBlob,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(exBlob))),
+					testClientRespStatus(http.StatusBadRequest))
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send blob post: %v", err)
+					}
+					return
+				}
+			})
 			// TODO: test tag listing before and after pushing manifest
 			// TODO: test deleting manifests and blobs
-			// TODO: test blob chunked upload, monolithic upload, and stream upload
+			// TODO: test blob chunked upload, and stream upload
 			// TODO: test pushing manifest with subject and querying referrers
 		})
 	}

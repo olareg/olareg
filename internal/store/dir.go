@@ -628,27 +628,35 @@ func (dru *dirRepoUpload) Write(p []byte) (int, error) {
 func (dru *dirRepoUpload) Close() error {
 	err := dru.fh.Close()
 	if err != nil {
+		_ = os.Remove(dru.filename)
 		return err // TODO: join multiple errors after 1.19 support is removed
 	}
 	if dru.expect != "" && dru.d.Digest() != dru.expect {
+		_ = os.Remove(dru.filename)
 		return fmt.Errorf("digest mismatch, expected %s, received %s", dru.expect, dru.d.Digest())
 	}
 	// move temp file to blob store
 	tgtDir := filepath.Join(dru.path, blobsDir, dru.d.Digest().Algorithm().String())
 	fi, err := os.Stat(tgtDir)
 	if err == nil && !fi.IsDir() {
+		_ = os.Remove(dru.filename)
 		return fmt.Errorf("failed to move file to blob storage, %s is not a directory", tgtDir)
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
 		err = os.MkdirAll(tgtDir, 0755)
 		if err != nil {
+			_ = os.Remove(dru.filename)
 			return fmt.Errorf("unable to create blob storage directory %s: %w", tgtDir, err)
 		}
 	}
 	blobName := filepath.Join(tgtDir, dru.d.Digest().Encoded())
 	err = os.Rename(dru.filename, blobName)
-	return err
+	if err != nil {
+		_ = os.Remove(dru.filename)
+		return err
+	}
+	return nil
 }
 
 // Cancel is used to stop an upload.

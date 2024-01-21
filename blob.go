@@ -176,12 +176,13 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 		// check for digest parameter
 		bOpts := []store.BlobOpt{}
 		dStr := r.URL.Query().Get("digest")
-		if dStr == "" && mountStr != "" {
-			dStr = mountStr // a failed blob mount is still used to define the digest
-		}
 		var d digest.Digest
-		if dStr != "" {
-			d, err = digest.Parse(dStr)
+		if dStr != "" || mountStr != "" {
+			if dStr != "" {
+				d, err = digest.Parse(dStr)
+			} else {
+				d, err = digest.Parse(mountStr)
+			}
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("invalid digest format"))
@@ -219,14 +220,17 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			}
 			err = bc.Verify(d)
 			if err != nil {
+				bc.Cancel()
 				w.WriteHeader(http.StatusBadRequest)
 				_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("digest mismatch"))
+				s.log.Debug("failed to verify blob digest", "repo", repoStr, "digest", d.String(), "err", err)
 				return
 			}
 			err = bc.Close()
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				s.log.Info("failed to close blob", "repo", repoStr, "err", err)
+				return
 			}
 			loc, err := url.JoinPath("/v2", repoStr, "blobs", d.String())
 			if err != nil {
