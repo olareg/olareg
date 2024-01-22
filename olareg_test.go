@@ -101,6 +101,7 @@ func TestServer(t *testing.T) {
 			t.Parallel()
 			// new server
 			s := New(tcServer.conf)
+			t.Cleanup(func() { _ = s.Close() })
 			t.Run("Tag List", func(t *testing.T) {
 				if !tcServer.existing {
 					return
