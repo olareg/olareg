@@ -103,6 +103,7 @@ func TestStore(t *testing.T) {
 			t.Errorf("unsupported store type: %d", tc.conf.Storage.StoreType)
 			return
 		}
+		t.Cleanup(func() { _ = s.Close() })
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			t.Run("Existing", func(t *testing.T) {
@@ -1123,6 +1124,7 @@ func TestGarbageCollect(t *testing.T) {
 			t.Errorf("unsupported store type: %d", tc.conf.Storage.StoreType)
 			return
 		}
+		t.Cleanup(func() { _ = s.Close() })
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			repo, err := s.RepoGet("test")
