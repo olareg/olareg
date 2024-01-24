@@ -25,6 +25,7 @@ func (s *Server) tagList(repoStr string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr)
 			return
 		}
+		defer repo.Done()
 		index, err := repo.IndexGet()
 		if err != nil {
 			// TODO: handle different errors (perm denied, not found, internal server error)

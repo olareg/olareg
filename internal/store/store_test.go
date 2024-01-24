@@ -16,6 +16,14 @@ import (
 	"github.com/olareg/olareg/types"
 )
 
+// verify interface implementation
+var (
+	_ Store = &dir{}
+	_ Repo  = &dirRepo{}
+	_ Store = &mem{}
+	_ Repo  = &memRepo{}
+)
+
 func TestStore(t *testing.T) {
 	t.Parallel()
 	existingRepo := "testrepo"
@@ -117,6 +125,7 @@ func TestStore(t *testing.T) {
 					t.Errorf("failed to get repo %s: %v", existingRepo, err)
 					return
 				}
+				defer repo.Done()
 				// get the index
 				i, err := repo.IndexGet()
 				if err != nil {
@@ -233,6 +242,7 @@ func TestStore(t *testing.T) {
 					t.Errorf("failed to get repo %s: %v", newRepo, err)
 					return
 				}
+				defer repo.Done()
 				// get index
 				i, err := repo.IndexGet()
 				if err != nil {
@@ -1131,6 +1141,7 @@ func TestGarbageCollect(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to get repo: %v", err)
 			}
+			defer repo.Done()
 			// push sample data
 			for _, blob := range blobList {
 				bc, err := repo.BlobCreate()

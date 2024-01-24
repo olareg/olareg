@@ -31,8 +31,10 @@ var (
 	referrerTagRe = regexp.MustCompile(`^(sha256|sha512)-([0-9a-f]{64})$`)
 )
 
+// Store interface is used to abstract access to a backend storage system for repositories.
 type Store interface {
 	// RepoGet returns a repo from the store.
+	// When finished, the method [Repo.Done] must be called.
 	RepoGet(repoStr string) (Repo, error)
 
 	// Close releases resources used by the store.
@@ -40,6 +42,7 @@ type Store interface {
 	Close() error
 }
 
+// Repo interface is used to access a CAS and the index managing known manifests.
 type Repo interface {
 	// IndexGet returns the current top level index for a repo.
 	IndexGet() (types.Index, error)
@@ -54,6 +57,10 @@ type Repo interface {
 	BlobCreate(opts ...BlobOpt) (BlobCreator, error)
 	// BlobDelete removes an entry from the CAS.
 	BlobDelete(d digest.Digest) error
+
+	// Done indicates the routine using this repo is finished.
+	// This must be called exactly once for every instance of [Store.RepoGet].
+	Done()
 
 	// blobGet is an internal method for accessing blobs from other store methods.
 	blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error)

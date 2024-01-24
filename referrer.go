@@ -31,6 +31,7 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 			}
 			return
 		}
+		defer repo.Done()
 		index, err := repo.IndexGet()
 		if err != nil {
 			w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)

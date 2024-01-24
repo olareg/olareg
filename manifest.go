@@ -39,6 +39,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
+		defer repo.Done()
 		index, err := repo.IndexGet()
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
@@ -107,6 +108,7 @@ func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
+		defer repo.Done()
 		index, err := repo.IndexGet()
 		if err != nil {
 			// TODO: handle different errors (perm denied, not found, internal server error)
@@ -202,6 +204,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
+		defer repo.Done()
 		// parse/validate headers
 		mt := r.Header.Get("content-type")
 		mt, _, _ = strings.Cut(mt, ";")
