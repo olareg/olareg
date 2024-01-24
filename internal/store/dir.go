@@ -25,16 +25,17 @@ import (
 
 type dir struct {
 	mu    sync.Mutex
+	wg    sync.WaitGroup
 	root  string
 	repos map[string]*dirRepo // TODO: switch to storing these in a cache that expires from memory
 	log   slog.Logger
 	conf  config.Config
-	wg    sync.WaitGroup
 	stop  chan struct{}
 }
 
 type dirRepo struct {
 	mu        sync.Mutex
+	wg        sync.WaitGroup
 	timeCheck time.Time
 	timeMod   time.Time
 	name      string
@@ -83,7 +84,14 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 func (d *dir) RepoGet(repoStr string) (Repo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// if stop ch was closed, fail
+	select {
+	case <-d.stop:
+		return nil, fmt.Errorf("cannot get repo after Close")
+	default:
+	}
 	if dr, ok := d.repos[repoStr]; ok {
+		dr.wg.Add(1)
 		return dr, nil
 	}
 	if stringsHasAny(strings.Split(repoStr, "/"), indexFile, layoutFile, blobsDir) {
@@ -105,21 +113,31 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 			dr.exists = true
 		}
 	}
+	dr.wg.Add(1)
 	return &dr, nil
 }
 
 func (d *dir) Close() error {
-	// signal to background jobs to exit
+	// signal to background jobs to exit and block new repos from being created
 	close(d.stop)
 	d.mu.Lock()
-	if !*d.conf.Storage.ReadOnly {
-		// perform a final GC of each repo
-		for _, dr := range d.repos {
-			_ = dr.gc()
-		}
+	repoNames := make([]string, 0, len(d.repos))
+	for r := range d.repos {
+		repoNames = append(repoNames, r)
 	}
-	// the store is unusable after close, reset the repos to quickly stop a running GC
-	d.repos = map[string]*dirRepo{}
+	for _, r := range repoNames {
+		repo, ok := d.repos[r]
+		if !ok {
+			continue
+		}
+		d.mu.Unlock()
+		repo.wg.Wait()
+		if !*d.conf.Storage.ReadOnly {
+			_ = repo.gc()
+		}
+		d.mu.Lock()
+		delete(d.repos, r)
+	}
 	// wait for background jobs to finish
 	d.mu.Unlock()
 	d.wg.Wait()
@@ -152,24 +170,34 @@ func (d *dir) gc() error {
 	if d.conf.Storage.GC.Frequency > 0 {
 		start = start.Add(d.conf.Storage.GC.Frequency * -1)
 	}
-	repoNames := make([]string, 0, len(d.repos))
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	// since the lock isn't held for the entire GC, build a list of repos to check
+	repoNames := make([]string, 0, len(d.repos))
 	for r := range d.repos {
 		repoNames = append(repoNames, r)
 	}
 	for _, r := range repoNames {
+		// if stop ch was closed, exit immediately
+		select {
+		case <-d.stop:
+			return fmt.Errorf("stop signal received")
+		default:
+		}
+
 		repo, ok := d.repos[r]
 		if !ok {
 			continue
 		}
+		// skip repos that were not last updated between grace period and frequency
 		if repo.timeMod.Before(start) || repo.timeMod.After(stop) {
 			continue
 		}
 		// drop top level lock while GCing a single repo
+		repo.wg.Add(1)
 		d.mu.Unlock()
 		err := repo.gc()
+		repo.wg.Done()
 		d.mu.Lock()
 		if err != nil {
 			return err
@@ -472,6 +500,12 @@ func (dr *dirRepo) indexSave(locked bool) error {
 	}
 	dr.timeMod = fi.ModTime()
 	return nil
+}
+
+// Done indicates the routine using this repo is finished.
+// This must be called exactly once for every instance of [Store.RepoGet].
+func (dr *dirRepo) Done() {
+	dr.wg.Done()
 }
 
 // gc runs the garbage collect

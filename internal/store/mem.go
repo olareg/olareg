@@ -30,6 +30,7 @@ type mem struct {
 
 type memRepo struct {
 	mu      sync.Mutex
+	wg      sync.WaitGroup
 	timeMod time.Time
 	index   types.Index
 	blobs   map[digest.Digest]*memRepoBlob
@@ -75,7 +76,14 @@ func NewMem(conf config.Config, opts ...Opts) Store {
 func (m *mem) RepoGet(repoStr string) (Repo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// if stop ch was closed, fail
+	select {
+	case <-m.stop:
+		return nil, fmt.Errorf("cannot get repo after Close")
+	default:
+	}
 	if mr, ok := m.repos[repoStr]; ok {
+		mr.wg.Add(1)
 		return mr, nil
 	}
 	mr := &memRepo{
@@ -99,18 +107,32 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 			return nil, err
 		}
 	}
+	mr.wg.Add(1)
 	m.repos[repoStr] = mr
 	return mr, nil
 }
 
 func (m *mem) Close() error {
-	// signal to background jobs to exit
+	// signal to background jobs to exit and block new repos from being created
 	close(m.stop)
-	// mem is unusable after close, reset the repos to free memory and stop a running GC
+	// wait for access to each repo to finish, and then delete it to free memory
 	m.mu.Lock()
-	m.repos = map[string]*memRepo{}
-	m.mu.Unlock()
+	repoNames := make([]string, 0, len(m.repos))
+	for r := range m.repos {
+		repoNames = append(repoNames, r)
+	}
+	for _, r := range repoNames {
+		repo, ok := m.repos[r]
+		if !ok {
+			continue
+		}
+		m.mu.Unlock()
+		repo.wg.Wait()
+		m.mu.Lock()
+		delete(m.repos, r)
+	}
 	// wait for background jobs to finish
+	m.mu.Unlock()
 	m.wg.Wait()
 	return nil
 }
@@ -141,24 +163,33 @@ func (m *mem) gc() error {
 	if m.conf.Storage.GC.Frequency > 0 {
 		start = start.Add(m.conf.Storage.GC.Frequency * -1)
 	}
-	repoNames := make([]string, 0, len(m.repos))
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// since the lock isn't held for the entire GC, build a list of repos to check
+	repoNames := make([]string, 0, len(m.repos))
 	for r := range m.repos {
 		repoNames = append(repoNames, r)
 	}
 	for _, r := range repoNames {
+		// if stop ch was closed, exit immediately
+		select {
+		case <-m.stop:
+			return fmt.Errorf("stop signal received")
+		default:
+		}
 		repo, ok := m.repos[r]
 		if !ok {
 			continue
 		}
+		// skip repos that were not last updated between grace period and frequency
 		if repo.timeMod.Before(start) || repo.timeMod.After(stop) {
 			continue
 		}
 		// drop top level lock while GCing a single repo
+		repo.wg.Add(1)
 		m.mu.Unlock()
 		err := repo.gc()
+		repo.wg.Done()
 		m.mu.Lock()
 		if err != nil {
 			return err
@@ -359,6 +390,12 @@ func (mr *memRepo) BlobDelete(d digest.Digest) error {
 	}
 	mr.timeMod = time.Now()
 	return nil
+}
+
+// Done indicates the routine using this repo is finished.
+// This must be called exactly once for every instance of [Store.RepoGet].
+func (mr *memRepo) Done() {
+	mr.wg.Done()
 }
 
 // gc runs the garbage collect

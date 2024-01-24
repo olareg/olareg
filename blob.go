@@ -37,6 +37,7 @@ func (s *Server) blobGet(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
+		defer repo.Done()
 		d, err := digest.Parse(arg)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -82,6 +83,7 @@ func (s *Server) blobDelete(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
+		defer repo.Done()
 		d, err := digest.Parse(arg)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -165,6 +167,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr)
 			return
 		}
+		defer repo.Done()
 		// check for mount=digest&from=repo, consider allowing anonymous blob mounts
 		mountStr := r.URL.Query().Get("mount")
 		fromStr := r.URL.Query().Get("from")
@@ -290,10 +293,12 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 	if err != nil {
 		return err
 	}
+	defer repoSrc.Done()
 	repoTgt, err := s.store.RepoGet(repoTgtStr)
 	if err != nil {
 		return err
 	}
+	defer repoTgt.Done()
 	dig, err := digest.Parse(digStr)
 	if err != nil {
 		return err
