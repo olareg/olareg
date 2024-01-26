@@ -517,6 +517,10 @@ func (dr *dirRepo) gc() error {
 	if dr.conf.Storage.GC.GracePeriod >= 0 {
 		cutoff = time.Now().Add(dr.conf.Storage.GC.GracePeriod * -1)
 	}
+	err := dr.indexLoad(true, locked)
+	if err != nil {
+		return fmt.Errorf("failed to load index: %w", err)
+	}
 	manifests := make([]types.Descriptor, 0, len(dr.index.Manifests))
 	subjects := map[digest.Digest]types.Descriptor{}
 	inIndex := map[digest.Digest]bool{}
@@ -611,6 +615,7 @@ func (dr *dirRepo) gc() error {
 	if err != nil {
 		return fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir), err)
 	}
+	mod := false
 	for _, algo := range algoS {
 		if !algo.IsDir() {
 			continue
@@ -639,10 +644,16 @@ func (dr *dirRepo) gc() error {
 			}
 			// prune from index
 			if inIndex[d] {
+				mod = true
 				dr.index.RmDesc(types.Descriptor{Digest: d})
 			}
 			// attempt to prune from blob store, ignoring errors
 			_ = os.Remove(filename)
+		}
+	}
+	if mod {
+		if err := dr.indexSave(locked); err != nil {
+			return err
 		}
 	}
 	return nil
