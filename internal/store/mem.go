@@ -363,11 +363,18 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 
 // BlobDelete deletes an entry from the CAS.
 func (mr *memRepo) BlobDelete(d digest.Digest) error {
+	return mr.blobDelete(d, false)
+}
+
+// blobDelete is the internal method for deleting a blob.
+func (mr *memRepo) blobDelete(d digest.Digest, locked bool) error {
 	if *mr.conf.Storage.ReadOnly {
 		return types.ErrReadOnly
 	}
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
+	if !locked {
+		mr.mu.Lock()
+		defer mr.mu.Unlock()
+	}
 	_, ok := mr.blobs[d]
 	if ok {
 		if mr.path != "" {
@@ -392,6 +399,45 @@ func (mr *memRepo) BlobDelete(d digest.Digest) error {
 	return nil
 }
 
+// blobList returns a list of all known blobs in the repo
+func (mr *memRepo) blobList(locked bool) ([]digest.Digest, error) {
+	if !locked {
+		mr.mu.Lock()
+		defer mr.mu.Unlock()
+	}
+	dl := make([]digest.Digest, 0, len(mr.blobs))
+	for d, v := range mr.blobs {
+		if v != nil {
+			dl = append(dl, d)
+		}
+	}
+	if mr.path != "" {
+		algoS, err := os.ReadDir(filepath.Join(mr.path, blobsDir))
+		if err == nil {
+			for _, algo := range algoS {
+				if !algo.IsDir() {
+					continue
+				}
+				encodeS, err := os.ReadDir(filepath.Join(mr.path, blobsDir, algo.Name()))
+				if err != nil {
+					continue
+				}
+				for _, encode := range encodeS {
+					d, err := digest.Parse(algo.Name() + ":" + encode.Name())
+					if err != nil {
+						// skip unparsable entries
+						continue
+					}
+					if _, ok := mr.blobs[d]; !ok {
+						dl = append(dl, d)
+					}
+				}
+			}
+		}
+	}
+	return dl, nil
+}
+
 // Done indicates the routine using this repo is finished.
 // This must be called exactly once for every instance of [Store.RepoGet].
 func (mr *memRepo) Done() {
@@ -402,107 +448,12 @@ func (mr *memRepo) Done() {
 func (mr *memRepo) gc() error {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
-	var cutoff time.Time
-	if mr.conf.Storage.GC.GracePeriod >= 0 {
-		cutoff = time.Now().Add(mr.conf.Storage.GC.GracePeriod * -1)
+	i, mod, err := repoGarbageCollect(mr, mr.conf, mr.index, true)
+	if err != nil {
+		return err
 	}
-	manifests := make([]types.Descriptor, 0, len(mr.index.Manifests))
-	subjects := map[digest.Digest]types.Descriptor{}
-	inIndex := map[digest.Digest]bool{}
-	// build a list of manifests and subjects to scan
-	for _, d := range mr.index.Manifests {
-		inIndex[d.Digest] = true
-		keep := false
-		// keep tagged entries or every entry if untagged entries are not GCed
-		if !*mr.conf.Storage.GC.Untagged || (d.Annotations != nil && d.Annotations[types.AnnotRefName] != "") {
-			keep = true
-		}
-		// keep new blobs
-		if !keep && mr.conf.Storage.GC.GracePeriod >= 0 && mr.blobs[d.Digest].m.mod.After(cutoff) {
-			keep = true
-		}
-		// referrers responses
-		if d.Annotations != nil && d.Annotations[types.AnnotReferrerSubject] != "" {
-			dig, _ := digest.Parse(d.Annotations[types.AnnotReferrerSubject])
-			subjExists := false
-			if _, ok := mr.blobs[dig]; dig != "" && ok {
-				subjExists = true
-			}
-			if *mr.conf.Storage.GC.ReferrersWithSubj && subjExists {
-				// track a map of responses only preserved when their subject remains
-				subjects[dig] = d.Copy()
-				keep = false
-			} else if !*mr.conf.Storage.GC.ReferrersDangling {
-				// keep if dangling aren't GCed
-				keep = true
-			} else if subjExists {
-				// subject exists but need to delete dangling
-				if mr.conf.Storage.GC.GracePeriod >= 0 && mr.blobs[d.Digest].m.mod.After(cutoff) {
-					// always keep new entries
-					keep = true
-				} else {
-					// else preserve only if subject remains
-					subjects[dig] = d.Copy()
-					keep = false
-				}
-			}
-		}
-		if keep {
-			manifests = append(manifests, d.Copy())
-		}
-	}
-	seen := map[digest.Digest]bool{}
-	// walk all manifests to note seen digests
-	for len(manifests) > 0 {
-		// work from tail to make deletes easier
-		d := manifests[len(manifests)-1]
-		manifests = manifests[:len(manifests)-1]
-		if _, ok := mr.blobs[d.Digest]; !ok || seen[d.Digest] {
-			// skip missing or already seen blobs
-			continue
-		}
-		seen[d.Digest] = true
-		// parse manifests for descriptors (manifests, config, layers)
-		if types.MediaTypeIndex(d.MediaType) {
-			man := types.Index{}
-			err := json.Unmarshal(mr.blobs[d.Digest].b, &man)
-			if err != nil {
-				continue
-			}
-			for _, child := range man.Manifests {
-				manifests = append(manifests, child.Copy())
-			}
-		} else if types.MediaTypeImage(d.MediaType) {
-			man := types.Manifest{}
-			err := json.Unmarshal(mr.blobs[d.Digest].b, &man)
-			if err != nil {
-				continue
-			}
-			seen[man.Config.Digest] = true
-			for _, layer := range man.Layers {
-				seen[layer.Digest] = true
-			}
-		}
-		// if there are referrers to this manifest
-		if referrer, ok := subjects[d.Digest]; ok {
-			manifests = append(manifests, referrer)
-		}
-	}
-	// clean old blobs that were not seen
-	for d := range mr.blobs {
-		if seen[d] {
-			continue
-		}
-		if mr.conf.Storage.GC.GracePeriod >= 0 && mr.blobs[d].m.mod.After(cutoff) && !inIndex[d] {
-			// keep recently uploaded blobs (manifests handled above)
-			continue
-		}
-		// prune from index
-		if inIndex[d] {
-			mr.index.RmDesc(types.Descriptor{Digest: d})
-		}
-		// prune from blob store
-		delete(mr.blobs, d)
+	if mod {
+		mr.index = i
 	}
 	return nil
 }

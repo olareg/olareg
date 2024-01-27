@@ -62,8 +62,12 @@ type Repo interface {
 	// This must be called exactly once for every instance of [Store.RepoGet].
 	Done()
 
+	// blobDelete is the internal method for deleting a blob.
+	blobDelete(d digest.Digest, locked bool) error
 	// blobGet is an internal method for accessing blobs from other store methods.
 	blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error)
+	// blobList returns a list of all known blobs in the repo
+	blobList(locked bool) ([]digest.Digest, error)
 	// blobMeta returns metadata on a blob.
 	blobMeta(d digest.Digest, locked bool) (blobMeta, error)
 	// gc runs the garbage collect
@@ -357,6 +361,139 @@ func referrerListDedup(rl []types.Descriptor) []types.Descriptor {
 		i++
 	}
 	return rl
+}
+
+// repoGarbageCollect runs a GC against the repo.
+// The repo should be locked before calling this.
+// Changes to the index will be returned and should be saved to the store.
+func repoGarbageCollect(repo Repo, conf config.Config, index types.Index, locked bool) (types.Index, bool, error) {
+	var cutoff time.Time
+	if conf.Storage.GC.GracePeriod >= 0 {
+		cutoff = time.Now().Add(conf.Storage.GC.GracePeriod * -1)
+	}
+	manifests := make([]types.Descriptor, 0, len(index.Manifests))
+	subjects := map[digest.Digest]types.Descriptor{}
+	inIndex := map[digest.Digest]bool{}
+	// build a list of manifests and subjects to scan
+	for _, d := range index.Manifests {
+		inIndex[d.Digest] = true
+		keep := false
+		// keep tagged entries or every entry if untagged entries are not GCed
+		if !*conf.Storage.GC.Untagged || (d.Annotations != nil && d.Annotations[types.AnnotRefName] != "") {
+			keep = true
+		}
+		// keep new blobs
+		if !keep && conf.Storage.GC.GracePeriod >= 0 {
+			if meta, err := repo.blobMeta(d.Digest, locked); err == nil && meta.mod.After(cutoff) {
+				keep = true
+			}
+		}
+		// referrers responses
+		if d.Annotations != nil && d.Annotations[types.AnnotReferrerSubject] != "" {
+			dig, _ := digest.Parse(d.Annotations[types.AnnotReferrerSubject])
+			subjExists := (dig != "")
+			if _, err := repo.blobMeta(dig, locked); subjExists && err != nil {
+				subjExists = false
+			}
+			if *conf.Storage.GC.ReferrersWithSubj && subjExists {
+				// track a map of responses only preserved when their subject remains
+				subjects[dig] = d.Copy()
+				keep = false
+			} else if !*conf.Storage.GC.ReferrersDangling {
+				// keep if dangling aren't GCed
+				keep = true
+			} else if subjExists {
+				// subject exists but need to delete dangling
+				if meta, err := repo.blobMeta(d.Digest, locked); err == nil && conf.Storage.GC.GracePeriod >= 0 && meta.mod.After(cutoff) {
+					// always keep new entries
+					keep = true
+				} else {
+					// else preserve only if subject remains
+					subjects[dig] = d.Copy()
+					keep = false
+				}
+			}
+		}
+		if keep {
+			manifests = append(manifests, d.Copy())
+		}
+	}
+	seen := map[digest.Digest]bool{}
+	// walk all manifests to note seen digests
+	for len(manifests) > 0 {
+		// work from tail to make deletes easier
+		d := manifests[len(manifests)-1]
+		manifests = manifests[:len(manifests)-1]
+		inIndex[d.Digest] = true
+		if seen[d.Digest] {
+			continue
+		}
+		br, err := repo.blobGet(d.Digest, locked)
+		if err != nil {
+			continue
+		}
+		seen[d.Digest] = true
+		// parse manifests for descriptors (manifests, config, layers)
+		if types.MediaTypeIndex(d.MediaType) {
+			man := types.Index{}
+			err = json.NewDecoder(br).Decode(&man)
+			errClose := br.Close()
+			if err != nil || errClose != nil {
+				continue
+			}
+			for _, child := range man.Manifests {
+				manifests = append(manifests, child.Copy())
+			}
+		} else if types.MediaTypeImage(d.MediaType) {
+			man := types.Manifest{}
+			err = json.NewDecoder(br).Decode(&man)
+			errClose := br.Close()
+			if err != nil || errClose != nil {
+				continue
+			}
+			seen[man.Config.Digest] = true
+			for _, layer := range man.Layers {
+				seen[layer.Digest] = true
+			}
+		}
+		// if there are referrers to this manifest
+		if referrer, ok := subjects[d.Digest]; ok {
+			manifests = append(manifests, referrer)
+		}
+	}
+	// clean old blobs that were not seen
+	mod := false
+	blobExists := map[digest.Digest]bool{}
+	dl, err := repo.blobList(locked)
+	if err != nil {
+		return index, false, fmt.Errorf("failed to list blobs to GC: %w", err)
+	}
+	for _, d := range dl {
+		blobExists[d] = true
+		if seen[d] {
+			continue
+		}
+		bInfo, errMeta := repo.blobMeta(d, locked)
+		if errMeta == nil && conf.Storage.GC.GracePeriod >= 0 && bInfo.mod.After(cutoff) && !inIndex[d] {
+			// keep recently uploaded blobs (manifests handled above)
+			continue
+		}
+		// prune from index, check existence directly since some index entries may not be accessible
+		if _, err := index.GetDesc(d.String()); err == nil {
+			mod = true
+			index.RmDesc(types.Descriptor{Digest: d})
+		}
+		// attempt to prune from blob store, ignoring errors
+		_ = repo.blobDelete(d, locked)
+	}
+	// cleanup index entries without a backing blob
+	for d := range inIndex {
+		if !blobExists[d] {
+			mod = true
+			index.RmDesc(types.Descriptor{Digest: d})
+		}
+	}
+	return index, mod, nil
 }
 
 func repoGetIndex(repo Repo, d types.Descriptor, locked bool) (types.Index, error) {
