@@ -436,6 +436,7 @@ func TestStore(t *testing.T) {
 func TestGarbageCollect(t *testing.T) {
 	var err error
 	// TODO: track description of each blob for error messages
+	testRepo := "testrepo"
 	// create test data to push
 	blobList := [][]byte{}
 	descList := []types.Descriptor{}
@@ -911,6 +912,41 @@ func TestGarbageCollect(t *testing.T) {
 			expectMiss: []digest.Digest{},
 		},
 		{
+			name: "Mem Path Untagged Dangling",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					RootDir:   "../../testdata/",
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolF,
+					},
+				},
+			},
+			expectExist: []digest.Digest{
+				digImageConf,
+				digIndex,
+				digImage[imageChild1], digImageLayer[imageChild1],
+				digImage[imageChild2], digImageLayer[imageChild2],
+				digImage[imageTagged], digImageLayer[imageTagged],
+				digImage[imageUntagged], digImageLayer[imageUntagged],
+				digReferrer[referrerToChild1], digReferrerLayer[referrerToChild1],
+				digReferrer[referrerToChild2], digReferrerLayer[referrerToChild2],
+				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
+				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
+				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
+				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
+				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
+				digCircular,
+			},
+			expectMiss: []digest.Digest{
+				digBlob,
+			},
+		},
+		{
 			name: "Dir Untagged Dangling",
 			conf: config.Config{
 				Storage: config.ConfigStorage{
@@ -1137,7 +1173,7 @@ func TestGarbageCollect(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			repo, err := s.RepoGet("test")
+			repo, err := s.RepoGet(testRepo)
 			if err != nil {
 				t.Fatalf("failed to get repo: %v", err)
 			}

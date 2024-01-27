@@ -335,6 +335,10 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 
 // BlobDelete deletes an entry from the CAS.
 func (dr *dirRepo) BlobDelete(d digest.Digest) error {
+	return dr.blobDelete(d, false)
+}
+
+func (dr *dirRepo) blobDelete(d digest.Digest, locked bool) error {
 	if *dr.conf.Storage.ReadOnly {
 		return types.ErrReadOnly
 	}
@@ -354,6 +358,32 @@ func (dr *dirRepo) BlobDelete(d digest.Digest) error {
 	}
 	err = os.Remove(filename)
 	return err
+}
+
+func (dr *dirRepo) blobList(locked bool) ([]digest.Digest, error) {
+	dl := []digest.Digest{}
+	algoS, err := os.ReadDir(filepath.Join(dr.path, blobsDir))
+	if err != nil {
+		return dl, fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir), err)
+	}
+	for _, algo := range algoS {
+		if !algo.IsDir() {
+			continue
+		}
+		encodeS, err := os.ReadDir(filepath.Join(dr.path, blobsDir, algo.Name()))
+		if err != nil {
+			return dl, fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir, algo.Name()), err)
+		}
+		for _, encode := range encodeS {
+			d, err := digest.Parse(algo.Name() + ":" + encode.Name())
+			if err != nil {
+				// skip unparsable entries
+				continue
+			}
+			dl = append(dl, d)
+		}
+	}
+	return dl, nil
 }
 
 func (dr *dirRepo) repoInit(locked bool) error {
@@ -512,147 +542,17 @@ func (dr *dirRepo) Done() {
 func (dr *dirRepo) gc() error {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
-	locked := true
-	var cutoff time.Time
-	if dr.conf.Storage.GC.GracePeriod >= 0 {
-		cutoff = time.Now().Add(dr.conf.Storage.GC.GracePeriod * -1)
-	}
-	err := dr.indexLoad(true, locked)
+	err := dr.indexLoad(true, true)
 	if err != nil {
 		return fmt.Errorf("failed to load index: %w", err)
 	}
-	manifests := make([]types.Descriptor, 0, len(dr.index.Manifests))
-	subjects := map[digest.Digest]types.Descriptor{}
-	inIndex := map[digest.Digest]bool{}
-	// build a list of manifests and subjects to scan
-	for _, d := range dr.index.Manifests {
-		inIndex[d.Digest] = true
-		keep := false
-		// keep tagged entries or every entry if untagged entries are not GCed
-		if !*dr.conf.Storage.GC.Untagged || (d.Annotations != nil && d.Annotations[types.AnnotRefName] != "") {
-			keep = true
-		}
-		// keep new blobs
-		if !keep && dr.conf.Storage.GC.GracePeriod >= 0 {
-			if meta, err := dr.blobMeta(d.Digest, locked); err == nil && meta.mod.After(cutoff) {
-				keep = true
-			}
-		}
-		// referrers responses
-		if d.Annotations != nil && d.Annotations[types.AnnotReferrerSubject] != "" {
-			dig, _ := digest.Parse(d.Annotations[types.AnnotReferrerSubject])
-			subjExists := (dig != "")
-			if _, err := dr.blobMeta(dig, locked); subjExists && err != nil {
-				subjExists = false
-			}
-			if *dr.conf.Storage.GC.ReferrersWithSubj && subjExists {
-				// track a map of responses only preserved when their subject remains
-				subjects[dig] = d.Copy()
-				keep = false
-			} else if !*dr.conf.Storage.GC.ReferrersDangling {
-				// keep if dangling aren't GCed
-				keep = true
-			} else if subjExists {
-				// subject exists but need to delete dangling
-				if meta, err := dr.blobMeta(d.Digest, locked); err == nil && dr.conf.Storage.GC.GracePeriod >= 0 && meta.mod.After(cutoff) {
-					// always keep new entries
-					keep = true
-				} else {
-					// else preserve only if subject remains
-					subjects[dig] = d.Copy()
-					keep = false
-				}
-			}
-		}
-		if keep {
-			manifests = append(manifests, d.Copy())
-		}
-	}
-	seen := map[digest.Digest]bool{}
-	// walk all manifests to note seen digests
-	for len(manifests) > 0 {
-		// work from tail to make deletes easier
-		d := manifests[len(manifests)-1]
-		manifests = manifests[:len(manifests)-1]
-		if seen[d.Digest] {
-			continue
-		}
-		br, err := dr.blobGet(d.Digest, locked)
-		if err != nil {
-			continue
-		}
-		seen[d.Digest] = true
-		// parse manifests for descriptors (manifests, config, layers)
-		if types.MediaTypeIndex(d.MediaType) {
-			man := types.Index{}
-			err = json.NewDecoder(br).Decode(&man)
-			errClose := br.Close()
-			if err != nil || errClose != nil {
-				continue
-			}
-			for _, child := range man.Manifests {
-				manifests = append(manifests, child.Copy())
-			}
-		} else if types.MediaTypeImage(d.MediaType) {
-			man := types.Manifest{}
-			err = json.NewDecoder(br).Decode(&man)
-			errClose := br.Close()
-			if err != nil || errClose != nil {
-				continue
-			}
-			seen[man.Config.Digest] = true
-			for _, layer := range man.Layers {
-				seen[layer.Digest] = true
-			}
-		}
-		// if there are referrers to this manifest
-		if referrer, ok := subjects[d.Digest]; ok {
-			manifests = append(manifests, referrer)
-		}
-	}
-	// clean old blobs that were not seen
-	algoS, err := os.ReadDir(filepath.Join(dr.path, blobsDir))
+	i, mod, err := repoGarbageCollect(dr, dr.conf, dr.index, true)
 	if err != nil {
-		return fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir), err)
-	}
-	mod := false
-	for _, algo := range algoS {
-		if !algo.IsDir() {
-			continue
-		}
-		encodeS, err := os.ReadDir(filepath.Join(dr.path, blobsDir, algo.Name()))
-		if err != nil {
-			return fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir, algo.Name()), err)
-		}
-		for _, encode := range encodeS {
-			d, err := digest.Parse(algo.Name() + ":" + encode.Name())
-			if err != nil {
-				// skip unparsable entries
-				continue
-			}
-			if seen[d] {
-				continue
-			}
-			filename := filepath.Join(dr.path, blobsDir, algo.Name(), encode.Name())
-			fi, err := os.Stat(filename)
-			if err != nil || fi.IsDir() {
-				continue
-			}
-			if dr.conf.Storage.GC.GracePeriod >= 0 && fi.ModTime().After(cutoff) && !inIndex[d] {
-				// keep recently uploaded blobs (manifests handled above)
-				continue
-			}
-			// prune from index
-			if inIndex[d] {
-				mod = true
-				dr.index.RmDesc(types.Descriptor{Digest: d})
-			}
-			// attempt to prune from blob store, ignoring errors
-			_ = os.Remove(filename)
-		}
+		return err
 	}
 	if mod {
-		if err := dr.indexSave(locked); err != nil {
+		dr.index = i
+		if err := dr.indexSave(true); err != nil {
 			return err
 		}
 	}
