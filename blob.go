@@ -59,7 +59,7 @@ func (s *Server) blobGet(repoStr, arg string) http.HandlerFunc {
 		}
 		defer rdr.Close()
 		w.Header().Add("Content-Type", "application/octet-stream")
-		w.Header().Add("Docker-Content-Digest", d.String())
+		w.Header().Add(types.HeaderDockerDigest, d.String())
 		// use ServeContent to handle range requests
 		http.ServeContent(w, r, "", time.Time{}, rdr)
 	}

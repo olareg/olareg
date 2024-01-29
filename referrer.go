@@ -80,21 +80,23 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 		MediaType:     types.MediaTypeOCI1ManifestList,
 	}
 	// existing referrer response exists to update/replace, use that to populate index
-	dOld, err := index.GetByAnnotation(types.AnnotReferrerSubject, subject.String())
-	if err == nil {
-		rdr, err := repo.BlobGet(dOld.Digest)
-		if err != nil {
-			return err
-		}
-		iRaw, err := io.ReadAll(rdr)
-		_ = rdr.Close()
-		if err != nil {
-			return err
-		}
-		err = json.Unmarshal(iRaw, &refResp)
-		if err != nil {
-			return err
-		}
+	// all errors reading existing referrers result in defaulting to an initial empty response
+	if dOld, err := index.GetByAnnotation(types.AnnotReferrerSubject, subject.String()); err == nil {
+		func() {
+			rdr, err := repo.BlobGet(dOld.Digest)
+			if err != nil {
+				return
+			}
+			iRaw, err := io.ReadAll(rdr)
+			_ = rdr.Close()
+			if err != nil {
+				return
+			}
+			err = json.Unmarshal(iRaw, &refResp)
+			if err != nil {
+				return
+			}
+		}()
 	}
 	// add descriptor to index and push into blob store
 	refResp.AddDesc(desc)
