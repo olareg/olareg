@@ -167,7 +167,7 @@ func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 		rdr, err := repo.BlobGet(desc.Digest)
 		if err != nil {
 			s.log.Info("failed to open manifest blob", "err", err)
-			if os.IsNotExist(err) {
+			if errors.Is(err, types.ErrNotFound) || os.IsNotExist(err) {
 				w.WriteHeader(http.StatusNotFound)
 				_ = types.ErrRespJSON(w, types.ErrInfoManifestBlobUnknown("requested manifest was not found in blob store"))
 			} else {
@@ -177,7 +177,7 @@ func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 		}
 		defer rdr.Close()
 		w.Header().Add("Content-Type", desc.MediaType)
-		w.Header().Add("Docker-Content-Digest", desc.Digest.String())
+		w.Header().Add(types.HeaderDockerDigest, desc.Digest.String())
 		// use ServeContent to handle range requests
 		http.ServeContent(w, r, "", time.Time{}, rdr)
 	}
@@ -388,7 +388,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("location", loc)
-		w.Header().Add("Docker-Content-Digest", d.String())
+		w.Header().Add(types.HeaderDockerDigest, d.String())
 		w.WriteHeader(http.StatusCreated)
 	}
 }

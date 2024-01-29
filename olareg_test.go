@@ -35,10 +35,17 @@ func TestServer(t *testing.T) {
 	}
 	existingRepo := "testrepo"
 	existingTag := "v2"
+	corruptRepo := "corrupt"
+	corruptTag := "v2"
 	tempDir := t.TempDir()
 	err = copy.Copy(tempDir+"/"+existingRepo, "./testdata/"+existingRepo)
 	if err != nil {
 		t.Errorf("failed to copy %s to tempDir: %v", existingRepo, err)
+		return
+	}
+	err = copy.Copy(tempDir+"/"+corruptRepo, "./testdata/"+corruptRepo)
+	if err != nil {
+		t.Errorf("failed to copy %s to tempDir: %v", corruptRepo, err)
 		return
 	}
 	boolT := true
@@ -189,9 +196,9 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					return
 				}
-				digI, err := digest.Parse(resp.Header().Get("Docker-Content-Digest"))
+				digI, err := digest.Parse(resp.Header().Get(types.HeaderDockerDigest))
 				if err != nil {
-					t.Errorf("unable to parse index digest, %s: %v", resp.Header().Get("Docker-Content-Digest"), err)
+					t.Errorf("unable to parse index digest, %s: %v", resp.Header().Get(types.HeaderDockerDigest), err)
 					return
 				}
 				b, err := io.ReadAll(resp.Body)
@@ -402,10 +409,112 @@ func TestServer(t *testing.T) {
 					return
 				}
 			})
+			t.Run("Corrupt Repo", func(t *testing.T) {
+				if !tcServer.existing {
+					return
+				}
+				t.Parallel()
+				// get the digest for the existing v2 manifest
+				resp, err := testAPIManifestHead(t, s, existingRepo, existingTag, nil)
+				if err != nil {
+					t.Fatalf("failed to get manifest for existing tag: %v", err)
+				}
+				digStr := resp.Header().Get(types.HeaderDockerDigest)
+				if digStr == "" {
+					t.Fatalf("failed to get digest for v2 tag")
+				}
+				dig, err := digest.Parse(digStr)
+				if err != nil {
+					t.Fatalf("failed to parse digest %s: %v", digStr, err)
+				}
+				mt := resp.Header().Get("Content-Type")
+				if mt == "" {
+					t.Fatalf("media type missing for v2 tag")
+				}
+				// get the v2 manifest, verify it is 404
+				_, err = testClientRun(t, s, "GET", "/v2/"+corruptRepo+"/manifests/"+corruptTag, nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientRespStatus(http.StatusNotFound),
+				)
+				if err != nil {
+					t.Errorf("corrupt manifest did not 404 by tag")
+				}
+				// get the v2 manifest by digest, verify it is 404
+				_, err = testClientRun(t, s, "GET", "/v2/"+corruptRepo+"/manifests/"+dig.String(), nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientRespStatus(http.StatusNotFound),
+				)
+				if err != nil {
+					t.Errorf("corrupt manifest did not 404 by digest")
+				}
+
+				if tcServer.readOnly {
+					return
+				}
+				// push a referrer to the corrupt repo with the v2 subject
+				emptyBlobBytes := []byte("{}")
+				emptyBlobDig := digest.Canonical.FromBytes(emptyBlobBytes)
+				_, err = testAPIBlobPostPut(t, s, corruptRepo, emptyBlobDig, emptyBlobBytes)
+				if err != nil {
+					t.Fatalf("failed to push empty blob: %v", err)
+				}
+				referrerMan := types.Manifest{
+					SchemaVersion: 2,
+					MediaType:     types.MediaTypeOCI1Manifest,
+					ArtifactType:  "application/example.test",
+					Config: types.Descriptor{
+						MediaType: types.MediaTypeOCI1Empty,
+						Digest:    emptyBlobDig,
+						Size:      int64(len(emptyBlobBytes)),
+					},
+					Layers: []types.Descriptor{
+						{
+							MediaType: types.MediaTypeOCI1Empty,
+							Digest:    emptyBlobDig,
+							Size:      int64(len(emptyBlobBytes)),
+						},
+					},
+					Subject: &types.Descriptor{
+						MediaType: mt,
+						Digest:    dig,
+						Size:      resp.Result().ContentLength,
+					},
+				}
+				referrerBytes, err := json.Marshal(referrerMan)
+				if err != nil {
+					t.Fatalf("failed to marshal referrer: %v", err)
+				}
+				referrerDig := digest.Canonical.FromBytes(referrerBytes)
+				_, err = testAPIManifestPut(t, s, corruptRepo, referrerDig.String(), referrerBytes)
+				if err != nil {
+					t.Fatalf("failed to push referrer: %v", err)
+				}
+				// verify referrer response is a single entry
+				refResp, err := testAPIReferrersList(t, s, corruptRepo, dig, nil)
+				if err != nil {
+					t.Fatalf("failed to get referrers: %v", err)
+				}
+				refRespIndex := types.Index{}
+				err = json.Unmarshal(refResp.Body.Bytes(), &refRespIndex)
+				if err != nil {
+					t.Fatalf("failed to unmarshal referrer response: %v", err)
+				}
+				if len(refRespIndex.Manifests) != 1 {
+					t.Fatalf("unexpected number of referrers, expected 1, received %d", len(refRespIndex.Manifests))
+				}
+				if refRespIndex.Manifests[0].Digest != referrerDig {
+					t.Errorf("unexpected digest for referrer entry, expected %s, received %s", referrerDig.String(), refRespIndex.Manifests[0].Digest.String())
+				}
+			})
 			// TODO: test tag listing before and after pushing manifest
 			// TODO: test deleting manifests and blobs
 			// TODO: test blob chunked upload, and stream upload
-			// TODO: test pushing manifest with subject and querying referrers
 		})
 	}
 }
@@ -687,6 +796,31 @@ func testAPIManifestGet(t *testing.T, s *Server, repo string, digOrTag string, b
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send manifest get: %v", err)
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+func testAPIManifestHead(t *testing.T, s *Server, repo string, digOrTag string, body []byte) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+	tcgList := []testClientGen{
+		testClientRespStatus(http.StatusOK),
+		testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+		testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+		testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+		testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+	}
+	if body != nil {
+		tcgList = append(tcgList, testClientRespBody(body))
+		if mt := detectMediaType(body); mt != "" {
+			tcgList = append(tcgList, testClientRespHeader("Content-Type", mt))
+		}
+	}
+	resp, err := testClientRun(t, s, "HEAD", "/v2/"+repo+"/manifests/"+digOrTag, nil, tcgList...)
+	if err != nil {
+		if !errors.Is(err, errValidationFailed) {
+			t.Errorf("failed to send manifest head: %v", err)
 		}
 		return nil, err
 	}
