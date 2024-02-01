@@ -30,14 +30,14 @@ ifeq "$(strip $(VER_BUMP))" ''
 		$(VER_BUMP_CONTAINER)
 endif
 MARKDOWN_LINT_VER?=v0.12.1
-GOMAJOR_VER?=v0.10.0
+GOMAJOR_VER?=v0.10.1
 GOSEC_VER?=v2.18.2
 GO_VULNCHECK_VER?=v1.0.3
-OSV_SCANNER_VER?=v1.6.1
+OSV_SCANNER_VER?=v1.6.2
 SYFT?=$(shell command -v syft 2>/dev/null)
 SYFT_CMD_VER:=$(shell [ -x "$(SYFT)" ] && echo "v$$($(SYFT) version | awk '/^Version: / {print $$2}')" || echo "0")
-SYFT_VERSION?=v0.101.1
-SYFT_CONTAINER?=anchore/syft:v0.101.1@sha256:ea3df0f0d7b85b352911f2b4a06fd08e2f19cdc793812c8766f7813b6a1e98cb
+SYFT_VERSION?=v0.103.1
+SYFT_CONTAINER?=anchore/syft:v0.103.1@sha256:96c56b2554079d90e5fc8999278638ecca6454713fceebd26321d0698975b243
 ifneq "$(SYFT_CMD_VER)" "$(SYFT_VERSION)"
 	SYFT=docker run --rm \
 		-v "$(shell pwd)/:$(shell pwd)/" -w "$(shell pwd)" \
