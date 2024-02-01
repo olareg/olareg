@@ -105,7 +105,7 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 		return err
 	}
 	dig := digest.Canonical.FromBytes(iRaw)
-	bc, err := repo.BlobCreate(store.BlobWithDigest(dig))
+	bc, _, err := repo.BlobCreate(store.BlobWithDigest(dig))
 	if err != nil && !errors.Is(err, types.ErrBlobExists) {
 		return err
 	}
@@ -175,7 +175,7 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 		return err
 	}
 	dig := digest.Canonical.FromBytes(refRespRaw)
-	bc, err := repo.BlobCreate(store.BlobWithDigest(dig))
+	bc, _, err := repo.BlobCreate(store.BlobWithDigest(dig))
 	if err != nil && !errors.Is(err, types.ErrBlobExists) {
 		return err
 	}

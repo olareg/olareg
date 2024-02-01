@@ -42,18 +42,21 @@ type dirRepo struct {
 	path      string
 	exists    bool
 	index     types.Index
+	uploads   map[string]*dirRepoUpload
 	log       slog.Logger
 	conf      config.Config
 }
 
 type dirRepoUpload struct {
-	fh       *os.File
-	w        io.Writer
-	size     int64
-	d        digest.Digester
-	expect   digest.Digest
-	path     string
-	filename string
+	fh        *os.File
+	w         io.Writer
+	size      int64
+	d         digest.Digester
+	expect    digest.Digest
+	path      string
+	filename  string
+	dr        *dirRepo
+	sessionID string
 }
 
 // NewDir returns a directory store.
@@ -98,10 +101,11 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
 	}
 	dr := dirRepo{
-		path: filepath.Join(d.root, repoStr),
-		name: repoStr,
-		log:  d.log,
-		conf: d.conf,
+		path:    filepath.Join(d.root, repoStr),
+		name:    repoStr,
+		conf:    d.conf,
+		uploads: map[string]*dirRepoUpload{},
+		log:     d.log,
 	}
 	d.repos[repoStr] = &dr
 	statDir, err := os.Stat(dr.path)
@@ -279,9 +283,9 @@ func (dr *dirRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
 }
 
 // BlobCreate is used to create a new blob.
-func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
+func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 	if *dr.conf.Storage.ReadOnly {
-		return nil, types.ErrReadOnly
+		return nil, "", types.ErrReadOnly
 	}
 	conf := blobConfig{
 		algo: digest.Canonical,
@@ -292,45 +296,58 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 	if !dr.exists {
 		err := dr.repoInit(false)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	// if blob exists, return the appropriate error
 	if conf.expect != "" {
 		_, err := os.Stat(filepath.Join(dr.path, blobsDir, conf.expect.Algorithm().String(), conf.expect.Encoded()))
 		if err == nil {
-			return nil, types.ErrBlobExists
+			return nil, "", types.ErrBlobExists
 		}
+	}
+	sessionID, err := genSessionID()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed generating sessionID: %w", err)
+	}
+	if _, ok := dr.uploads[sessionID]; ok {
+		return nil, "", fmt.Errorf("session ID collision")
 	}
 	// create a temp file in the repo blob store, under an upload folder
 	tmpDir := filepath.Join(dr.path, uploadDir)
 	uploadFH, err := os.Stat(tmpDir)
 	if err == nil && !uploadFH.IsDir() {
-		return nil, fmt.Errorf("upload location %s is not a directory", tmpDir)
+		return nil, "", fmt.Errorf("upload location %s is not a directory", tmpDir)
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
 		err = os.MkdirAll(tmpDir, 0755)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create upload directory %s: %w", tmpDir, err)
+			return nil, "", fmt.Errorf("failed to create upload directory %s: %w", tmpDir, err)
 		}
 	}
 	tf, err := os.CreateTemp(tmpDir, "upload.*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file in %s: %w", tmpDir, err)
+		return nil, "", fmt.Errorf("failed to create temp file in %s: %w", tmpDir, err)
 	}
 	filename := tf.Name()
 	// start a new digester with the appropriate algo
 	d := conf.algo.Digester()
 	w := io.MultiWriter(tf, d.Hash())
-	return &dirRepoUpload{
-		fh:       tf,
-		w:        w,
-		d:        d,
-		expect:   conf.expect,
-		path:     dr.path,
-		filename: filename,
-	}, nil
+	bc := &dirRepoUpload{
+		fh:        tf,
+		w:         w,
+		d:         d,
+		expect:    conf.expect,
+		path:      dr.path,
+		filename:  filename,
+		dr:        dr,
+		sessionID: sessionID,
+	}
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
+	dr.uploads[sessionID] = bc
+	return bc, sessionID, nil
 }
 
 // BlobDelete deletes an entry from the CAS.
@@ -384,6 +401,16 @@ func (dr *dirRepo) blobList(locked bool) ([]digest.Digest, error) {
 		}
 	}
 	return dl, nil
+}
+
+// BlobSession is used to retrieve an upload session
+func (dr *dirRepo) BlobSession(sessionID string) (BlobCreator, error) {
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
+	if bc, ok := dr.uploads[sessionID]; ok {
+		return bc, nil
+	}
+	return nil, types.ErrNotFound
 }
 
 func (dr *dirRepo) repoInit(locked bool) error {
@@ -601,6 +628,9 @@ func (dru *dirRepoUpload) Close() error {
 		_ = os.Remove(dru.filename)
 		return err
 	}
+	dru.dr.mu.Lock()
+	defer dru.dr.mu.Unlock()
+	delete(dru.dr.uploads, dru.sessionID)
 	return nil
 }
 
@@ -610,6 +640,9 @@ func (dru *dirRepoUpload) Cancel() {
 		_ = dru.fh.Close()
 	}
 	_ = os.Remove(dru.filename)
+	dru.dr.mu.Lock()
+	defer dru.dr.mu.Unlock()
+	delete(dru.dr.uploads, dru.sessionID)
 }
 
 // Size reports the number of bytes pushed.

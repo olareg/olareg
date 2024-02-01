@@ -186,7 +186,7 @@ func TestStore(t *testing.T) {
 					t.Errorf("tag found after remove")
 				}
 				// push again
-				bc, err := repo.BlobCreate(BlobWithDigest(desc.Digest))
+				bc, _, err := repo.BlobCreate(BlobWithDigest(desc.Digest))
 				if err != nil {
 					t.Errorf("failed to create new blob: %v", err)
 					return
@@ -262,7 +262,7 @@ func TestStore(t *testing.T) {
 					t.Errorf("blobMeta on empty repo did not fail")
 				}
 				// push blobs
-				bc, err := repo.BlobCreate(BlobWithDigest(newBlobDigest))
+				bc, session1, err := repo.BlobCreate(BlobWithDigest(newBlobDigest))
 				if err != nil {
 					t.Errorf("failed to create new blob: %v", err)
 				}
@@ -286,9 +286,13 @@ func TestStore(t *testing.T) {
 				if err == nil {
 					t.Errorf("blobMeta on manifest after pushing blob did not fail")
 				}
-				bc, err = repo.BlobCreate()
+				_, session2, err := repo.BlobCreate()
 				if err != nil {
 					t.Errorf("failed to create new manifest: %v", err)
+				}
+				bc, err = repo.BlobSession(session2)
+				if err != nil {
+					t.Errorf("failed to get session: %v", err)
 				}
 				_, err = bc.Write(newManifestRaw)
 				if err != nil {
@@ -301,6 +305,18 @@ func TestStore(t *testing.T) {
 				err = bc.Verify(newManifestDigest)
 				if err != nil {
 					t.Errorf("failed to verify new manifest: %v", err)
+				}
+				bc, session3, err := repo.BlobCreate()
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				bc.Cancel()
+				// verify closed and canceled sessions are no longer available
+				for i, sessionID := range []string{session1, session2, session3} {
+					_, err := repo.BlobSession(sessionID)
+					if err == nil {
+						t.Errorf("session %d was returned after close/cancel", i)
+					}
 				}
 				// get blobs
 				rdr, err = repo.BlobGet(newBlobDigest)
@@ -1180,7 +1196,7 @@ func TestGarbageCollect(t *testing.T) {
 			defer repo.Done()
 			// push sample data
 			for _, blob := range blobList {
-				bc, err := repo.BlobCreate()
+				bc, _, err := repo.BlobCreate()
 				if err != nil {
 					t.Fatalf("failed to create blob: %v", err)
 				}
