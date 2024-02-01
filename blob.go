@@ -1,7 +1,6 @@
 package olareg
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	// imports required for go-digest
@@ -105,23 +103,26 @@ func (s *Server) blobDelete(repoStr, arg string) http.HandlerFunc {
 	}
 }
 
-// TODO: replace sessions with a cache that expires entries (with cancel) after some time and automatically cancels on shutdown.
-// TODO: cache can also limit concurrent sessions.
-var (
-	blobUploadSessions = map[string]store.BlobCreator{}
-	blobUploadMu       sync.Mutex
-)
-
 type blobUploadState struct {
 	Offset int64 `json:"offset"`
 }
 
 func (s *Server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		blobUploadMu.Lock()
-		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
-		blobUploadMu.Unlock()
-		if !ok {
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "sessionID", sessionID)
+			return
+		}
+		defer repo.Done()
+		bc, err := repo.BlobSession(sessionID)
+		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
 			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
@@ -195,7 +196,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			bOpts = append(bOpts, store.BlobWithDigest(d))
 		}
 		// create a new blob in the store
-		bc, err := repo.BlobCreate(bOpts...)
+		bc, sessionID, err := repo.BlobCreate(bOpts...)
 		if err != nil {
 			if errors.Is(err, types.ErrBlobExists) {
 				// blob exists, indicate it was created and return the location to get
@@ -244,16 +245,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			w.Header().Set("location", loc)
 			w.WriteHeader(http.StatusCreated)
 		}
-		// generate a session to track blob upload between requests
-		sb := make([]byte, 16)
-		_, err = rand.Read(sb)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			s.log.Error("failed to generate random session id", "err", err)
-			bc.Cancel()
-			return
-		}
-		sessionID := base64.RawURLEncoding.EncodeToString(sb)
+		// generate the response
 		stateJSON, err := json.Marshal(blobUploadState{Offset: 0})
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -262,15 +254,6 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			return
 		}
 		state := base64.RawURLEncoding.EncodeToString(stateJSON)
-		blobUploadMu.Lock()
-		defer blobUploadMu.Unlock()
-		if _, ok := blobUploadSessions[repoStr+":"+sessionID]; ok {
-			w.WriteHeader(http.StatusInternalServerError)
-			s.log.Error("session id collision", "err", err)
-			bc.Cancel()
-			return
-		}
-		blobUploadSessions[repoStr+":"+sessionID] = bc
 		// write the location (session id and state) and accepted status
 		loc := url.URL{
 			Path: r.URL.Path,
@@ -303,7 +286,7 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 	if err != nil {
 		return err
 	}
-	bc, err := repoTgt.BlobCreate(store.BlobWithDigest(dig))
+	bc, _, err := repoTgt.BlobCreate(store.BlobWithDigest(dig))
 	if err != nil {
 		if errors.Is(err, types.ErrBlobExists) {
 			// blob exists, indicate it was created and return the location to get
@@ -347,10 +330,20 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 
 func (s *Server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		blobUploadMu.Lock()
-		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
-		blobUploadMu.Unlock()
-		if !ok {
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "sessionID", sessionID)
+			return
+		}
+		defer repo.Done()
+		bc, err := repo.BlobSession(sessionID)
+		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
 			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
@@ -418,10 +411,20 @@ func (s *Server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 
 func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		blobUploadMu.Lock()
-		bc, ok := blobUploadSessions[repoStr+":"+sessionID]
-		blobUploadMu.Unlock()
-		if !ok {
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "sessionID", sessionID)
+			return
+		}
+		defer repo.Done()
+		bc, err := repo.BlobSession(sessionID)
+		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
 			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
@@ -497,10 +500,6 @@ func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 		}
 		w.Header().Set("location", loc)
 		w.WriteHeader(http.StatusCreated)
-		// upon success, delete the blob session
-		blobUploadMu.Lock()
-		delete(blobUploadSessions, repoStr+":"+sessionID)
-		blobUploadMu.Unlock()
 	}
 }
 

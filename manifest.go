@@ -333,7 +333,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		// push to blob store
-		bc, err := repo.BlobCreate(store.BlobWithDigest(d))
+		bc, _, err := repo.BlobCreate(store.BlobWithDigest(d))
 		if err != nil && !errors.Is(err, types.ErrBlobExists) {
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Info("failed to create blob", "repo", repoStr, "arg", arg, "err", err)

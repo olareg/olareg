@@ -34,6 +34,7 @@ type memRepo struct {
 	timeMod time.Time
 	index   types.Index
 	blobs   map[digest.Digest]*memRepoBlob
+	uploads map[string]*memRepoUpload
 	log     slog.Logger
 	path    string
 	conf    config.Config
@@ -45,11 +46,12 @@ type memRepoBlob struct {
 }
 
 type memRepoUpload struct {
-	buffer *bytes.Buffer
-	w      io.Writer
-	d      digest.Digester
-	expect digest.Digest
-	mr     *memRepo
+	buffer    *bytes.Buffer
+	w         io.Writer
+	d         digest.Digester
+	expect    digest.Digest
+	mr        *memRepo
+	sessionID string
 }
 
 func NewMem(conf config.Config, opts ...Opts) Store {
@@ -93,9 +95,10 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 			Manifests:     []types.Descriptor{},
 			Annotations:   map[string]string{},
 		},
-		blobs: map[digest.Digest]*memRepoBlob{},
-		log:   m.log,
-		conf:  m.conf,
+		blobs:   map[digest.Digest]*memRepoBlob{},
+		uploads: map[string]*memRepoUpload{},
+		log:     m.log,
+		conf:    m.conf,
 	}
 	if *m.conf.API.Referrer.Enabled {
 		mr.index.Annotations[types.AnnotReferrerConvert] = "true"
@@ -327,9 +330,9 @@ func (mr *memRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
 }
 
 // BlobCreate is used to create a new blob.
-func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
+func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 	if *mr.conf.Storage.ReadOnly {
-		return nil, types.ErrReadOnly
+		return nil, "", types.ErrReadOnly
 	}
 	conf := blobConfig{
 		algo: digest.Canonical,
@@ -337,28 +340,38 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, error) {
 	for _, opt := range opts {
 		opt(&conf)
 	}
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
 	// if blob exists, return the appropriate error
 	if conf.expect != "" {
-		mr.mu.Lock()
 		b, ok := mr.blobs[conf.expect]
 		if b == nil {
 			ok = false
 		}
-		mr.mu.Unlock()
 		if ok {
-			return nil, types.ErrBlobExists
+			return nil, "", types.ErrBlobExists
 		}
+	}
+	sessionID, err := genSessionID()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed generating sessionID: %w", err)
+	}
+	if _, ok := mr.uploads[sessionID]; ok {
+		return nil, "", fmt.Errorf("session ID collision")
 	}
 	buffer := &bytes.Buffer{}
 	d := conf.algo.Digester()
 	w := io.MultiWriter(buffer, d.Hash())
-	return &memRepoUpload{
-		buffer: buffer,
-		w:      w,
-		d:      d,
-		expect: conf.expect,
-		mr:     mr,
-	}, nil
+	bc := &memRepoUpload{
+		buffer:    buffer,
+		w:         w,
+		d:         d,
+		expect:    conf.expect,
+		mr:        mr,
+		sessionID: sessionID,
+	}
+	mr.uploads[sessionID] = bc
+	return bc, sessionID, nil
 }
 
 // BlobDelete deletes an entry from the CAS.
@@ -438,6 +451,16 @@ func (mr *memRepo) blobList(locked bool) ([]digest.Digest, error) {
 	return dl, nil
 }
 
+// BlobSession is used to retrieve an upload session
+func (mr *memRepo) BlobSession(sessionID string) (BlobCreator, error) {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	if bc, ok := mr.uploads[sessionID]; ok {
+		return bc, nil
+	}
+	return nil, types.ErrNotFound
+}
+
 // Done indicates the routine using this repo is finished.
 // This must be called exactly once for every instance of [Store.RepoGet].
 func (mr *memRepo) Done() {
@@ -469,6 +492,7 @@ func (mru *memRepoUpload) Close() error {
 	}
 	// relocate []byte to in memory blob store
 	mru.mr.mu.Lock()
+	defer mru.mr.mu.Unlock()
 	mru.mr.timeMod = time.Now()
 	mru.mr.blobs[mru.d.Digest()] = &memRepoBlob{
 		b: mru.buffer.Bytes(),
@@ -476,14 +500,16 @@ func (mru *memRepoUpload) Close() error {
 			mod: time.Now(),
 		},
 	}
-
-	mru.mr.mu.Unlock()
+	delete(mru.mr.uploads, mru.sessionID)
 	return nil
 }
 
 // Cancel is used to stop an upload.
 func (mru *memRepoUpload) Cancel() {
 	mru.buffer.Truncate(0)
+	mru.mr.mu.Lock()
+	defer mru.mr.mu.Unlock()
+	delete(mru.mr.uploads, mru.sessionID)
 }
 
 // Size reports the number of bytes pushed.

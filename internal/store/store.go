@@ -2,6 +2,8 @@
 package store
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,9 +56,11 @@ type Repo interface {
 	// BlobGet returns a reader to an entry from the CAS.
 	BlobGet(d digest.Digest) (io.ReadSeekCloser, error)
 	// BlobCreate is used to create a new blob.
-	BlobCreate(opts ...BlobOpt) (BlobCreator, error)
+	BlobCreate(opts ...BlobOpt) (BlobCreator, string, error)
 	// BlobDelete removes an entry from the CAS.
 	BlobDelete(d digest.Digest) error
+	// BlobSession is used to retrieve an upload session
+	BlobSession(sessionID string) (BlobCreator, error)
 
 	// Done indicates the routine using this repo is finished.
 	// This must be called exactly once for every instance of [Store.RepoGet].
@@ -125,6 +129,16 @@ func WithLog(log slog.Logger) Opts {
 	return func(sc *storeConf) {
 		sc.log = log
 	}
+}
+
+// genSessionID returns a random ID safe for use in a URL.
+func genSessionID() (string, error) {
+	sb := make([]byte, 16)
+	_, err := rand.Read(sb)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(sb), nil
 }
 
 // indexIngest processes an index, adding child descriptors, and converting referrers if appropriate.
@@ -219,7 +233,7 @@ func indexIngest(repo Repo, index *types.Index, conf config.Config, locked bool)
 				return mod, fmt.Errorf("failed to marshal referrers response: %w", err)
 			}
 			dig := digest.Canonical.FromBytes(respRaw)
-			bc, err := repo.BlobCreate(BlobWithDigest(dig))
+			bc, _, err := repo.BlobCreate(BlobWithDigest(dig))
 			if err != nil {
 				return mod, err
 			}
