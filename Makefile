@@ -95,7 +95,7 @@ vulnerability-scan: osv-scanner vulncheck-go ## Run all vulnerability scanners
 
 .PHONY: osv-scanner
 osv-scanner: $(GOPATH)/bin/osv-scanner .FORCE ## Run OSV Scanner
-	$(GOPATH)/bin/osv-scanner -r .
+	$(GOPATH)/bin/osv-scanner scan -r .
 
 .PHONY: vulncheck-go
 vulncheck-go: $(GOPATH)/bin/govulncheck .FORCE ## Run govulncheck
@@ -219,8 +219,8 @@ $(GOPATH)/bin/govulncheck: .FORCE
 	|| CGO_ENABLED=0 go install "golang.org/x/vuln/cmd/govulncheck@$(GO_VULNCHECK_VER)"
 
 $(GOPATH)/bin/osv-scanner: .FORCE
-	@[ $$(go version -m $(GOPATH)/bin/osv-scanner | \
-		awk -F ' ' '{ if ($$1 == "mod" && $$2 == "github.com/google/osv-scanner") { printf "%s\n", $$3 } }') = "$(OSV_SCANNER_VER)" ] \
+	@[ -f $(GOPATH)/bin/osv-scanner ] \
+	&& [ "$$(osv-scanner --version | awk -F ': ' '{ if ($$1 == "osv-scanner version") { printf "%s\n", $$2 } }')" = "$(OSV_SCANNER_VER)" ] \
 	|| CGO_ENABLED=0 go install "github.com/google/osv-scanner/cmd/osv-scanner@$(OSV_SCANNER_VER)"
 
 .PHONY: help
