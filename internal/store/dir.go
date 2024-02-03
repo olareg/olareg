@@ -137,6 +137,10 @@ func (d *dir) Close() error {
 		d.mu.Unlock()
 		repo.wg.Wait()
 		if !*d.conf.Storage.ReadOnly {
+			// cancel all uploads
+			for _, bc := range repo.uploads {
+				bc.Cancel()
+			}
 			_ = repo.gc()
 		}
 		d.mu.Lock()

@@ -131,6 +131,10 @@ func (m *mem) Close() error {
 		}
 		m.mu.Unlock()
 		repo.wg.Wait()
+		// cancel all uploads
+		for _, bc := range repo.uploads {
+			bc.Cancel()
+		}
 		m.mu.Lock()
 		delete(m.repos, r)
 	}
