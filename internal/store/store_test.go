@@ -114,6 +114,42 @@ func TestStore(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			t.Run("Restart", func(t *testing.T) {
+				// not parallel since store is recreated
+				repo, err := s.RepoGet(newRepo)
+				if err != nil {
+					t.Fatalf("failed to create repo: %v", err)
+				}
+				// begin several blob uploads, but do not complete
+				_, _, err = repo.BlobCreate()
+				if err != nil {
+					t.Fatalf("failed to create blob: %v", err)
+				}
+				_, _, err = repo.BlobCreate()
+				if err != nil {
+					t.Fatalf("failed to create blob: %v", err)
+				}
+				bc, _, err := repo.BlobCreate()
+				if err != nil {
+					t.Fatalf("failed to create blob: %v", err)
+				}
+				_, err = bc.Write([]byte(`hello world`))
+				if err != nil {
+					t.Fatalf("failed to write blob: %v", err)
+				}
+				repo.Done()
+				// close and recreate store
+				err = s.Close()
+				if err != nil {
+					t.Errorf("failed to close store: %v", err)
+				}
+				switch tc.conf.Storage.StoreType {
+				case config.StoreDir:
+					s = NewDir(tc.conf)
+				case config.StoreMem:
+					s = NewMem(tc.conf)
+				}
+			})
 			t.Run("Existing", func(t *testing.T) {
 				if !tc.testExisting {
 					t.Skip("No existing repo to test")
