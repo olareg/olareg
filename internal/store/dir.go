@@ -586,6 +586,13 @@ func (dr *dirRepo) gc() error {
 			}
 		}
 	}
+	// attempt to remove an empty upload folder, ignore errors (e.g. uploads managed by another tool)
+	if len(dr.uploads) == 0 {
+		fi, err := os.Stat(filepath.Join(dr.path, uploadDir))
+		if err == nil && fi.IsDir() {
+			_ = os.Remove(filepath.Join(dr.path, uploadDir))
+		}
+	}
 	err := dr.indexLoad(true, true)
 	if err != nil {
 		return fmt.Errorf("failed to load index: %w", err)
