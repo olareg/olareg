@@ -52,6 +52,7 @@ type memRepoUpload struct {
 	expect    digest.Digest
 	mr        *memRepo
 	sessionID string
+	lastWrite time.Time
 }
 
 func NewMem(conf config.Config, opts ...Opts) Store {
@@ -148,10 +149,12 @@ func (m *mem) Close() error {
 func (m *mem) gcTicker() {
 	defer m.wg.Done()
 	ticker := time.NewTicker(m.conf.Storage.GC.Frequency)
+	prev := time.Time{}
 	for {
 		select {
-		case <-ticker.C:
-			_ = m.gc()
+		case cur := <-ticker.C:
+			_ = m.gc(cur, prev)
+			prev = cur
 		case <-m.stop:
 			ticker.Stop()
 			return
@@ -160,15 +163,15 @@ func (m *mem) gcTicker() {
 }
 
 // run a GC on every repo
-func (m *mem) gc() error {
-	now := time.Now()
-	stop := now
-	if m.conf.Storage.GC.GracePeriod > 0 {
-		stop = stop.Add(m.conf.Storage.GC.GracePeriod * -1)
+func (m *mem) gc(cur, prev time.Time) error {
+	if cur.IsZero() {
+		cur = time.Now()
 	}
-	start := stop
-	if m.conf.Storage.GC.Frequency > 0 {
-		start = start.Add(m.conf.Storage.GC.Frequency * -1)
+	start := prev
+	stop := cur
+	if m.conf.Storage.GC.GracePeriod > 0 {
+		start = start.Add(m.conf.Storage.GC.GracePeriod * -1)
+		stop = stop.Add(m.conf.Storage.GC.GracePeriod * -1)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -188,8 +191,11 @@ func (m *mem) gc() error {
 		if !ok {
 			continue
 		}
-		// skip repos that were not last updated between grace period and frequency
-		if repo.timeMod.Before(start) || repo.timeMod.After(stop) {
+		// skip repos that were not updated since the last check, offsetting for the grace period
+		repo.mu.Lock()
+		outsideRange := repo.timeMod.Before(start) || repo.timeMod.After(stop)
+		repo.mu.Unlock()
+		if outsideRange {
 			continue
 		}
 		// drop top level lock while GCing a single repo
@@ -373,7 +379,9 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 		expect:    conf.expect,
 		mr:        mr,
 		sessionID: sessionID,
+		lastWrite: time.Now(),
 	}
+	mr.timeMod = time.Now()
 	mr.uploads[sessionID] = bc
 	return bc, sessionID, nil
 }
@@ -475,6 +483,14 @@ func (mr *memRepo) Done() {
 func (mr *memRepo) gc() error {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
+	if mr.conf.Storage.GC.GracePeriod > 0 {
+		cutoff := time.Now().Add(mr.conf.Storage.GC.GracePeriod * -1)
+		for _, mru := range mr.uploads {
+			if mru.lastWrite.Before(cutoff) {
+				mru.cancel(true)
+			}
+		}
+	}
 	i, mod, err := repoGarbageCollect(mr, mr.conf, mr.index, true)
 	if err != nil {
 		return err
@@ -487,6 +503,11 @@ func (mr *memRepo) gc() error {
 
 // Write sends data to the buffer.
 func (mru *memRepoUpload) Write(p []byte) (int, error) {
+	mru.mr.mu.Lock()
+	now := time.Now()
+	mru.mr.timeMod = now
+	mru.lastWrite = now
+	mru.mr.mu.Unlock()
 	return mru.w.Write(p)
 }
 
@@ -510,9 +531,15 @@ func (mru *memRepoUpload) Close() error {
 
 // Cancel is used to stop an upload.
 func (mru *memRepoUpload) Cancel() {
+	mru.cancel(false)
+}
+
+func (mru *memRepoUpload) cancel(locked bool) {
 	mru.buffer.Truncate(0)
-	mru.mr.mu.Lock()
-	defer mru.mr.mu.Unlock()
+	if !locked {
+		mru.mr.mu.Lock()
+		defer mru.mr.mu.Unlock()
+	}
 	delete(mru.mr.uploads, mru.sessionID)
 }
 

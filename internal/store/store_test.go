@@ -483,6 +483,7 @@ func TestStore(t *testing.T) {
 			})
 		})
 	}
+	// TODO: add concurrency tests, multiple uploads, multiple gets
 }
 
 func TestGarbageCollect(t *testing.T) {
@@ -1275,6 +1276,140 @@ func TestGarbageCollect(t *testing.T) {
 				if err == nil {
 					t.Errorf("received unexpected blob %s", dig.String())
 					_ = br.Close()
+				}
+			}
+		})
+	}
+}
+
+func TestGarbageCollectUpload(t *testing.T) {
+	t.Parallel()
+	grace := time.Millisecond * 20
+	freq := time.Millisecond * 10
+	sleep := (freq * 2) + grace + (time.Millisecond * 50)
+	retry := 100
+	testRepo := "test"
+	boolT := true
+	boolF := false
+	tempDir := t.TempDir()
+	tt := []struct {
+		name     string
+		conf     config.Config
+		expectGC bool
+	}{
+		{
+			name: "Mem No GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectGC: false,
+		},
+		{
+			name: "Mem GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         freq,
+						GracePeriod:       grace,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectGC: true,
+		},
+		{
+			name: "Dir No GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "no-gc"),
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectGC: false,
+		},
+		{
+			name: "Dir GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "gc"),
+					GC: config.ConfigGC{
+						Frequency:         freq,
+						GracePeriod:       grace,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectGC: true,
+		},
+	}
+	for _, tc := range tt {
+		tc := tc
+		tc.conf.SetDefaults()
+		var s Store
+		switch tc.conf.Storage.StoreType {
+		case config.StoreDir:
+			s = NewDir(tc.conf)
+		case config.StoreMem:
+			s = NewMem(tc.conf)
+		default:
+			t.Errorf("unsupported store type: %d", tc.conf.Storage.StoreType)
+			return
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repo, err := s.RepoGet(testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
+			}
+			defer repo.Done()
+			// start upload
+			_, sessionID, err := repo.BlobCreate()
+			if err != nil {
+				t.Fatalf("failed to create blob")
+			}
+			// sleep, releasing repo during sleep for GC
+			time.Sleep(sleep)
+			if tc.expectGC {
+				success := false
+				for i := 0; i < retry && !success; i++ {
+					_, err = repo.BlobSession(sessionID)
+					if err != nil {
+						success = true
+					} else {
+						time.Sleep(sleep)
+					}
+				}
+				if !success {
+					// NOTE: this test is implicitly racy. Retry count and sleep time may need to be increased if it fails.
+					t.Errorf("expected GC, upload session available")
+				}
+			} else {
+				_, err = repo.BlobSession(sessionID)
+				if err != nil {
+					t.Errorf("did not expect GC, upload session destroyed")
 				}
 			}
 		})

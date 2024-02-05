@@ -57,6 +57,7 @@ type dirRepoUpload struct {
 	filename  string
 	dr        *dirRepo
 	sessionID string
+	lastWrite time.Time
 }
 
 // NewDir returns a directory store.
@@ -156,10 +157,12 @@ func (d *dir) Close() error {
 func (d *dir) gcTicker() {
 	defer d.wg.Done()
 	ticker := time.NewTicker(d.conf.Storage.GC.Frequency)
+	prev := time.Time{}
 	for {
 		select {
-		case <-ticker.C:
-			_ = d.gc()
+		case cur := <-ticker.C:
+			_ = d.gc(cur, prev)
+			prev = cur
 		case <-d.stop:
 			ticker.Stop()
 			return
@@ -168,15 +171,12 @@ func (d *dir) gcTicker() {
 }
 
 // run a GC on every repo
-func (d *dir) gc() error {
-	now := time.Now()
-	stop := now
+func (d *dir) gc(cur, prev time.Time) error {
+	start := prev
+	stop := cur
 	if d.conf.Storage.GC.GracePeriod > 0 {
+		start = start.Add(d.conf.Storage.GC.GracePeriod * -1)
 		stop = stop.Add(d.conf.Storage.GC.GracePeriod * -1)
-	}
-	start := stop
-	if d.conf.Storage.GC.Frequency > 0 {
-		start = start.Add(d.conf.Storage.GC.Frequency * -1)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -198,7 +198,10 @@ func (d *dir) gc() error {
 			continue
 		}
 		// skip repos that were not last updated between grace period and frequency
-		if repo.timeMod.Before(start) || repo.timeMod.After(stop) {
+		repo.mu.Lock()
+		outsideRange := repo.timeMod.Before(start) || repo.timeMod.After(stop)
+		repo.mu.Unlock()
+		if outsideRange {
 			continue
 		}
 		// drop top level lock while GCing a single repo
@@ -310,6 +313,8 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 			return nil, "", types.ErrBlobExists
 		}
 	}
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
 	sessionID, err := genSessionID()
 	if err != nil {
 		return nil, "", fmt.Errorf("failed generating sessionID: %w", err)
@@ -347,9 +352,9 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 		filename:  filename,
 		dr:        dr,
 		sessionID: sessionID,
+		lastWrite: time.Now(),
 	}
-	dr.mu.Lock()
-	defer dr.mu.Unlock()
+	dr.timeMod = time.Now()
 	dr.uploads[sessionID] = bc
 	return bc, sessionID, nil
 }
@@ -573,6 +578,14 @@ func (dr *dirRepo) Done() {
 func (dr *dirRepo) gc() error {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
+	if dr.conf.Storage.GC.GracePeriod > 0 {
+		cutoff := time.Now().Add(dr.conf.Storage.GC.GracePeriod * -1)
+		for _, dru := range dr.uploads {
+			if dru.lastWrite.Before(cutoff) {
+				dru.cancel(true)
+			}
+		}
+	}
 	err := dr.indexLoad(true, true)
 	if err != nil {
 		return fmt.Errorf("failed to load index: %w", err)
@@ -595,8 +608,13 @@ func (dru *dirRepoUpload) Write(p []byte) (int, error) {
 	if dru.w == nil {
 		return 0, fmt.Errorf("writer is closed")
 	}
+	dru.dr.mu.Lock()
+	now := time.Now()
+	dru.dr.timeMod = now
+	dru.lastWrite = now
 	n, err := dru.w.Write(p)
 	dru.size += int64(n)
+	dru.dr.mu.Unlock()
 	return n, err
 }
 
@@ -640,12 +658,17 @@ func (dru *dirRepoUpload) Close() error {
 
 // Cancel is used to stop an upload.
 func (dru *dirRepoUpload) Cancel() {
+	dru.cancel(false)
+}
+func (dru *dirRepoUpload) cancel(locked bool) {
 	if dru.fh != nil {
 		_ = dru.fh.Close()
 	}
 	_ = os.Remove(dru.filename)
-	dru.dr.mu.Lock()
-	defer dru.dr.mu.Unlock()
+	if !locked {
+		dru.dr.mu.Lock()
+		defer dru.dr.mu.Unlock()
+	}
 	delete(dru.dr.uploads, dru.sessionID)
 }
 
