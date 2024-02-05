@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -1293,9 +1294,10 @@ func TestGarbageCollectUpload(t *testing.T) {
 	boolF := false
 	tempDir := t.TempDir()
 	tt := []struct {
-		name     string
-		conf     config.Config
-		expectGC bool
+		name      string
+		conf      config.Config
+		uploadDir string
+		expectGC  bool
 	}{
 		{
 			name: "Mem No GC",
@@ -1344,7 +1346,8 @@ func TestGarbageCollectUpload(t *testing.T) {
 					},
 				},
 			},
-			expectGC: false,
+			uploadDir: filepath.Join(tempDir, "no-gc", testRepo, uploadDir),
+			expectGC:  false,
 		},
 		{
 			name: "Dir GC",
@@ -1361,7 +1364,8 @@ func TestGarbageCollectUpload(t *testing.T) {
 					},
 				},
 			},
-			expectGC: true,
+			uploadDir: filepath.Join(tempDir, "gc", testRepo, uploadDir),
+			expectGC:  true,
 		},
 	}
 	for _, tc := range tt {
@@ -1410,6 +1414,15 @@ func TestGarbageCollectUpload(t *testing.T) {
 				_, err = repo.BlobSession(sessionID)
 				if err != nil {
 					t.Errorf("did not expect GC, upload session destroyed")
+				}
+			}
+			if tc.uploadDir != "" {
+				_, err = os.Stat(tc.uploadDir)
+				if tc.expectGC && err == nil {
+					t.Errorf("expected GC, upload directory remains")
+				}
+				if !tc.expectGC && err != nil {
+					t.Errorf("did not expect GC, upload directory destroyed")
 				}
 			}
 		})
