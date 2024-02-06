@@ -1294,10 +1294,10 @@ func TestGarbageCollectUpload(t *testing.T) {
 	boolF := false
 	tempDir := t.TempDir()
 	tt := []struct {
-		name      string
-		conf      config.Config
-		uploadDir string
-		expectGC  bool
+		name     string
+		conf     config.Config
+		checkDir string
+		expectGC bool
 	}{
 		{
 			name: "Mem No GC",
@@ -1340,14 +1340,15 @@ func TestGarbageCollectUpload(t *testing.T) {
 					GC: config.ConfigGC{
 						Frequency:         time.Second * -1,
 						GracePeriod:       time.Second * -1,
+						EmptyRepo:         &boolT,
 						Untagged:          &boolF,
 						ReferrersDangling: &boolF,
 						ReferrersWithSubj: &boolT,
 					},
 				},
 			},
-			uploadDir: filepath.Join(tempDir, "no-gc", testRepo, uploadDir),
-			expectGC:  false,
+			checkDir: filepath.Join(tempDir, "no-gc", testRepo),
+			expectGC: false,
 		},
 		{
 			name: "Dir GC",
@@ -1358,14 +1359,15 @@ func TestGarbageCollectUpload(t *testing.T) {
 					GC: config.ConfigGC{
 						Frequency:         freq,
 						GracePeriod:       grace,
+						EmptyRepo:         &boolT,
 						Untagged:          &boolF,
 						ReferrersDangling: &boolF,
 						ReferrersWithSubj: &boolT,
 					},
 				},
 			},
-			uploadDir: filepath.Join(tempDir, "gc", testRepo, uploadDir),
-			expectGC:  true,
+			checkDir: filepath.Join(tempDir, "gc", testRepo),
+			expectGC: true,
 		},
 	}
 	for _, tc := range tt {
@@ -1416,13 +1418,27 @@ func TestGarbageCollectUpload(t *testing.T) {
 					t.Errorf("did not expect GC, upload session destroyed")
 				}
 			}
-			if tc.uploadDir != "" {
-				_, err = os.Stat(tc.uploadDir)
-				if tc.expectGC && err == nil {
-					t.Errorf("expected GC, upload directory remains")
+			if tc.checkDir != "" {
+				if tc.expectGC {
+					success := false
+					for i := 0; i < retry && !success; i++ {
+						_, err = os.Stat(tc.checkDir)
+						if err != nil {
+							success = true
+						} else {
+							time.Sleep(sleep)
+						}
+					}
+					if !success {
+						// NOTE: this test is implicitly racy. Retry count and sleep time may need to be increased if it fails.
+						t.Errorf("directory not deleted: %s", tc.checkDir)
+					}
 				}
-				if !tc.expectGC && err != nil {
-					t.Errorf("did not expect GC, upload directory destroyed")
+				if !tc.expectGC {
+					_, err = os.Stat(tc.checkDir)
+					if err != nil {
+						t.Errorf("directory deleted: %s", tc.checkDir)
+					}
 				}
 			}
 		})

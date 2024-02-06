@@ -593,19 +593,49 @@ func (dr *dirRepo) gc() error {
 			_ = os.Remove(filepath.Join(dr.path, uploadDir))
 		}
 	}
-	err := dr.indexLoad(true, true)
-	if err != nil {
-		return fmt.Errorf("failed to load index: %w", err)
-	}
-	i, mod, err := repoGarbageCollect(dr, dr.conf, dr.index, true)
-	if err != nil {
-		return err
-	}
-	if mod {
-		dr.index = i
-		if err := dr.indexSave(true); err != nil {
+	// run the GC process, track any errors but wait until later to return it
+	errGC := func() error {
+		err := dr.indexLoad(true, true)
+		if err != nil {
+			return fmt.Errorf("failed to load index: %w", err)
+		}
+		i, mod, err := repoGarbageCollect(dr, dr.conf, dr.index, true)
+		if err != nil {
 			return err
 		}
+		if mod {
+			dr.index = i
+			if err := dr.indexSave(true); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+	// prune an empty repo dir and mark the repo as empty if successful
+	if *dr.conf.Storage.GC.EmptyRepo && len(dr.index.Manifests) == 0 && len(dr.uploads) == 0 {
+		errDir := func() error {
+			for _, dir := range []string{
+				filepath.Join(dr.path, uploadDir),
+				filepath.Join(dr.path, blobsDir, "sha256"),
+				filepath.Join(dr.path, blobsDir, "sha512"),
+				filepath.Join(dr.path, blobsDir),
+				filepath.Join(dr.path, indexFile),
+				filepath.Join(dr.path, layoutFile),
+				filepath.Join(dr.path),
+			} {
+				err := os.Remove(dir)
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
+					return err
+				}
+			}
+			return nil
+		}()
+		if errDir == nil {
+			dr.exists = false
+		}
+	}
+	if errGC != nil {
+		return errGC
 	}
 	return nil
 }
