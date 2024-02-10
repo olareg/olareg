@@ -1,6 +1,6 @@
 module github.com/olareg/olareg
 
-go 1.19
+go 1.20
 
 require (
 	github.com/opencontainers/go-digest v1.0.0
