@@ -107,6 +107,32 @@ type blobUploadState struct {
 	Offset int64 `json:"offset"`
 }
 
+func (s *Server) blobUploadDelete(repoStr, sessionID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "sessionID", sessionID)
+			return
+		}
+		defer repo.Done()
+		bc, err := repo.BlobSession(sessionID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
+			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
+			return
+		}
+		bc.Cancel()
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
 func (s *Server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		repo, err := s.store.RepoGet(repoStr)

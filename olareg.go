@@ -177,6 +177,9 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		} else if req.Method == http.MethodGet {
 			s.blobUploadGet(matches[0], matches[1]).ServeHTTP(resp, req)
 			return
+		} else if req.Method == http.MethodDelete {
+			s.blobUploadDelete(matches[0], matches[1]).ServeHTTP(resp, req)
+			return
 		} else {
 			resp.WriteHeader(http.StatusMethodNotAllowed)
 			return

@@ -409,6 +409,68 @@ func TestServer(t *testing.T) {
 					return
 				}
 			})
+			t.Run("Blob Push Cancel", func(t *testing.T) {
+				if tcServer.readOnly {
+					return
+				}
+				t.Parallel()
+				repo := "cancel"
+				exBlob := []byte(`example cancel content`)
+				u, err := url.Parse("/v2/" + repo + "/blobs/uploads/")
+				if err != nil {
+					t.Fatalf("failed to parse blob post url: %v", err)
+				}
+				resp, err := testClientRun(t, s, "POST", u.String(), nil,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespStatus(http.StatusAccepted),
+					testClientRespHeader("Location", ""))
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send blob post: %v", err)
+					}
+					return
+				}
+				loc := resp.Header().Get("Location")
+				if loc == "" {
+					t.Errorf("location header missing on blob POST")
+					return
+				}
+				uLoc, err := url.Parse(loc)
+				if err != nil {
+					t.Errorf("failed to parse location header URL fragment %s: %v", loc, err)
+					return
+				}
+				u = u.ResolveReference(uLoc)
+				resp, err = testClientRun(t, s, "PATCH", u.String(), exBlob,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(exBlob))),
+					testClientRespStatus(http.StatusAccepted))
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send blob patch: %v", err)
+					}
+					return
+				}
+				loc = resp.Header().Get("Location")
+				if loc == "" {
+					t.Errorf("location header missing on blob POST")
+					return
+				}
+				uLoc, err = url.Parse(loc)
+				if err != nil {
+					t.Errorf("failed to parse location header URL fragment %s: %v", loc, err)
+					return
+				}
+				u = u.ResolveReference(uLoc)
+				_, err = testClientRun(t, s, "DELETE", u.String(), nil,
+					testClientRespStatus(http.StatusAccepted))
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send blob delete: %v", err)
+					}
+					return
+				}
+			})
 			t.Run("Corrupt Repo", func(t *testing.T) {
 				if !tcServer.existing {
 					return
