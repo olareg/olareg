@@ -1,6 +1,7 @@
 package olareg
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/olareg/olareg/internal/store"
 	"github.com/olareg/olareg/types"
+)
+
+const (
+	referrerFilterATParam       = "artifactType"
+	referrerFilterATHeaderKey   = "OCI-Filters-Applied"
+	referrerFilterATHeaderValue = "artifactType"
 )
 
 // referrerGet searches for the referrers response in the index.
@@ -60,13 +67,52 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		defer rdr.Close()
+		var out io.Reader
+		out = rdr
+		filterAT := r.URL.Query().Get(referrerFilterATParam)
+		if filterAT != "" {
+			out, err = referrerFilter(out, filterAT)
+			if err != nil {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(i)
+				s.log.Info("failed to filter referrers response", "err", err, "repo", repoStr, "arg", arg, "digest", d.Digest.String())
+				return
+			}
+			w.Header().Add(referrerFilterATHeaderKey, referrerFilterATHeaderValue)
+		}
 		w.WriteHeader(http.StatusOK)
-		defer rdr.Close()
-		_, err = io.Copy(w, rdr)
+		_, err = io.Copy(w, out)
 		if err != nil {
 			s.log.Info("failed to write referrers response", "err", err, "repo", repoStr, "arg", arg)
 		}
 	}
+}
+
+// referrerFilter applies a filter to the returned descriptor list
+func referrerFilter(rdr io.Reader, filterArtifactType string) (io.Reader, error) {
+	in := types.Index{}
+	err := json.NewDecoder(rdr).Decode(&in)
+	if err != nil {
+		return nil, err
+	}
+	out := types.Index{
+		SchemaVersion: in.SchemaVersion,
+		MediaType:     in.MediaType,
+		ArtifactType:  in.ArtifactType,
+		Subject:       in.Subject,
+		Annotations:   in.Annotations,
+	}
+	out.Manifests = make([]types.Descriptor, 0, len(in.Manifests))
+	for _, d := range in.Manifests {
+		if d.ArtifactType == filterArtifactType {
+			out.Manifests = append(out.Manifests, d)
+		}
+	}
+	outBytes, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(outBytes), nil
 }
 
 // referrerAdd adds a new referrer entry to a given subject.
