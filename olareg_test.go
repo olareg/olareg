@@ -35,6 +35,10 @@ func TestServer(t *testing.T) {
 	}
 	existingRepo := "testrepo"
 	existingTag := "v2"
+	existingReferrerCountAll := 2
+	existingReferrerCountFilter := 1
+	existingReferrerAT := "application/example.sbom"
+	missingReferrerAT := "application/example.missing"
 	corruptRepo := "corrupt"
 	corruptTag := "v2"
 	tempDir := t.TempDir()
@@ -240,7 +244,7 @@ func TestServer(t *testing.T) {
 					return
 				}
 				// list referrers
-				resp, err = testAPIReferrersList(t, s, existingRepo, digI, nil)
+				resp, err = testAPIReferrersList(t, s, existingRepo, digI, "", nil)
 				if err != nil {
 					return
 				}
@@ -255,8 +259,47 @@ func TestServer(t *testing.T) {
 					t.Errorf("failed to unmarshal referrers response: %v", err)
 					return
 				}
-				if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) < 2 {
-					t.Errorf("referrers response should be an index, schema 2, and at least 2 manifests: %v", rr)
+				if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) != existingReferrerCountAll {
+					t.Errorf("referrers response should be an index, schema 2, with %d manifests: %v", existingReferrerCountAll, rr)
+				}
+				resp, err = testAPIReferrersList(t, s, existingRepo, digI, existingReferrerAT, nil)
+				if err != nil {
+					return
+				}
+				b, err = io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				rr = types.Index{}
+				err = json.Unmarshal(b, &rr)
+				if err != nil {
+					t.Errorf("failed to unmarshal referrers response: %v", err)
+					return
+				}
+				if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) != existingReferrerCountFilter {
+					t.Errorf("referrers response should be an index, schema 2, with %d manifests: %v", existingReferrerCountFilter, rr)
+				}
+				if len(rr.Manifests) > 0 && rr.Manifests[0].ArtifactType != existingReferrerAT {
+					t.Errorf("referrers response only include %s entries: %v", existingReferrerAT, rr)
+				}
+				resp, err = testAPIReferrersList(t, s, existingRepo, digI, missingReferrerAT, nil)
+				if err != nil {
+					return
+				}
+				b, err = io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				rr = types.Index{}
+				err = json.Unmarshal(b, &rr)
+				if err != nil {
+					t.Errorf("failed to unmarshal referrers response: %v", err)
+					return
+				}
+				if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) != 0 {
+					t.Errorf("referrers response should be an index, schema 2, with %d manifests: %v", 0, rr)
 				}
 			})
 			t.Run("Pull with comma separated header", func(t *testing.T) {
@@ -558,7 +601,7 @@ func TestServer(t *testing.T) {
 					t.Fatalf("failed to push referrer: %v", err)
 				}
 				// verify referrer response is a single entry
-				refResp, err := testAPIReferrersList(t, s, corruptRepo, dig, nil)
+				refResp, err := testAPIReferrersList(t, s, corruptRepo, dig, "", nil)
 				if err != nil {
 					t.Fatalf("failed to get referrers: %v", err)
 				}
@@ -983,7 +1026,7 @@ func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest,
 	return resp, nil
 }
 
-func testAPIReferrersList(t *testing.T, s *Server, repo string, dig digest.Digest, body []byte) (*httptest.ResponseRecorder, error) {
+func testAPIReferrersList(t *testing.T, s *Server, repo string, dig digest.Digest, filterArtifactType string, body []byte) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	tcgList := []testClientGen{
 		testClientRespStatus(http.StatusOK),
@@ -992,7 +1035,12 @@ func testAPIReferrersList(t *testing.T, s *Server, repo string, dig digest.Diges
 	if body != nil {
 		tcgList = append(tcgList, testClientRespBody(body))
 	}
-	resp, err := testClientRun(t, s, "GET", "/v2/"+repo+"/referrers/"+dig.String(), nil, tcgList...)
+	path := "/v2/" + repo + "/referrers/" + dig.String()
+	if filterArtifactType != "" {
+		path = path + "?artifactType=" + filterArtifactType
+		tcgList = append(tcgList, testClientRespHeader("OCI-Filters-Applied", "artifactType"))
+	}
+	resp, err := testClientRun(t, s, "GET", path, nil, tcgList...)
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send referrers list: %v", err)
