@@ -297,7 +297,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 // Any errors return the error without writing to the response.
 // This allows the registry to fall back to a standard blob push.
 // If the return is nil, the location header and created status are first be written to the response.
-func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.ResponseWriter, r *http.Request) error {
+func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.ResponseWriter, _ *http.Request) error {
 	repoSrc, err := s.store.RepoGet(repoSrcStr)
 	if err != nil {
 		return err
