@@ -54,7 +54,7 @@ func (s *Server) tagList(repoStr string) http.HandlerFunc {
 				q := next.Query()
 				q.Set("last", tl.Tags[len(tl.Tags)-1])
 				next.RawQuery = q.Encode()
-				w.Header().Add("Link", fmt.Sprintf("%s; rel=next", next.String()))
+				w.Header().Add("Link", fmt.Sprintf("<%s>; rel=next", next.String()))
 			}
 		}
 		tlJSON, err := json.Marshal(tl)

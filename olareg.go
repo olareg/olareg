@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/olareg/olareg/config"
+	"github.com/olareg/olareg/internal/cache"
 	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/internal/store"
 )
@@ -25,11 +26,15 @@ var (
 // New returns a Server.
 // Ensure the resource is cleaned up with either [Server.Close] or [Server.Shutdown].
 func New(conf config.Config) *Server {
+	conf.SetDefaults()
 	s := &Server{
 		conf: conf,
 		log:  conf.Log,
+		referrerCache: cache.New[referrerKey, referrerResponses](
+			cache.WithAge(conf.API.Referrer.PageCacheExpire),
+			cache.WithCount(conf.API.Referrer.PageCacheLimit),
+		),
 	}
-	s.conf.SetDefaults()
 	if s.log == nil {
 		s.log = slog.Null{}
 	}
@@ -43,10 +48,11 @@ func New(conf config.Config) *Server {
 }
 
 type Server struct {
-	conf       config.Config
-	store      store.Store
-	log        slog.Logger
-	httpServer *http.Server
+	conf          config.Config
+	store         store.Store
+	log           slog.Logger
+	httpServer    *http.Server
+	referrerCache *cache.Cache[referrerKey, referrerResponses]
 }
 
 // Close is used to release the backend store resources.
