@@ -1,11 +1,12 @@
 package olareg
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/opencontainers/go-digest"
 
@@ -19,10 +20,23 @@ const (
 	referrerFilterATHeaderValue = "artifactType"
 )
 
+type referrerKey struct {
+	dig          digest.Digest
+	artifactType string
+}
+
+type referrerResponses [][]byte
+
 // referrerGet searches for the referrers response in the index.
 // All errors should return an empty response, no 404's should be generated.
 func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		filterAT := r.URL.Query().Get(referrerFilterATParam)
+		cacheDig := r.URL.Query().Get("cache")
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page < 0 {
+			page = 0
+		}
 		// most errors should return an empty index
 		i := types.Index{
 			SchemaVersion: 2,
@@ -39,6 +53,32 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		defer repo.Done()
+		if cacheDig != "" && page != 0 {
+			dig, err := digest.Parse(cacheDig)
+			if err != nil {
+				s.log.Info("paged referrers request for invalid cache digest", "cache", cacheDig, "repo", repoStr, "page", page)
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoUnsupported("requested digest is not valid"))
+				return
+			}
+			if cacheResp, err := s.referrerCache.Get(referrerKey{dig: dig, artifactType: filterAT}); err == nil && page < len(cacheResp) {
+				if page+1 < len(cacheResp) {
+					next := r.URL
+					q := next.Query()
+					q.Set("page", fmt.Sprintf("%d", page+1))
+					next.RawQuery = q.Encode()
+					w.Header().Add("Link", fmt.Sprintf("<%s>; rel=next", next.String()))
+				}
+				w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
+				w.WriteHeader(http.StatusOK)
+				_, err = w.Write(cacheResp[page])
+				if err != nil {
+					s.log.Info("failed to write referrers response", "err", err, "repo", repoStr, "arg", arg)
+				}
+				return
+			}
+			// cache search for paged data failed, regenerate from current state, only use page counter if digest matches
+		}
 		index, err := repo.IndexGet()
 		if err != nil {
 			w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
@@ -59,6 +99,26 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(i)
 			return
 		}
+		// check page cache for digest, two users requesting same referrer list
+		if cacheResp, err := s.referrerCache.Get(referrerKey{dig: d.Digest, artifactType: filterAT}); err == nil {
+			if page >= len(cacheResp) {
+				page = 0
+			}
+			if page+1 < len(cacheResp) {
+				next := r.URL
+				q := next.Query()
+				q.Set("cache", d.Digest.String())
+				q.Set("page", fmt.Sprintf("%d", page+1))
+				next.RawQuery = q.Encode()
+				w.Header().Add("Link", fmt.Sprintf("<%s>; rel=next", next.String()))
+			}
+			w.WriteHeader(http.StatusOK)
+			_, err = w.Write(cacheResp[page])
+			if err != nil {
+				s.log.Info("failed to write referrers response", "err", err, "repo", repoStr, "arg", arg)
+			}
+			return
+		}
 		rdr, err := repo.BlobGet(d.Digest)
 		if err != nil {
 			w.WriteHeader(http.StatusOK)
@@ -66,10 +126,14 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get referrers response", "err", err, "repo", repoStr, "arg", arg, "digest", d.Digest.String())
 			return
 		}
-		defer rdr.Close()
-		var out io.Reader
-		out = rdr
-		filterAT := r.URL.Query().Get(referrerFilterATParam)
+		out, err := io.ReadAll(rdr)
+		_ = rdr.Close()
+		if err != nil {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(i)
+			s.log.Info("failed to read referrers response", "err", err, "repo", repoStr, "arg", arg, "digest", d.Digest.String())
+			return
+		}
 		if filterAT != "" {
 			out, err = referrerFilter(out, filterAT)
 			if err != nil {
@@ -80,8 +144,36 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 			}
 			w.Header().Add(referrerFilterATHeaderKey, referrerFilterATHeaderValue)
 		}
+		if int64(len(out)) > s.conf.API.Referrer.Limit {
+			// split the response if necessary
+			split, err := referrerSplit(out, s.conf.API.Referrer.Limit)
+			if err != nil {
+				s.log.Info("failed splitting referrer list", "err", err, "repo", repoStr, "arg", arg, "digest", d.Digest.String())
+			}
+			if len(split) == 0 {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(i)
+				return
+			}
+			// cache the split
+			s.referrerCache.Set(referrerKey{dig: d.Digest, artifactType: filterAT}, split)
+			// set the requested page output and next link
+			if page > 0 && (cacheDig != d.Digest.String() || page >= len(split)) {
+				page = 0
+			}
+			if page+1 < len(split) {
+				next := r.URL
+				q := next.Query()
+				q.Set("cache", d.Digest.String())
+				q.Set("page", fmt.Sprintf("%d", page+1))
+				next.RawQuery = q.Encode()
+				w.Header().Add("Link", fmt.Sprintf("<%s>; rel=next", next.String()))
+			}
+			out = split[page]
+		}
+		w.Header().Add("content-length", fmt.Sprintf("%d", len(out)))
 		w.WriteHeader(http.StatusOK)
-		_, err = io.Copy(w, out)
+		_, err = w.Write(out)
 		if err != nil {
 			s.log.Info("failed to write referrers response", "err", err, "repo", repoStr, "arg", arg)
 		}
@@ -89,9 +181,9 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 }
 
 // referrerFilter applies a filter to the returned descriptor list
-func referrerFilter(rdr io.Reader, filterArtifactType string) (io.Reader, error) {
+func referrerFilter(inBytes []byte, filterArtifactType string) ([]byte, error) {
 	in := types.Index{}
-	err := json.NewDecoder(rdr).Decode(&in)
+	err := json.Unmarshal(inBytes, &in)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +204,57 @@ func referrerFilter(rdr io.Reader, filterArtifactType string) (io.Reader, error)
 	if err != nil {
 		return nil, err
 	}
-	return bytes.NewReader(outBytes), nil
+	return outBytes, nil
+}
+
+// referrerSplit separates a referrer index into separate pages.
+// This will fail if a single entry still exceeds the limit.
+// Note this is designed for readability over efficiency.
+func referrerSplit(inBytes []byte, limit int64) ([][]byte, error) {
+	in := types.Index{}
+	err := json.Unmarshal(inBytes, &in)
+	if err != nil {
+		return nil, err
+	}
+	result := [][]byte{}
+	last := []byte{}
+	cur := types.Index{
+		SchemaVersion: in.SchemaVersion,
+		MediaType:     in.MediaType,
+		ArtifactType:  in.ArtifactType,
+		Annotations:   in.Annotations,
+		Manifests:     []types.Descriptor{},
+		Subject:       in.Subject,
+	}
+	errs := []error{}
+	for _, d := range in.Manifests {
+		cur.Manifests = append(cur.Manifests, d)
+		next, err := json.Marshal(cur)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(next)) > limit {
+			result = append(result, last)
+			cur.Manifests = []types.Descriptor{d}
+			next, err = json.Marshal(cur)
+			if err != nil {
+				return nil, err
+			}
+			if int64(len(next)) > limit {
+				errs = append(errs, fmt.Errorf("single descriptor greater than limit: %s", d.Digest))
+				cur.Manifests = []types.Descriptor{}
+				last = nil
+			}
+		}
+		last = next
+	}
+	if last != nil {
+		result = append(result, last)
+	}
+	if len(errs) > 0 {
+		return result, errors.Join(errs...)
+	}
+	return result, nil
 }
 
 // referrerAdd adds a new referrer entry to a given subject.
@@ -133,12 +275,8 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 			if err != nil {
 				return
 			}
-			iRaw, err := io.ReadAll(rdr)
+			err = json.NewDecoder(rdr).Decode(&refResp)
 			_ = rdr.Close()
-			if err != nil {
-				return
-			}
-			err = json.Unmarshal(iRaw, &refResp)
 			if err != nil {
 				return
 			}

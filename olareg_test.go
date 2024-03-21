@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +67,11 @@ func TestServer(t *testing.T) {
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
 				},
+				API: config.ConfigAPI{
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
+				},
 			},
 		},
 		{
@@ -74,6 +80,11 @@ func TestServer(t *testing.T) {
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
 					RootDir:   "./testdata",
+				},
+				API: config.ConfigAPI{
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
 				},
 			},
 			existing: true,
@@ -89,6 +100,11 @@ func TestServer(t *testing.T) {
 						GracePeriod: time.Second * -1,
 					},
 				},
+				API: config.ConfigAPI{
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
+				},
 			},
 			existing: true,
 			testGC:   true,
@@ -100,6 +116,11 @@ func TestServer(t *testing.T) {
 					StoreType: config.StoreDir,
 					RootDir:   tempDir,
 					ReadOnly:  &boolT,
+				},
+				API: config.ConfigAPI{
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
 				},
 			},
 			existing: true,
@@ -617,9 +638,150 @@ func TestServer(t *testing.T) {
 					t.Errorf("unexpected digest for referrer entry, expected %s, received %s", referrerDig.String(), refRespIndex.Manifests[0].Digest.String())
 				}
 			})
+			t.Run("Referrers pagination", func(t *testing.T) {
+				if tcServer.readOnly {
+					return
+				}
+				t.Parallel()
+				count := 25
+				// push sample image
+				if err := testSampleEntryPush(t, s, *sd["index"], "referrer", "index"); err != nil {
+					return
+				}
+				// generate referrer manifest with annotations, push blob
+				emptyBlob := []byte(`{}`)
+				emptyDig := digest.Canonical.FromBytes(emptyBlob)
+				if _, err := testAPIBlobPostPut(t, s, "referrer", emptyDig, emptyBlob); err != nil {
+					return
+				}
+				exBlob := []byte(`example artifact content`)
+				exDig := digest.Canonical.FromBytes(exBlob)
+				if _, err := testAPIBlobPostPut(t, s, "referrer", exDig, exBlob); err != nil {
+					return
+				}
+				subDig := sd["index"].manifestList[len(sd["index"].manifestList)-1]
+				subLen := int64(len(sd["index"].manifest[subDig]))
+				artMan := types.Manifest{
+					SchemaVersion: 2,
+					MediaType:     types.MediaTypeOCI1Manifest,
+					ArtifactType:  "application/example",
+					Config: types.Descriptor{
+						MediaType: types.MediaTypeOCI1Empty,
+						Digest:    emptyDig,
+						Size:      int64(len(emptyBlob)),
+					},
+					Layers: []types.Descriptor{
+						{
+							MediaType: "application/example",
+							Digest:    exDig,
+							Size:      int64(len(exBlob)),
+						},
+					},
+					Annotations: map[string]string{},
+					Subject: &types.Descriptor{
+						MediaType: types.MediaTypeOCI1ManifestList,
+						Digest:    subDig,
+						Size:      subLen,
+					},
+				}
+				// pad the manifests to force pagination
+				for _, c := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"} {
+					artMan.Annotations["filler"+c] = strings.Repeat(c, 5000)
+				}
+				// in loop, update one annotation, and push
+				for i := 0; i < count; i++ {
+					artMan.Annotations["count"] = fmt.Sprintf("%d", i)
+					artBytes, err := json.Marshal(artMan)
+					if err != nil {
+						t.Fatalf("failed to marshal artifact")
+					}
+					artDig := digest.Canonical.FromBytes(artBytes)
+					if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
+						return
+					}
+				}
+				// query for referrer, verify link header
+				refIdx := types.Index{}
+				found := map[string]bool{}
+				pageCount := 1
+				tcgList := []testClientGen{
+					testClientRespStatus(http.StatusOK),
+					testClientRespHeader("Content-Type", types.MediaTypeOCI1ManifestList),
+				}
+				path := "/v2/referrer/referrers/" + subDig.String()
+				resp, err := testClientRun(t, s, "GET", path, nil, tcgList...)
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send referrers list: %v", err)
+					}
+					return
+				}
+				nextLink, err := parseLinkHeader(resp.Result().Header.Get("link"))
+				if err != nil {
+					t.Fatalf("%v", err)
+				}
+				if nextLink == "" {
+					t.Errorf("referrers result did not trigger pagination, size = %d", resp.Result().ContentLength)
+				}
+				err = json.NewDecoder(resp.Result().Body).Decode(&refIdx)
+				if err != nil {
+					t.Fatalf("failed to decode referrers body: %v", err)
+				}
+				for _, d := range refIdx.Manifests {
+					if d.Annotations == nil {
+						continue
+					}
+					if c, ok := d.Annotations["count"]; ok {
+						found[c] = true
+					}
+				}
+				// get paginated responses using the link header
+				for nextLink != "" {
+					pageCount++
+					resp, err = testClientRun(t, s, "GET", nextLink, nil, tcgList...)
+					if err != nil {
+						if !errors.Is(err, errValidationFailed) {
+							t.Errorf("failed to send referrers list: %v", err)
+						}
+						return
+					}
+					nextLink, err = parseLinkHeader(resp.Result().Header.Get("link"))
+					if err != nil {
+						t.Fatalf("%v", err)
+					}
+					err = json.NewDecoder(resp.Result().Body).Decode(&refIdx)
+					if err != nil {
+						t.Fatalf("failed to decode referrers body: %v", err)
+					}
+					for _, d := range refIdx.Manifests {
+						if d.Annotations == nil {
+							continue
+						}
+						if c, ok := d.Annotations["count"]; ok {
+							found[c] = true
+						}
+					}
+				}
+				t.Logf("received %d pages of referrers", pageCount)
+				if len(found) != count {
+					t.Errorf("length of descriptor list, expected %d, received %d", count, len(found))
+				}
+				// verify full list contains all count values (make a slice of bool, set to true as each one is found, verify full list is true)
+				for i := 0; i < count; i++ {
+					if !found[fmt.Sprintf("%d", i)] {
+						t.Errorf("response not found for %d", i)
+					}
+				}
+				// query again to verify cache works
+				_, err = testAPIReferrersList(t, s, "referrer", subDig, "", nil)
+				if err != nil {
+					return
+				}
+			})
 			// TODO: test tag listing before and after pushing manifest
 			// TODO: test deleting manifests and blobs
 			// TODO: test blob chunked upload, and stream upload
+			// TODO: test referrers pagination: push referrer with annotations too large to fit in the referrers response manifest, verify response does not include the referrer
 		})
 	}
 }
@@ -1242,4 +1404,16 @@ func detectMediaType(b []byte) string {
 	}{}
 	_ = json.Unmarshal(b, &detect)
 	return detect.MediaType
+}
+
+var linkRegexp = regexp.MustCompile(`^<([^>]+)>; rel=next$`)
+
+func parseLinkHeader(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	if match := linkRegexp.FindStringSubmatch(s); len(match) > 1 {
+		return match[1], nil
+	}
+	return "", fmt.Errorf("failed to parse link header: %s", s)
 }

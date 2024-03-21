@@ -10,7 +10,10 @@ import (
 )
 
 const (
-	manifestLimitDefault = 8388608 // 8MiB
+	manifestLimitDefault       = 1024 * 1024 * 8
+	referrerCacheExpireDefault = time.Minute * 5
+	referrerCacheLimitDefault  = 1000
+	referrersLimitDefault      = 1024 * 1024 * 4
 )
 
 type Store int
@@ -70,7 +73,10 @@ type ConfigAPIBlob struct {
 }
 
 type ConfigAPIReferrer struct {
-	Enabled *bool
+	Enabled         *bool
+	PageCacheExpire time.Duration // time to save pages for a paged response
+	PageCacheLimit  int           // max number of paged responses to keep in memory
+	Limit           int64         // max size of a referrers response (OCI recommends 4MiB)
 }
 
 func (c *Config) SetDefaults() {
@@ -80,6 +86,15 @@ func (c *Config) SetDefaults() {
 	c.API.Referrer.Enabled = boolDefault(c.API.Referrer.Enabled, true)
 	if c.API.Manifest.Limit <= 0 {
 		c.API.Manifest.Limit = manifestLimitDefault
+	}
+	if c.API.Referrer.PageCacheExpire == 0 {
+		c.API.Referrer.PageCacheExpire = referrerCacheExpireDefault
+	}
+	if c.API.Referrer.PageCacheLimit == 0 {
+		c.API.Referrer.PageCacheLimit = referrerCacheLimitDefault
+	}
+	if c.API.Referrer.Limit == 0 {
+		c.API.Referrer.Limit = referrersLimitDefault
 	}
 
 	c.Storage.ReadOnly = boolDefault(c.Storage.ReadOnly, false)
