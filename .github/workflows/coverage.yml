@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE_GO_VER: "1.22"
+    permissions:
+      pull-requests: write # write permission needed to comment on PR
 
     steps:
     - name: Checkout repository
@@ -46,16 +48,8 @@ jobs:
         name: code-coverage
         path: coverage.txt
 
-  pr_comment:
-    name: "Comment on PR"
-    if: github.event_name == 'pull_request' # Do not run when workflow is triggered by push to main branch
-    runs-on: ubuntu-latest
-    needs: coverage_report
-    permissions:
-      pull-requests: write # write permission needed to comment on PR
-
-    steps:
     - name: Comment on PR
+      if: github.event_name == 'pull_request' # Do not run when workflow is triggered by push to main branch
       uses: fgrosse/go-coverage-report@a284a4c69b3383da62629009e9e8e58976efbf6a # v1.0.0
       continue-on-error: true # This may fail if artifact on main branch does not exist (first run or expired)
       with:
