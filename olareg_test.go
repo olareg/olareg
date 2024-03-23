@@ -735,6 +735,16 @@ func TestServer(t *testing.T) {
 						found[c] = true
 					}
 				}
+				// add another referrer
+				artMan.Annotations["count"] = fmt.Sprintf("%d", count)
+				artBytes, err := json.Marshal(artMan)
+				if err != nil {
+					t.Fatalf("failed to marshal artifact")
+				}
+				artDig := digest.Canonical.FromBytes(artBytes)
+				if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
+					return
+				}
 				// get paginated responses using the link header
 				for nextLink != "" {
 					pageCount++
@@ -771,6 +781,9 @@ func TestServer(t *testing.T) {
 					if !found[fmt.Sprintf("%d", i)] {
 						t.Errorf("response not found for %d", i)
 					}
+				}
+				if found[fmt.Sprintf("%d", count)] {
+					t.Errorf("referrer pushed after first page returned should not have been included")
 				}
 				// query again to verify cache works
 				_, err = testAPIReferrersList(t, s, "referrer", subDig, "", nil)
