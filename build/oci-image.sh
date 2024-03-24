@@ -6,6 +6,8 @@ platforms="linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/ppc
 base_name=""
 release="scratch"
 push_tags=""
+ALPINE_NAME="alpine:3"
+ALPINE_DIGEST="sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b" # 3.19.1
 
 # CLI options to override image, platform, base digest, and comma separated list of tags to push
 opt_c=0
@@ -47,13 +49,16 @@ vcs_sec="$(git log -1 --format=%ct)"
 vcs_date="$(date -d "@${vcs_sec}" +%Y-%m-%dT%H:%M:%SZ --utc)"
 vcs_repo="https://github.com/regclient/regclient.git"
 vcs_sha="$(git rev-list -1 HEAD)"
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  vcs_sha="${vcs_sha}-dirty"
+fi
 vcs_describe="$(git describe --all)"
-vcs_version="noop"
+vcs_version="(devel)"
 if [ "${vcs_describe}" != "${vcs_describe#tags/}" ]; then
   vcs_version="${vcs_describe#tags/}"
 elif [ "${vcs_describe}" != "${vcs_describe#heads/}" ]; then
   vcs_version="${vcs_describe#heads/}"
-  if [ "main" = "$vcs_version" ]; then
+  if [ "main" = "${vcs_version}" ]; then
     vcs_version=edge
   fi
 fi
@@ -61,7 +66,11 @@ vcs_version="$(echo "${vcs_version}" | sed -r 's#/+#-#g')"
 
 build_opts=""
 if [ -n "$base_name" ] && [ -z "$base_digest" ]; then
-  base_digest="$(regctl image digest "${base_name}")"
+  if [ "$base_name" = "${ALPINE_NAME}" ]; then
+    base_digest="${ALPINE_DIGEST}"
+  else
+    base_digest="$(regctl image digest "${base_name}")"
+  fi
   echo "Base image digest: ${base_digest}"
 elif [ -n "$base_name" ] && [ -n "$base_digest" ]; then
   build_opts=--build-context "${base_name}=docker-image://${base_name}@${base_digest}"
@@ -75,10 +84,9 @@ docker buildx build --platform="$platforms" \
   -o "type=oci,dest=output/${image}-${release}.tar" \
   --target "release-${release}" \
   --build-arg "SOURCE_DATE_EPOCH=${vcs_sec}" \
-  --label org.opencontainers.image.created=${vcs_date} \
-  --label org.opencontainers.image.source=${vcs_repo} \
-  --label org.opencontainers.image.version=${vcs_version} \
-  --label org.opencontainers.image.revision=${vcs_sha} \
+  --build-arg "BUILD_DATE=${vcs_date}" \
+  --build-arg "VCS_REF=${vcs_sha}" \
+  --build-arg "VCS_VERSION=${vcs_version}" \
   ${build_opts} .
 
 echo "Importing tar"
@@ -87,15 +95,7 @@ regctl image import "ocidir://output/${image}:${release}" "output/${image}-${rel
 echo "Modding image"
 regctl image mod \
   "ocidir://output/${image}:${release}" --replace \
-  --to-oci-referrers
-regctl image mod \
-  "ocidir://output/${image}:${release}" --replace \
-  --annotation "[*]org.opencontainers.image.created=${vcs_date}" \
-  --annotation "[*]org.opencontainers.image.source=${vcs_repo}" \
-  --annotation "[*]org.opencontainers.image.version=${vcs_version}" \
-  --annotation "[*]org.opencontainers.image.revision=${vcs_sha}" \
-  >/dev/null
-
+  --to-oci-referrers --label-to-annotation --annotation-promote
 if [ -n "$base_name" ] && [ -n "$base_digest" ]; then
   regctl image mod \
     "ocidir://output/${image}:${release}" --replace \

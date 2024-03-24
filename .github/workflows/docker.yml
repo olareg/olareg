@@ -27,6 +27,10 @@ jobs:
         image: ["olareg"]
         type: ["scratch", "alpine"]
 
+    env:
+      ALPINE_NAME: "alpine:3"
+      ALPINE_DIGEST: "sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b" # 3.19.1
+
     steps:
     - name: Check out code
       uses: actions/checkout@9bb56186c3b09b4f86b1c65136769dd318469633 # v4.1.2
@@ -41,7 +45,7 @@ jobs:
         fi
         HUB_IMAGE=olareg/${{ matrix.image }}
         GHCR_IMAGE=ghcr.io/olareg/${{ matrix.image }}
-        VERSION=noop
+        VERSION="(devel)"
         if [ "${{ github.event_name }}" = "schedule" ]; then
           VERSION=edge
         elif [[ $GITHUB_REF == refs/tags/* ]]; then
@@ -110,11 +114,9 @@ jobs:
         outputs: type=oci,dest=output/${{matrix.image}}-${{matrix.type}}.tar
         build-args: |
           SOURCE_DATE_EPOCH=${{ steps.prep.outputs.vcs_sec }}
-        labels: |
-          org.opencontainers.image.created=${{ steps.prep.outputs.created }}
-          org.opencontainers.image.source=${{ steps.prep.outputs.repo_url }}
-          org.opencontainers.image.version=${{ steps.prep.outputs.version }}
-          org.opencontainers.image.revision=${{ github.sha }}
+          BUILD_DATE=${{ steps.prep.outputs.created }}
+          VCS_REF=${{ github.sha }}
+          VCS_VERSION=${{ steps.prep.outputs.version }} 
 
     - name: Install cosign
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
@@ -142,8 +144,8 @@ jobs:
         base_name=""
         mkdir -p "output/${{matrix.image}}"
         if [ "${{matrix.type}}" = "alpine" ]; then
-          base_name="alpine:3"
-          base_digest="$(regctl image digest "${base_name}")"
+          base_name="${ALPINE_NAME}"
+          base_digest="${ALPINE_DIGEST}"
         fi
         # mutate the image locally
         local_tag="ocidir://output/${{matrix.image}}:${{matrix.type}}"
@@ -151,12 +153,7 @@ jobs:
         regctl image import "${local_tag}" "output/${{matrix.image}}-${{matrix.type}}.tar"
         echo "Modifying image for reproducibility"
         regctl image mod "${local_tag}" --replace \
-          --to-oci-referrers
-        regctl image mod "${local_tag}" --replace \
-          --annotation "[*]org.opencontainers.image.created=${vcs_date}" \
-          --annotation "[*]org.opencontainers.image.source=${{ steps.prep.outputs.repo_url }}" \
-          --annotation "[*]org.opencontainers.image.version=${{ steps.prep.outputs.version }}" \
-          --annotation "[*]org.opencontainers.image.revision=${{ github.sha }}"
+          --to-oci-referrers --label-to-annotation --annotation-promote
         if [ -n "$base_name" ] && [ -n "$base_digest" ]; then
           regctl image mod "${local_tag}" --replace \
             --annotation "[*]org.opencontainers.image.base.name=${base_name}" \
