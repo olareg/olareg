@@ -75,7 +75,7 @@ jobs:
       with:
         cosign-release: "v2.2.3"
 
-    - name: Package artifacts
+    - name: Sign artifacts
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
       run: |
         cd artifacts
@@ -90,7 +90,6 @@ jobs:
           ; do
           cosign sign-blob -y --output-signature "${artifact%.exe}.sig" --output-certificate "${artifact%.exe}.pem" "${artifact}"
         done
-        tar -cvzf metadata.tgz *.sig *.pem *.json
 
     - name: Gather release details
       if: startsWith( github.ref, 'refs/tags/v' ) && github.repository_owner == 'olareg' && matrix.gover == env.RELEASE_GO_VER
@@ -121,15 +120,7 @@ jobs:
         body: ${{ steps.release_details.outputs.release_notes }}
         draft: false
         prerelease: false
-        files: |
-          ./artifacts/olareg-darwin-amd64
-          ./artifacts/olareg-darwin-arm64
-          ./artifacts/olareg-linux-amd64
-          ./artifacts/olareg-linux-arm64
-          ./artifacts/olareg-linux-ppc64le
-          ./artifacts/olareg-linux-s390x
-          ./artifacts/olareg-windows-amd64.exe
-          ./artifacts/metadata.tgz
+        files: ./artifacts/*
 
     - name: Save artifacts
       if: github.ref == 'refs/heads/main' && matrix.gover == env.RELEASE_GO_VER
