@@ -44,18 +44,19 @@ CMD [ "olareg", "--help" ]
 
 ARG BUILD_DATE
 ARG VCS_REF
+ARG VCS_VERSION=(devel)
 LABEL maintainer="" \
       org.opencontainers.image.created=$BUILD_DATE \
       org.opencontainers.image.authors="olareg contributors" \
       org.opencontainers.image.url="https://github.com/olareg/olareg" \
       org.opencontainers.image.documentation="https://github.com/olareg/olareg" \
       org.opencontainers.image.source="https://github.com/olareg/olareg" \
-      org.opencontainers.image.version="latest" \
-      org.opencontainers.image.revision=$VCS_REF \
-      org.opencontainers.image.vendor="" \
+      org.opencontainers.image.version="$VCS_VERSION" \
+      org.opencontainers.image.revision="$VCS_REF" \
+      org.opencontainers.image.vendor="olareg" \
       org.opencontainers.image.licenses="Apache 2.0" \
       org.opencontainers.image.title="olareg" \
-      org.opencontainers.image.description=""
+      org.opencontainers.image.description="olareg is a minimal registry based on the OCI Layout"
 
 FROM scratch as release-scratch
 COPY --from=build /tmp /
@@ -68,15 +69,16 @@ ENTRYPOINT [ "/olareg" ]
 
 ARG BUILD_DATE
 ARG VCS_REF
+ARG VCS_VERSION=(devel)
 LABEL maintainer="" \
       org.opencontainers.image.created=$BUILD_DATE \
       org.opencontainers.image.authors="olareg contributors" \
       org.opencontainers.image.url="https://github.com/olareg/olareg" \
       org.opencontainers.image.documentation="https://github.com/olareg/olareg" \
       org.opencontainers.image.source="https://github.com/olareg/olareg" \
-      org.opencontainers.image.version="latest" \
-      org.opencontainers.image.revision=$VCS_REF \
-      org.opencontainers.image.vendor="" \
+      org.opencontainers.image.version="$VCS_VERSION" \
+      org.opencontainers.image.revision="$VCS_REF" \
+      org.opencontainers.image.vendor="olareg" \
       org.opencontainers.image.licenses="Apache 2.0" \
       org.opencontainers.image.title="olareg" \
-      org.opencontainers.image.description=""
+      org.opencontainers.image.description="olareg is a minimal registry based on the OCI Layout"
