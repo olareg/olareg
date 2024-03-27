@@ -11,7 +11,7 @@ RUN apk add --no-cache \
       make
 RUN addgroup -g 1000 appuser \
  && adduser -u 1000 -G appuser -D appuser \
- && mkdir -p /home/appuser \
+ && mkdir -p /home/appuser/registry \
  && chown -R appuser /home/appuser
 WORKDIR /src
 
@@ -40,6 +40,8 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build --chown=1000:1000 /home/appuser/ /home/appuser/
 COPY --from=build /src/bin/olareg /usr/local/bin/olareg
 USER appuser
+VOLUME /home/appuser/registry
+WORKDIR /home/appuser/registry
 CMD [ "olareg", "--help" ]
 
 ARG BUILD_DATE
@@ -65,6 +67,8 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build --chown=1000:1000 /home/appuser/ /home/appuser/
 COPY --from=build /src/bin/olareg /olareg
 USER appuser
+VOLUME /home/appuser/registry
+WORKDIR /home/appuser/registry
 ENTRYPOINT [ "/olareg" ]
 
 ARG BUILD_DATE
