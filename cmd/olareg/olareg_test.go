@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 type cobraTestOpts struct {
-	stdin io.Reader
+	stdin   io.Reader
+	timeout time.Duration
 }
 
 func cobraTest(t *testing.T, opts *cobraTestOpts, args ...string) (string, error) {
@@ -17,8 +20,15 @@ func cobraTest(t *testing.T, opts *cobraTestOpts, args ...string) (string, error
 
 	buf := new(bytes.Buffer)
 	cmd := newRootCmd()
-	if opts != nil && opts.stdin != nil {
-		cmd.SetIn(opts.stdin)
+	if opts != nil {
+		if opts.stdin != nil {
+			cmd.SetIn(opts.stdin)
+		}
+		if opts.timeout > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+			defer cancel()
+			cmd.SetContext(ctx)
+		}
 	}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)

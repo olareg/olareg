@@ -10,6 +10,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/olareg/olareg/config"
@@ -48,6 +49,7 @@ func New(conf config.Config) *Server {
 }
 
 type Server struct {
+	mu            sync.Mutex
 	conf          config.Config
 	store         store.Store
 	log           slog.Logger
@@ -68,6 +70,8 @@ func (s *Server) Close() error {
 // Run starts a listener and serves requests.
 // It only returns after a call to [Server.Shutdown].
 func (s *Server) Run(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.httpServer != nil {
 		return fmt.Errorf("server is already running, run shutdown first")
 	}
@@ -81,12 +85,14 @@ func (s *Server) Run(ctx context.Context) error {
 	if ctx != nil {
 		hs.BaseContext = func(l net.Listener) context.Context { return ctx }
 	}
+	s.mu.Unlock()
 	var err error
 	if s.conf.HTTP.CertFile != "" && s.conf.HTTP.KeyFile != "" {
 		err = hs.ListenAndServeTLS(s.conf.HTTP.CertFile, s.conf.HTTP.KeyFile)
 	} else {
 		err = hs.ListenAndServe()
 	}
+	s.mu.Lock()
 	// graceful exit should not error
 	if err != nil && errors.Is(err, http.ErrServerClosed) {
 		err = nil
@@ -96,6 +102,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 // Shutdown is used to stop the http listener and close the backend store.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.httpServer == nil {
 		return fmt.Errorf("server is not running")
 	}
