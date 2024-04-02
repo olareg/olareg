@@ -2,6 +2,7 @@
 
 [![Go Workflow Status](https://img.shields.io/github/actions/workflow/status/olareg/olareg/go.yml?branch=main&label=Go%20build)](https://github.com/olareg/olareg/actions/workflows/go.yml)
 [![Docker Workflow Status](https://img.shields.io/github/actions/workflow/status/olareg/olareg/docker.yml?branch=main&label=Docker%20build)](https://github.com/olareg/olareg/actions/workflows/docker.yml)
+[![CI & Conformance Status](https://img.shields.io/github/actions/workflow/status/olareg/olareg/ci-conformance.yml?branch=main&label=CI%20%26%20Conformance)](https://github.com/olareg/olareg/actions/workflows/ci-conformance.yml)
 [![Dependency Workflow Status](https://img.shields.io/github/actions/workflow/status/olareg/olareg/version-check.yml?branch=main&label=Dependency%20check)](https://github.com/olareg/olareg/actions/workflows/version-check.yml)
 [![Vulnerability Workflow Status](https://img.shields.io/github/actions/workflow/status/olareg/olareg/vulnscans.yml?branch=main&label=Vulnerability%20check)](https://github.com/olareg/olareg/actions/workflows/vulnscans.yml)
 
