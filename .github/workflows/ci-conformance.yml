@@ -1,0 +1,50 @@
+name: CI and Conformance Tests
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_GO_VER: "1.22"
+      # do not automatically upgrade go to a different version: https://go.dev/doc/toolchain
+      GOTOOLCHAIN: "local"
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@9bb56186c3b09b4f86b1c65136769dd318469633 # v4.1.2
+
+    - name: Build and run olareg in the background
+      id: run-olareg
+      run: |
+        make ci-setup
+        echo "port=$(docker port olareg-ci 5000 | head -1 | cut -f2 -d:)" >>$GITHUB_OUTPUT
+
+    - name: Run OCI Distribution Spec conformance tests
+      uses: opencontainers/distribution-spec@main
+      env:
+        OCI_ROOT_URL: "http://localhost:${{ steps.run-olareg.outputs.port }}"
+        OCI_NAMESPACE: myorg/myrepo
+        OCI_TEST_PULL: 1
+        OCI_TEST_PUSH: 1
+        OCI_TEST_CONTENT_DISCOVERY: 1
+        OCI_TEST_CONTENT_MANAGEMENT: 1
+        OCI_HIDE_SKIPPED_WORKFLOWS: 0
+        OCI_DEBUG: 0
+        OCI_DELETE_MANIFEST_BEFORE_BLOBS: 0
+
+    # TODO: add CI tests with other tools (regclient, crane, skopeo, oras, docker)
+
+    - name: Cleanup
+      run: |
+        make ci-cleanup

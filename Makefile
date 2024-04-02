@@ -156,6 +156,37 @@ test-docker-%:
 	docker buildx build --platform="$(TEST_PLATFORMS)" -f build/Dockerfile.$*.buildkit .
 	docker buildx build --platform="$(TEST_PLATFORMS)" -f build/Dockerfile.$*.buildkit --target release-alpine .
 
+# ci tests
+
+.PHONY: ci-tests
+ci-tests: ci-setup ci-oci-conformance ci-cleanup ## Run CI tests and OCI Conformance
+
+.PHONY: oci-conformance
+oci-conformance: ci-setup ci-oci-conformance ci-cleanup ## Run OCI Conformance
+
+.PHONY: ci-setup
+ci-setup: docker-olareg
+	docker rm -f olareg-ci || true
+	docker run --rm -d --name olareg-ci -p 5000 olareg/olareg serve
+
+.PHONY: ci-oci-conformance
+ci-oci-conformance:
+	docker run \
+		--rm --net container:olareg-ci \
+		-e OCI_ROOT_URL="http://localhost:5000" \
+  	-e OCI_NAMESPACE="myorg/myrepo" \
+		-e OCI_TEST_PULL=1 \
+		-e OCI_TEST_PUSH=1 \
+  	-e OCI_TEST_CONTENT_DISCOVERY=1 \
+  	-e OCI_TEST_CONTENT_MANAGEMENT=1 \
+		ghcr.io/opencontainers/distribution-spec/conformance:main
+
+# TODO: add CI tests with regclient, crane, skopeo, oras, and docker
+
+.PHONY: ci-cleanup
+ci-cleanup:
+	docker stop olareg-ci 
+
 # utilities for managing the project
 
 .PHONY: util-golang-major
