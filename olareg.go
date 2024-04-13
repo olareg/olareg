@@ -32,8 +32,8 @@ func New(conf config.Config) *Server {
 		conf: conf,
 		log:  conf.Log,
 		referrerCache: cache.New[referrerKey, referrerResponses](
-			cache.WithAge(conf.API.Referrer.PageCacheExpire),
-			cache.WithCount(conf.API.Referrer.PageCacheLimit),
+			cache.WithAge[referrerKey, referrerResponses](conf.API.Referrer.PageCacheExpire),
+			cache.WithCount[referrerKey, referrerResponses](conf.API.Referrer.PageCacheLimit),
 		),
 	}
 	if s.log == nil {

@@ -18,6 +18,7 @@ type Cache[k comparable, v any] struct {
 	maxCount int
 	timer    *time.Timer
 	entries  map[k]*Entry[v]
+	pruneFn  func(k, v)
 }
 
 type Entry[v any] struct {
@@ -30,27 +31,34 @@ type sortKeys[k comparable] struct {
 	lessFn func(a, b k) bool
 }
 
-type conf struct {
+type conf[k comparable, v any] struct {
 	minAge   time.Duration
 	maxCount int
+	pruneFn  func(k, v)
 }
 
-type CacheOpts func(*conf)
+type CacheOpts[k comparable, v any] func(*conf[k, v])
 
-func WithAge(age time.Duration) CacheOpts {
-	return func(c *conf) {
+func WithAge[k comparable, v any](age time.Duration) CacheOpts[k, v] {
+	return func(c *conf[k, v]) {
 		c.minAge = age
 	}
 }
 
-func WithCount(count int) CacheOpts {
-	return func(c *conf) {
+func WithCount[k comparable, v any](count int) CacheOpts[k, v] {
+	return func(c *conf[k, v]) {
 		c.maxCount = count
 	}
 }
 
-func New[k comparable, v any](opts ...CacheOpts) *Cache[k, v] {
-	c := conf{}
+func WithPrune[k comparable, v any](fn func(k, v)) CacheOpts[k, v] {
+	return func(c *conf[k, v]) {
+		c.pruneFn = fn
+	}
+}
+
+func New[k comparable, v any](opts ...CacheOpts[k, v]) *Cache[k, v] {
+	c := conf[k, v]{}
 	for _, opt := range opts {
 		opt(&c)
 	}
@@ -64,6 +72,7 @@ func New[k comparable, v any](opts ...CacheOpts) *Cache[k, v] {
 		maxAge:   maxAge,
 		minCount: minCount,
 		maxCount: c.maxCount,
+		pruneFn:  c.pruneFn,
 		entries:  map[k]*Entry[v]{},
 	}
 }
@@ -74,6 +83,12 @@ func (c *Cache[k, v]) Delete(key k) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.pruneFn != nil && c.entries[key] != nil {
+		v := c.entries[key].value
+		c.mu.Unlock()
+		c.pruneFn(key, v)
+		c.mu.Lock()
+	}
 	delete(c.entries, key)
 	if len(c.entries) == 0 && c.timer != nil {
 		c.timer.Stop()
@@ -145,6 +160,9 @@ func (c *Cache[k, v]) pruneLocked() {
 	delCount := len(keyList) - c.minCount
 	for i, key := range keyList {
 		if i < delCount || c.entries[key].used.Before(cutoff) {
+			if c.pruneFn != nil {
+				c.pruneFn(key, c.entries[key].value)
+			}
 			delete(c.entries, key)
 		} else {
 			nextTime = c.entries[key].used

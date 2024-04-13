@@ -21,10 +21,14 @@ func TestCache(t *testing.T) {
 	}
 	count := 10
 	pruneCount := int(float64(count) * 1.1)
+	pruned := map[string]bool{}
+	pruneFn := func(_ int, v string) {
+		pruned[v] = true
+	}
 	timeout := time.Millisecond * 250
 	timeoutHalf := timeout / 2
 	timePrune := timeout + (timeout / 10)
-	c := New[int, string](WithAge(timeout), WithCount(count))
+	c := New[int, string](WithAge[int, string](timeout), WithCount[int, string](count), WithPrune[int, string](pruneFn))
 	// add entries beyond limit
 	for i, v := range testData {
 		c.Set(i, v)
@@ -40,10 +44,16 @@ func TestCache(t *testing.T) {
 	for i, v := range testData {
 		getVal, err := c.Get(i)
 		if i < pruneCutoff || i >= len(testData)-2 {
+			if !pruned[v] {
+				t.Errorf("value not found on pruned map: %s", v)
+			}
 			if err == nil {
 				t.Errorf("value found that should have been pruned: %d", i)
 			}
 		} else if i >= saveCutoff && i < len(testData)-2 {
+			if pruned[v] {
+				t.Errorf("value found on pruned map: %s", v)
+			}
 			if err != nil {
 				t.Errorf("value not found: %d", i)
 			} else if getVal != v {
@@ -96,7 +106,7 @@ func TestCache(t *testing.T) {
 	c.Delete(42)
 
 	// set and get a struct based key
-	c2 := New[testKey, string](WithAge(timeout), WithCount(count))
+	c2 := New[testKey, string](WithAge[testKey, string](timeout), WithCount[testKey, string](count))
 	c2.Set(testKey{i: 42, s: "test"}, "value")
 	v, err := c2.Get(testKey{i: 42, s: "test"})
 	if err != nil {
