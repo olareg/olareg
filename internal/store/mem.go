@@ -15,6 +15,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/olareg/olareg/config"
+	"github.com/olareg/olareg/internal/cache"
 	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/types"
 )
@@ -34,7 +35,7 @@ type memRepo struct {
 	timeMod time.Time
 	index   types.Index
 	blobs   map[digest.Digest]*memRepoBlob
-	uploads map[string]*memRepoUpload
+	uploads *cache.Cache[string, *memRepoUpload]
 	log     slog.Logger
 	path    string
 	conf    config.Config
@@ -52,7 +53,6 @@ type memRepoUpload struct {
 	expect    digest.Digest
 	mr        *memRepo
 	sessionID string
-	lastWrite time.Time
 }
 
 func NewMem(conf config.Config, opts ...Opts) Store {
@@ -89,6 +89,13 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 		mr.wg.Add(1)
 		return mr, nil
 	}
+	uploadCacheOpts := []cache.CacheOpts[string, *memRepoUpload]{
+		cache.WithCount[string, *memRepoUpload](1000),
+		cache.WithPrune(func(_ string, mru *memRepoUpload) { mru.buffer.Truncate(0) }),
+	}
+	if m.conf.Storage.GC.GracePeriod > 0 {
+		uploadCacheOpts = append(uploadCacheOpts, cache.WithAge[string, *memRepoUpload](m.conf.Storage.GC.GracePeriod))
+	}
 	mr := &memRepo{
 		index: types.Index{
 			SchemaVersion: 2,
@@ -97,7 +104,7 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 			Annotations:   map[string]string{},
 		},
 		blobs:   map[digest.Digest]*memRepoBlob{},
-		uploads: map[string]*memRepoUpload{},
+		uploads: cache.New[string, *memRepoUpload](uploadCacheOpts...),
 		log:     m.log,
 		conf:    m.conf,
 	}
@@ -133,9 +140,7 @@ func (m *mem) Close() error {
 		m.mu.Unlock()
 		repo.wg.Wait()
 		// cancel all uploads
-		for _, bc := range repo.uploads {
-			bc.Cancel()
-		}
+		repo.uploads.DeleteAll()
 		m.mu.Lock()
 		delete(m.repos, r)
 	}
@@ -366,7 +371,8 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("failed generating sessionID: %w", err)
 	}
-	if _, ok := mr.uploads[sessionID]; ok {
+	_, err = mr.uploads.Get(sessionID)
+	if err == nil {
 		return nil, "", fmt.Errorf("session ID collision")
 	}
 	buffer := &bytes.Buffer{}
@@ -379,10 +385,9 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 		expect:    conf.expect,
 		mr:        mr,
 		sessionID: sessionID,
-		lastWrite: time.Now(),
 	}
 	mr.timeMod = time.Now()
-	mr.uploads[sessionID] = bc
+	mr.uploads.Set(sessionID, bc)
 	return bc, sessionID, nil
 }
 
@@ -467,7 +472,7 @@ func (mr *memRepo) blobList(locked bool) ([]digest.Digest, error) {
 func (mr *memRepo) BlobSession(sessionID string) (BlobCreator, error) {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
-	if bc, ok := mr.uploads[sessionID]; ok {
+	if bc, err := mr.uploads.Get(sessionID); err == nil {
 		return bc, nil
 	}
 	return nil, types.ErrNotFound
@@ -483,14 +488,6 @@ func (mr *memRepo) Done() {
 func (mr *memRepo) gc() error {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
-	if mr.conf.Storage.GC.GracePeriod > 0 {
-		cutoff := time.Now().Add(mr.conf.Storage.GC.GracePeriod * -1)
-		for _, mru := range mr.uploads {
-			if mru.lastWrite.Before(cutoff) {
-				mru.cancel(true)
-			}
-		}
-	}
 	i, mod, err := repoGarbageCollect(mr, mr.conf, mr.index, true)
 	if err != nil {
 		return err
@@ -504,10 +501,12 @@ func (mr *memRepo) gc() error {
 // Write sends data to the buffer.
 func (mru *memRepoUpload) Write(p []byte) (int, error) {
 	mru.mr.mu.Lock()
-	now := time.Now()
-	mru.mr.timeMod = now
-	mru.lastWrite = now
-	mru.mr.mu.Unlock()
+	defer mru.mr.mu.Unlock()
+	// verify session still exists and update last write time
+	_, err := mru.mr.uploads.Get(mru.sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("session expired %s: %w", mru.sessionID, err)
+	}
 	return mru.w.Write(p)
 }
 
@@ -525,22 +524,13 @@ func (mru *memRepoUpload) Close() error {
 			mod: time.Now(),
 		},
 	}
-	delete(mru.mr.uploads, mru.sessionID)
+	mru.mr.uploads.Delete(mru.sessionID)
 	return nil
 }
 
 // Cancel is used to stop an upload.
 func (mru *memRepoUpload) Cancel() {
-	mru.cancel(false)
-}
-
-func (mru *memRepoUpload) cancel(locked bool) {
-	mru.buffer.Truncate(0)
-	if !locked {
-		mru.mr.mu.Lock()
-		defer mru.mr.mu.Unlock()
-	}
-	delete(mru.mr.uploads, mru.sessionID)
+	mru.mr.uploads.Delete(mru.sessionID)
 }
 
 // Size reports the number of bytes pushed.

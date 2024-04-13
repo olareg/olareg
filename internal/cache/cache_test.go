@@ -115,4 +115,8 @@ func TestCache(t *testing.T) {
 	if v != "value" {
 		t.Errorf("value mismatch, expected value, received %s", v)
 	}
+	c2.DeleteAll()
+	if len(c2.entries) > 0 {
+		t.Errorf("entries remain after DeleteAll")
+	}
 }

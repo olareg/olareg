@@ -108,7 +108,7 @@ func (c *Cache[k, v]) Set(key k, val v) {
 	}
 	if len(c.entries) > c.maxCount {
 		c.pruneLocked()
-	} else if c.timer == nil {
+	} else if c.timer == nil && c.maxAge > 0 {
 		// prune resets the timer, so this is only needed if the prune wasn't triggered
 		c.timer = time.AfterFunc(c.maxAge, c.prune)
 	}
@@ -122,7 +122,7 @@ func (c *Cache[k, v]) Get(key k) (v, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.entries[key]; ok {
-		if e.used.Add(c.minAge).Before(time.Now()) {
+		if c.minAge > 0 && e.used.Add(c.minAge).Before(time.Now()) {
 			// entry expired
 			go c.prune()
 		} else {
@@ -132,6 +132,24 @@ func (c *Cache[k, v]) Get(key k) (v, error) {
 	}
 	var val v
 	return val, types.ErrNotFound
+}
+
+// DeleteAll removes all entries in the cache.
+func (c *Cache[k, v]) DeleteAll() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.entries {
+		if c.pruneFn != nil {
+			v := c.entries[key].value
+			c.mu.Unlock()
+			c.pruneFn(key, v)
+			c.mu.Lock()
+		}
+		delete(c.entries, key)
+	}
 }
 
 func (c *Cache[k, v]) prune() {
@@ -159,7 +177,7 @@ func (c *Cache[k, v]) pruneLocked() {
 	nextTime := now
 	delCount := len(keyList) - c.minCount
 	for i, key := range keyList {
-		if i < delCount || c.entries[key].used.Before(cutoff) {
+		if i < delCount || (c.minAge > 0 && c.entries[key].used.Before(cutoff)) {
 			if c.pruneFn != nil {
 				c.pruneFn(key, c.entries[key].value)
 			}
@@ -170,7 +188,7 @@ func (c *Cache[k, v]) pruneLocked() {
 		}
 	}
 	// set next timer
-	if len(c.entries) > 0 {
+	if len(c.entries) > 0 && c.maxAge > 0 {
 		dur := nextTime.Sub(now) + c.maxAge
 		if c.timer == nil {
 			// this shouldn't be possible
