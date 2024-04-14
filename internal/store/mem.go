@@ -90,8 +90,10 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 		return mr, nil
 	}
 	uploadCacheOpts := []cache.CacheOpts[string, *memRepoUpload]{
-		cache.WithCount[string, *memRepoUpload](1000),
 		cache.WithPrune(func(_ string, mru *memRepoUpload) { mru.buffer.Truncate(0) }),
+	}
+	if m.conf.Storage.GC.RepoUploadMax > 0 {
+		uploadCacheOpts = append(uploadCacheOpts, cache.WithCount[string, *memRepoUpload](m.conf.Storage.GC.RepoUploadMax))
 	}
 	if m.conf.Storage.GC.GracePeriod > 0 {
 		uploadCacheOpts = append(uploadCacheOpts, cache.WithAge[string, *memRepoUpload](m.conf.Storage.GC.GracePeriod))
