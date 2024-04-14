@@ -28,7 +28,7 @@ type dir struct {
 	mu    sync.Mutex
 	wg    sync.WaitGroup
 	root  string
-	repos map[string]*dirRepo // TODO: switch to storing these in a cache that expires from memory
+	repos *cache.Cache[string, *dirRepo]
 	log   slog.Logger
 	conf  config.Config
 	stop  chan struct{}
@@ -66,9 +66,11 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 	for _, opt := range opts {
 		opt(&sc)
 	}
+	cacheOpts := []cache.CacheOpts[string, *dirRepo]{}
+	// TODO: add limits/options to prune repo cache?
 	d := &dir{
 		root:  conf.Storage.RootDir,
-		repos: map[string]*dirRepo{},
+		repos: cache.New[string, *dirRepo](cacheOpts...),
 		log:   sc.log,
 		conf:  conf,
 		stop:  make(chan struct{}),
@@ -83,8 +85,6 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 	return d
 }
 
-// TODO: include options for memory caching.
-
 func (d *dir) RepoGet(repoStr string) (Repo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -94,7 +94,7 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 		return nil, fmt.Errorf("cannot get repo after Close")
 	default:
 	}
-	if dr, ok := d.repos[repoStr]; ok {
+	if dr, err := d.repos.Get(repoStr); err == nil {
 		dr.wg.Add(1)
 		return dr, nil
 	}
@@ -117,7 +117,7 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 		uploads: cache.New[string, *dirRepoUpload](uploadCacheOpts...),
 		log:     d.log,
 	}
-	d.repos[repoStr] = &dr
+	d.repos.Set(repoStr, &dr)
 	statDir, err := os.Stat(dr.path)
 	if err == nil && statDir.IsDir() {
 		statIndex, errIndex := os.Stat(filepath.Join(dr.path, indexFile))
@@ -135,13 +135,13 @@ func (d *dir) Close() error {
 	// signal to background jobs to exit and block new repos from being created
 	close(d.stop)
 	d.mu.Lock()
-	repoNames := make([]string, 0, len(d.repos))
-	for r := range d.repos {
-		repoNames = append(repoNames, r)
+	repoNames, err := d.repos.List()
+	if err != nil {
+		return fmt.Errorf("failed to list repos during close: %w", err)
 	}
 	for _, r := range repoNames {
-		repo, ok := d.repos[r]
-		if !ok {
+		repo, err := d.repos.Get(r)
+		if err != nil {
 			continue
 		}
 		d.mu.Unlock()
@@ -151,7 +151,7 @@ func (d *dir) Close() error {
 			_ = repo.gc()
 		}
 		d.mu.Lock()
-		delete(d.repos, r)
+		d.repos.Delete(r)
 	}
 	// wait for background jobs to finish
 	d.mu.Unlock()
@@ -187,9 +187,9 @@ func (d *dir) gc(cur, prev time.Time) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	// since the lock isn't held for the entire GC, build a list of repos to check
-	repoNames := make([]string, 0, len(d.repos))
-	for r := range d.repos {
-		repoNames = append(repoNames, r)
+	repoNames, err := d.repos.List()
+	if err != nil {
+		return fmt.Errorf("failed to list repos in gc: %w", err)
 	}
 	for _, r := range repoNames {
 		// if stop ch was closed, exit immediately
@@ -199,8 +199,8 @@ func (d *dir) gc(cur, prev time.Time) error {
 		default:
 		}
 
-		repo, ok := d.repos[r]
-		if !ok {
+		repo, err := d.repos.Get(r)
+		if err != nil {
 			continue
 		}
 		// skip repos that were not last updated between grace period and frequency
@@ -213,7 +213,7 @@ func (d *dir) gc(cur, prev time.Time) error {
 		// drop top level lock while GCing a single repo
 		repo.wg.Add(1)
 		d.mu.Unlock()
-		err := repo.gc()
+		err = repo.gc()
 		repo.wg.Done()
 		d.mu.Lock()
 		if err != nil {
