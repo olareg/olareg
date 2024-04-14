@@ -14,6 +14,7 @@ const (
 	referrerCacheExpireDefault = time.Minute * 5
 	referrerCacheLimitDefault  = 1000
 	referrersLimitDefault      = 1024 * 1024 * 4
+	repoUploadMaxDefault       = 1000
 )
 
 type Store int
@@ -50,6 +51,7 @@ type ConfigStorage struct {
 type ConfigGC struct {
 	Frequency         time.Duration // frequency to run garbage collection, disable gc with a negative value
 	GracePeriod       time.Duration // time to preserve recently pushed manifests and blobs, disable with a negative value
+	RepoUploadMax     int           // limit on number of concurrent uploads to a repository, unlimited with a negative value
 	Untagged          *bool         // delete untagged manifests
 	EmptyRepo         *bool         // delete empty repo
 	ReferrersDangling *bool         // delete referrers when manifest does not exist
@@ -109,6 +111,9 @@ func (c *Config) SetDefaults() {
 	}
 	if c.Storage.GC.GracePeriod == 0 {
 		c.Storage.GC.GracePeriod = time.Hour
+	}
+	if c.Storage.GC.RepoUploadMax == 0 {
+		c.Storage.GC.RepoUploadMax = repoUploadMaxDefault
 	}
 	c.Storage.GC.Untagged = boolDefault(c.Storage.GC.Untagged, false)
 	c.Storage.GC.EmptyRepo = boolDefault(c.Storage.GC.EmptyRepo, true)
