@@ -3,6 +3,7 @@
 package cache
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -57,6 +58,7 @@ func WithPrune[k comparable, v any](fn func(k, v)) CacheOpts[k, v] {
 	}
 }
 
+// New returns a new cache.
 func New[k comparable, v any](opts ...CacheOpts[k, v]) *Cache[k, v] {
 	c := conf[k, v]{}
 	for _, opt := range opts {
@@ -77,6 +79,7 @@ func New[k comparable, v any](opts ...CacheOpts[k, v]) *Cache[k, v] {
 	}
 }
 
+// Delete removes an entry from the cache.
 func (c *Cache[k, v]) Delete(key k) {
 	if c == nil {
 		return
@@ -96,24 +99,29 @@ func (c *Cache[k, v]) Delete(key k) {
 	}
 }
 
-func (c *Cache[k, v]) Set(key k, val v) {
+// DeleteAll removes all entries in the cache.
+func (c *Cache[k, v]) DeleteAll() {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = &Entry[v]{
-		used:  time.Now(),
-		value: val,
+	for key := range c.entries {
+		if c.pruneFn != nil {
+			v := c.entries[key].value
+			c.mu.Unlock()
+			c.pruneFn(key, v)
+			c.mu.Lock()
+		}
+		delete(c.entries, key)
 	}
-	if len(c.entries) > c.maxCount {
-		c.pruneLocked()
-	} else if c.timer == nil && c.maxAge > 0 {
-		// prune resets the timer, so this is only needed if the prune wasn't triggered
-		c.timer = time.AfterFunc(c.maxAge, c.prune)
+	if len(c.entries) == 0 && c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
 	}
 }
 
+// Get retrieves an entry from the cache.
 func (c *Cache[k, v]) Get(key k) (v, error) {
 	if c == nil {
 		var val v
@@ -134,21 +142,46 @@ func (c *Cache[k, v]) Get(key k) (v, error) {
 	return val, types.ErrNotFound
 }
 
-// DeleteAll removes all entries in the cache.
-func (c *Cache[k, v]) DeleteAll() {
+// IsEmpty returns true if the cache is empty.
+func (c *Cache[k, v]) IsEmpty() bool {
+	if c == nil {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries) == 0
+}
+
+// List returns a list of keys in the cache.
+func (c *Cache[k, v]) List() ([]k, error) {
+	if c == nil {
+		return []k{}, fmt.Errorf("cache is nil")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := make([]k, 0, len(c.entries))
+	for key := range c.entries {
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+// Set adds an entry to the cache.
+func (c *Cache[k, v]) Set(key k, val v) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for key := range c.entries {
-		if c.pruneFn != nil {
-			v := c.entries[key].value
-			c.mu.Unlock()
-			c.pruneFn(key, v)
-			c.mu.Lock()
-		}
-		delete(c.entries, key)
+	c.entries[key] = &Entry[v]{
+		used:  time.Now(),
+		value: val,
+	}
+	if c.maxCount > 0 && len(c.entries) > c.maxCount {
+		c.pruneLocked()
+	} else if c.timer == nil && c.maxAge > 0 {
+		// prune resets the timer, so this is only needed if the prune wasn't triggered
+		c.timer = time.AfterFunc(c.maxAge, c.prune)
 	}
 }
 
@@ -175,7 +208,10 @@ func (c *Cache[k, v]) pruneLocked() {
 	now := time.Now()
 	cutoff := now.Add(c.minAge * -1)
 	nextTime := now
-	delCount := len(keyList) - c.minCount
+	delCount := 0
+	if c.minCount > 0 {
+		delCount = len(keyList) - c.minCount
+	}
 	for i, key := range keyList {
 		if i < delCount || (c.minAge > 0 && c.entries[key].used.Before(cutoff)) {
 			if c.pruneFn != nil {
