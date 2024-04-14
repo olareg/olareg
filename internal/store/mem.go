@@ -505,8 +505,7 @@ func (mru *memRepoUpload) Write(p []byte) (int, error) {
 	mru.mr.mu.Lock()
 	defer mru.mr.mu.Unlock()
 	// verify session still exists and update last write time
-	_, err := mru.mr.uploads.Get(mru.sessionID)
-	if err != nil {
+	if _, err := mru.mr.uploads.Get(mru.sessionID); err != nil {
 		return 0, fmt.Errorf("session expired %s: %w", mru.sessionID, err)
 	}
 	return mru.w.Write(p)

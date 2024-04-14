@@ -1298,6 +1298,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 		conf     config.Config
 		checkDir string
 		expectGC bool
+		limit    int
 	}{
 		{
 			name: "Mem No GC",
@@ -1307,6 +1308,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 					GC: config.ConfigGC{
 						Frequency:         time.Second * -1,
 						GracePeriod:       time.Second * -1,
+						RepoUploadMax:     -1,
 						Untagged:          &boolF,
 						ReferrersDangling: &boolF,
 						ReferrersWithSubj: &boolT,
@@ -1314,6 +1316,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 				},
 			},
 			expectGC: false,
+			limit:    -1,
 		},
 		{
 			name: "Mem GC",
@@ -1323,6 +1326,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 					GC: config.ConfigGC{
 						Frequency:         freq,
 						GracePeriod:       grace,
+						RepoUploadMax:     10,
 						Untagged:          &boolF,
 						ReferrersDangling: &boolF,
 						ReferrersWithSubj: &boolT,
@@ -1330,6 +1334,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 				},
 			},
 			expectGC: true,
+			limit:    10,
 		},
 		{
 			name: "Dir No GC",
@@ -1340,6 +1345,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 					GC: config.ConfigGC{
 						Frequency:         time.Second * -1,
 						GracePeriod:       time.Second * -1,
+						RepoUploadMax:     -1,
 						EmptyRepo:         &boolT,
 						Untagged:          &boolF,
 						ReferrersDangling: &boolF,
@@ -1349,6 +1355,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 			},
 			checkDir: filepath.Join(tempDir, "no-gc", testRepo),
 			expectGC: false,
+			limit:    -1,
 		},
 		{
 			name: "Dir GC",
@@ -1359,6 +1366,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 					GC: config.ConfigGC{
 						Frequency:         freq,
 						GracePeriod:       grace,
+						RepoUploadMax:     10,
 						EmptyRepo:         &boolT,
 						Untagged:          &boolF,
 						ReferrersDangling: &boolF,
@@ -1368,6 +1376,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 			},
 			checkDir: filepath.Join(tempDir, "gc", testRepo),
 			expectGC: true,
+			limit:    10,
 		},
 	}
 	for _, tc := range tt {
@@ -1438,6 +1447,29 @@ func TestGarbageCollectUpload(t *testing.T) {
 					_, err = os.Stat(tc.checkDir)
 					if err != nil {
 						t.Errorf("directory deleted: %s", tc.checkDir)
+					}
+				}
+			}
+			if tc.limit > 0 {
+				countDel := 5
+				sessions := make([]string, tc.limit+countDel)
+				for i := 0; i < tc.limit+countDel; i++ {
+					_, sessionID, err := repo.BlobCreate()
+					if err != nil {
+						t.Fatalf("failed to create blob")
+					}
+					sessions[i] = sessionID
+				}
+				for i := 0; i < countDel; i++ {
+					_, err = repo.BlobSession(sessions[i])
+					if err == nil {
+						t.Errorf("upload session not deleted: %d", i)
+					}
+				}
+				for i := countDel + int(float64(tc.limit)*0.1); i < tc.limit+countDel; i++ {
+					_, err = repo.BlobSession(sessions[i])
+					if err != nil {
+						t.Errorf("upload session deleted: %d", i)
 					}
 				}
 			}

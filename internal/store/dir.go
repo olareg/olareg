@@ -19,6 +19,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/olareg/olareg/config"
+	"github.com/olareg/olareg/internal/cache"
 	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/types"
 )
@@ -42,7 +43,7 @@ type dirRepo struct {
 	path      string
 	exists    bool
 	index     types.Index
-	uploads   map[string]*dirRepoUpload
+	uploads   *cache.Cache[string, *dirRepoUpload]
 	log       slog.Logger
 	conf      config.Config
 }
@@ -57,7 +58,6 @@ type dirRepoUpload struct {
 	filename  string
 	dr        *dirRepo
 	sessionID string
-	lastWrite time.Time
 }
 
 // NewDir returns a directory store.
@@ -101,11 +101,20 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 	if stringsHasAny(strings.Split(repoStr, "/"), indexFile, layoutFile, blobsDir) {
 		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
 	}
+	uploadCacheOpts := []cache.CacheOpts[string, *dirRepoUpload]{
+		cache.WithPrune(func(_ string, dru *dirRepoUpload) { dru.delete() }),
+	}
+	if d.conf.Storage.GC.RepoUploadMax > 0 {
+		uploadCacheOpts = append(uploadCacheOpts, cache.WithCount[string, *dirRepoUpload](d.conf.Storage.GC.RepoUploadMax))
+	}
+	if d.conf.Storage.GC.GracePeriod > 0 {
+		uploadCacheOpts = append(uploadCacheOpts, cache.WithAge[string, *dirRepoUpload](d.conf.Storage.GC.GracePeriod))
+	}
 	dr := dirRepo{
 		path:    filepath.Join(d.root, repoStr),
 		name:    repoStr,
 		conf:    d.conf,
-		uploads: map[string]*dirRepoUpload{},
+		uploads: cache.New[string, *dirRepoUpload](uploadCacheOpts...),
 		log:     d.log,
 	}
 	d.repos[repoStr] = &dr
@@ -138,10 +147,7 @@ func (d *dir) Close() error {
 		d.mu.Unlock()
 		repo.wg.Wait()
 		if !*d.conf.Storage.ReadOnly {
-			// cancel all uploads
-			for _, bc := range repo.uploads {
-				bc.Cancel()
-			}
+			repo.uploads.DeleteAll()
 			_ = repo.gc()
 		}
 		d.mu.Lock()
@@ -319,7 +325,7 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("failed generating sessionID: %w", err)
 	}
-	if _, ok := dr.uploads[sessionID]; ok {
+	if _, err := dr.uploads.Get(sessionID); err == nil {
 		return nil, "", fmt.Errorf("session ID collision")
 	}
 	// create a temp file in the repo blob store, under an upload folder
@@ -352,10 +358,9 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 		filename:  filename,
 		dr:        dr,
 		sessionID: sessionID,
-		lastWrite: time.Now(),
 	}
 	dr.timeMod = time.Now()
-	dr.uploads[sessionID] = bc
+	dr.uploads.Set(sessionID, bc)
 	return bc, sessionID, nil
 }
 
@@ -416,7 +421,7 @@ func (dr *dirRepo) blobList(locked bool) ([]digest.Digest, error) {
 func (dr *dirRepo) BlobSession(sessionID string) (BlobCreator, error) {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
-	if bc, ok := dr.uploads[sessionID]; ok {
+	if bc, err := dr.uploads.Get(sessionID); err == nil {
 		return bc, nil
 	}
 	return nil, types.ErrNotFound
@@ -578,16 +583,8 @@ func (dr *dirRepo) Done() {
 func (dr *dirRepo) gc() error {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
-	if dr.conf.Storage.GC.GracePeriod > 0 {
-		cutoff := time.Now().Add(dr.conf.Storage.GC.GracePeriod * -1)
-		for _, dru := range dr.uploads {
-			if dru.lastWrite.Before(cutoff) {
-				dru.cancel(true)
-			}
-		}
-	}
 	// attempt to remove an empty upload folder, ignore errors (e.g. uploads managed by another tool)
-	if len(dr.uploads) == 0 {
+	if dr.uploads.IsEmpty() {
 		fi, err := os.Stat(filepath.Join(dr.path, uploadDir))
 		if err == nil && fi.IsDir() {
 			_ = os.Remove(filepath.Join(dr.path, uploadDir))
@@ -612,7 +609,7 @@ func (dr *dirRepo) gc() error {
 		return nil
 	}()
 	// prune an empty repo dir and mark the repo as empty if successful
-	if *dr.conf.Storage.GC.EmptyRepo && len(dr.index.Manifests) == 0 && len(dr.uploads) == 0 {
+	if *dr.conf.Storage.GC.EmptyRepo && len(dr.index.Manifests) == 0 && dr.uploads.IsEmpty() {
 		errDir := func() error {
 			for _, dir := range []string{
 				filepath.Join(dr.path, uploadDir),
@@ -645,10 +642,13 @@ func (dru *dirRepoUpload) Write(p []byte) (int, error) {
 	if dru.w == nil {
 		return 0, fmt.Errorf("writer is closed")
 	}
+	// verify session still exists and update last write time
+	if _, err := dru.dr.uploads.Get(dru.sessionID); err != nil {
+		return 0, fmt.Errorf("session expired %s: %w", dru.sessionID, err)
+	}
 	dru.dr.mu.Lock()
 	now := time.Now()
 	dru.dr.timeMod = now
-	dru.lastWrite = now
 	n, err := dru.w.Write(p)
 	dru.size += int64(n)
 	dru.dr.mu.Unlock()
@@ -683,30 +683,20 @@ func (dru *dirRepoUpload) Close() error {
 	}
 	blobName := filepath.Join(tgtDir, dru.d.Digest().Encoded())
 	err = os.Rename(dru.filename, blobName)
-	if err != nil {
-		_ = os.Remove(dru.filename)
-		return err
-	}
-	dru.dr.mu.Lock()
-	defer dru.dr.mu.Unlock()
-	delete(dru.dr.uploads, dru.sessionID)
-	return nil
+	dru.dr.uploads.Delete(dru.sessionID)
+	return err
 }
 
 // Cancel is used to stop an upload.
 func (dru *dirRepoUpload) Cancel() {
-	dru.cancel(false)
+	dru.dr.uploads.Delete(dru.sessionID)
 }
-func (dru *dirRepoUpload) cancel(locked bool) {
+
+func (dru *dirRepoUpload) delete() {
 	if dru.fh != nil {
 		_ = dru.fh.Close()
 	}
 	_ = os.Remove(dru.filename)
-	if !locked {
-		dru.dr.mu.Lock()
-		defer dru.dr.mu.Unlock()
-	}
-	delete(dru.dr.uploads, dru.sessionID)
 }
 
 // Size reports the number of bytes pushed.
