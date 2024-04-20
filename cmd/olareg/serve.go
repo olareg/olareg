@@ -12,6 +12,7 @@ import (
 
 	"github.com/olareg/olareg"
 	"github.com/olareg/olareg/config"
+	"github.com/olareg/olareg/internal/godbg"
 )
 
 type serveOpts struct {
@@ -117,6 +118,7 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	godbg.SignalTrace()
 	ctx, cancel := context.WithCancel(ctx)
 	cleanShutdown := make(chan struct{})
 	go func() {
