@@ -3,6 +3,7 @@
 package cache
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -19,7 +20,7 @@ type Cache[k comparable, v any] struct {
 	maxCount int
 	timer    *time.Timer
 	entries  map[k]*Entry[v]
-	pruneFn  func(k, v)
+	pruneFn  func(k, v) error
 }
 
 type Entry[v any] struct {
@@ -32,86 +33,71 @@ type sortKeys[k comparable] struct {
 	lessFn func(a, b k) bool
 }
 
-type conf[k comparable, v any] struct {
-	minAge   time.Duration
-	maxCount int
-	pruneFn  func(k, v)
-}
-
-type CacheOpts[k comparable, v any] func(*conf[k, v])
-
-func WithAge[k comparable, v any](age time.Duration) CacheOpts[k, v] {
-	return func(c *conf[k, v]) {
-		c.minAge = age
-	}
-}
-
-func WithCount[k comparable, v any](count int) CacheOpts[k, v] {
-	return func(c *conf[k, v]) {
-		c.maxCount = count
-	}
-}
-
-func WithPrune[k comparable, v any](fn func(k, v)) CacheOpts[k, v] {
-	return func(c *conf[k, v]) {
-		c.pruneFn = fn
-	}
+type Opts[k comparable, v any] struct {
+	Age     time.Duration
+	Count   int
+	PruneFn func(k, v) error
 }
 
 // New returns a new cache.
-func New[k comparable, v any](opts ...CacheOpts[k, v]) *Cache[k, v] {
-	c := conf[k, v]{}
-	for _, opt := range opts {
-		opt(&c)
-	}
-	maxAge := c.minAge + (c.minAge / 10)
+func New[k comparable, v any](opt Opts[k, v]) *Cache[k, v] {
+	maxAge := opt.Age + (opt.Age / 10)
 	minCount := 0
-	if c.maxCount > 0 {
-		minCount = int(float64(c.maxCount) * 0.9)
+	if opt.Count > 0 {
+		minCount = int(float64(opt.Count) * 0.9)
 	}
 	return &Cache[k, v]{
-		minAge:   c.minAge,
+		minAge:   opt.Age,
 		maxAge:   maxAge,
 		minCount: minCount,
-		maxCount: c.maxCount,
-		pruneFn:  c.pruneFn,
+		maxCount: opt.Count,
+		pruneFn:  opt.PruneFn,
 		entries:  map[k]*Entry[v]{},
 	}
 }
 
 // Delete removes an entry from the cache.
-func (c *Cache[k, v]) Delete(key k) {
+func (c *Cache[k, v]) Delete(key k) error {
 	if c == nil {
-		return
+		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.pruneFn != nil && c.entries[key] != nil {
 		v := c.entries[key].value
 		c.mu.Unlock()
-		c.pruneFn(key, v)
+		err := c.pruneFn(key, v)
 		c.mu.Lock()
+		if err != nil {
+			return err
+		}
 	}
 	delete(c.entries, key)
 	if len(c.entries) == 0 && c.timer != nil {
 		c.timer.Stop()
 		c.timer = nil
 	}
+	return nil
 }
 
 // DeleteAll removes all entries in the cache.
-func (c *Cache[k, v]) DeleteAll() {
+func (c *Cache[k, v]) DeleteAll() error {
 	if c == nil {
-		return
+		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	errs := make([]error, 0, len(c.entries))
 	for key := range c.entries {
 		if c.pruneFn != nil {
 			v := c.entries[key].value
 			c.mu.Unlock()
-			c.pruneFn(key, v)
+			err := c.pruneFn(key, v)
 			c.mu.Lock()
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
 		}
 		delete(c.entries, key)
 	}
@@ -119,6 +105,10 @@ func (c *Cache[k, v]) DeleteAll() {
 		c.timer.Stop()
 		c.timer = nil
 	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 // Get retrieves an entry from the cache.
@@ -130,13 +120,8 @@ func (c *Cache[k, v]) Get(key k) (v, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.entries[key]; ok {
-		if c.minAge > 0 && e.used.Add(c.minAge).Before(time.Now()) {
-			// entry expired
-			go c.prune()
-		} else {
-			c.entries[key].used = time.Now()
-			return e.value, nil
-		}
+		c.entries[key].used = time.Now()
+		return e.value, nil
 	}
 	var val v
 	return val, types.ErrNotFound
@@ -177,21 +162,65 @@ func (c *Cache[k, v]) Set(key k, val v) {
 		used:  time.Now(),
 		value: val,
 	}
-	if c.maxCount > 0 && len(c.entries) > c.maxCount {
-		c.pruneLocked()
-	} else if c.timer == nil && c.maxAge > 0 {
+	if c.timer == nil && c.maxAge > 0 {
 		// prune resets the timer, so this is only needed if the prune wasn't triggered
-		c.timer = time.AfterFunc(c.maxAge, c.prune)
+		c.timer = time.AfterFunc(c.maxAge, c.pruneAge)
+	}
+	if c.maxCount > 0 && len(c.entries) > c.maxCount {
+		go c.pruneCount()
 	}
 }
 
-func (c *Cache[k, v]) prune() {
+// pruneAge deletes entries over the age limit.
+func (c *Cache[k, v]) pruneAge() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pruneLocked()
+	if c.minAge <= 0 {
+		return
+	}
+	now := time.Now()
+	cutoff := now.Add(c.minAge * -1)
+	oldest := now
+	for key := range c.entries {
+		if c.entries[key].used.Before(cutoff) {
+			if c.pruneFn != nil {
+				err := c.pruneFn(key, c.entries[key].value)
+				if err != nil {
+					c.entries[key].used = now
+					continue
+				}
+			}
+			delete(c.entries, key)
+		} else if c.entries[key].used.Before(oldest) {
+			oldest = c.entries[key].used
+		}
+	}
+	// set/clear next timer
+	if len(c.entries) > 0 {
+		dur := c.maxAge - now.Sub(oldest)
+		if dur <= 0 {
+			// this shouldn't be possible
+			dur = time.Millisecond
+		}
+		if c.timer == nil {
+			// this shouldn't be possible
+			c.timer = time.AfterFunc(dur, c.pruneAge)
+		} else {
+			c.timer.Reset(dur)
+		}
+	} else if c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
+	}
 }
 
-func (c *Cache[k, v]) pruneLocked() {
+// pruneCount deletes entries beyond the count limit.
+func (c *Cache[k, v]) pruneCount() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.minCount <= 0 || len(c.entries) <= c.minCount {
+		return
+	}
 	// sort key list by last used date
 	keyList := make([]k, 0, len(c.entries))
 	for key := range c.entries {
@@ -204,37 +233,21 @@ func (c *Cache[k, v]) pruneLocked() {
 		},
 	}
 	sort.Sort(&sk)
-	// prune entries
-	now := time.Now()
-	cutoff := now.Add(c.minAge * -1)
-	nextTime := now
+	delLen := len(keyList) - c.minCount
 	delCount := 0
-	if c.minCount > 0 {
-		delCount = len(keyList) - c.minCount
-	}
-	for i, key := range keyList {
-		if i < delCount || (c.minAge > 0 && c.entries[key].used.Before(cutoff)) {
-			if c.pruneFn != nil {
-				c.pruneFn(key, c.entries[key].value)
+	for _, key := range keyList {
+		if c.pruneFn != nil {
+			err := c.pruneFn(key, c.entries[key].value)
+			if err != nil {
+				c.entries[key].used = time.Now()
+				continue
 			}
-			delete(c.entries, key)
-		} else {
-			nextTime = c.entries[key].used
+		}
+		delete(c.entries, key)
+		delCount++
+		if delCount >= delLen {
 			break
 		}
-	}
-	// set next timer
-	if len(c.entries) > 0 && c.maxAge > 0 {
-		dur := nextTime.Sub(now) + c.maxAge
-		if c.timer == nil {
-			// this shouldn't be possible
-			c.timer = time.AfterFunc(dur, c.prune)
-		} else {
-			c.timer.Reset(dur)
-		}
-	} else if c.timer != nil {
-		c.timer.Stop()
-		c.timer = nil
 	}
 }
 

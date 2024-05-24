@@ -24,6 +24,12 @@ import (
 
 func (s *Server) blobGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		d, err := digest.Parse(arg)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest cannot be parsed"))
+			return
+		}
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
@@ -35,14 +41,8 @@ func (s *Server) blobGet(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
-		defer repo.Done()
-		d, err := digest.Parse(arg)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest cannot be parsed"))
-			return
-		}
 		rdr, err := repo.BlobGet(d)
+		repo.Done()
 		if err != nil {
 			if r.Method != http.MethodHead {
 				s.log.Debug("failed to open blob", "err", err, "repo", repoStr, "digest", d.String())
@@ -70,6 +70,12 @@ func (s *Server) blobDelete(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
 			return
 		}
+		d, err := digest.Parse(arg)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest cannot be parsed"))
+			return
+		}
 		repo, err := s.store.RepoGet(repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
@@ -81,14 +87,8 @@ func (s *Server) blobDelete(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
-		defer repo.Done()
-		d, err := digest.Parse(arg)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest cannot be parsed"))
-			return
-		}
 		err = repo.BlobDelete(d)
+		repo.Done()
 		if err != nil {
 			s.log.Debug("failed to delete blob", "err", err, "repo", repoStr, "digest", d.String())
 			if errors.Is(err, types.ErrNotFound) {
@@ -120,8 +120,8 @@ func (s *Server) blobUploadDelete(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "sessionID", sessionID)
 			return
 		}
-		defer repo.Done()
 		bc, err := repo.BlobSession(sessionID)
+		repo.Done()
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
@@ -146,8 +146,8 @@ func (s *Server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "sessionID", sessionID)
 			return
 		}
-		defer repo.Done()
 		bc, err := repo.BlobSession(sessionID)
+		repo.Done()
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
@@ -182,19 +182,6 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
 			return
 		}
-		// start a new upload session with the backend storage and track as current upload
-		repo, err := s.store.RepoGet(repoStr)
-		if err != nil {
-			if errors.Is(err, types.ErrRepoNotAllowed) {
-				w.WriteHeader(http.StatusBadRequest)
-				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
-				return
-			}
-			w.WriteHeader(http.StatusInternalServerError)
-			s.log.Info("failed to get repo", "err", err, "repo", repoStr)
-			return
-		}
-		defer repo.Done()
 		// check for mount=digest&from=repo, consider allowing anonymous blob mounts
 		mountStr := r.URL.Query().Get("mount")
 		fromStr := r.URL.Query().Get("from")
@@ -207,6 +194,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 		bOpts := []store.BlobOpt{}
 		dStr := r.URL.Query().Get("digest")
 		var d digest.Digest
+		var err error
 		if dStr != "" || mountStr != "" {
 			if dStr != "" {
 				d, err = digest.Parse(dStr)
@@ -221,8 +209,21 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			}
 			bOpts = append(bOpts, store.BlobWithDigest(d))
 		}
+		// start a new upload session with the backend storage and track as current upload
+		repo, err := s.store.RepoGet(repoStr)
+		if err != nil {
+			if errors.Is(err, types.ErrRepoNotAllowed) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoNameInvalid("repository name is not allowed"))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to get repo", "err", err, "repo", repoStr)
+			return
+		}
 		// create a new blob in the store
 		bc, sessionID, err := repo.BlobCreate(bOpts...)
+		repo.Done()
 		if err != nil {
 			if errors.Is(err, types.ErrBlobExists) {
 				// blob exists, indicate it was created and return the location to get
@@ -298,21 +299,16 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 // This allows the registry to fall back to a standard blob push.
 // If the return is nil, the location header and created status are first be written to the response.
 func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.ResponseWriter, _ *http.Request) error {
-	repoSrc, err := s.store.RepoGet(repoSrcStr)
-	if err != nil {
-		return err
-	}
-	defer repoSrc.Done()
-	repoTgt, err := s.store.RepoGet(repoTgtStr)
-	if err != nil {
-		return err
-	}
-	defer repoTgt.Done()
 	dig, err := digest.Parse(digStr)
 	if err != nil {
 		return err
 	}
+	repoTgt, err := s.store.RepoGet(repoTgtStr)
+	if err != nil {
+		return err
+	}
 	bc, _, err := repoTgt.BlobCreate(store.BlobWithDigest(dig))
+	repoTgt.Done()
 	if err != nil {
 		if errors.Is(err, types.ErrBlobExists) {
 			// blob exists, indicate it was created and return the location to get
@@ -327,7 +323,13 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 		}
 		return err
 	}
+	repoSrc, err := s.store.RepoGet(repoSrcStr)
+	if err != nil {
+		bc.Cancel()
+		return err
+	}
 	rdr, err := repoSrc.BlobGet(dig)
+	repoSrc.Done()
 	if err != nil {
 		bc.Cancel()
 		return err
@@ -367,8 +369,8 @@ func (s *Server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "sessionID", sessionID)
 			return
 		}
-		defer repo.Done()
 		bc, err := repo.BlobSession(sessionID)
+		repo.Done()
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))
@@ -448,8 +450,8 @@ func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "sessionID", sessionID)
 			return
 		}
-		defer repo.Done()
 		bc, err := repo.BlobSession(sessionID)
+		repo.Done()
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadUnknown("upload session not found"))

@@ -4,6 +4,9 @@
 package cache
 
 import (
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -22,18 +25,43 @@ func TestCache(t *testing.T) {
 	countMax := 10
 	countMin := int(float64(countMax) * 0.9)
 	countDel := 2
+	countSave := 1
+	pruneCutoff := len(testData) + countSave - countMax
+	saveCutoff := len(testData) + countSave - countMin
+	checkCutoff := len(testData) - (countMax / 2)
+	saveKey := "a"
 	pruned := map[string]bool{}
-	pruneFn := func(_ int, v string) {
+	var prunedMu sync.Mutex
+	errBlocked := fmt.Errorf("prune blocked")
+	pruneFn := func(_ int, v string) error {
+		if v == saveKey {
+			return errBlocked
+		}
+		prunedMu.Lock()
 		pruned[v] = true
+		prunedMu.Unlock()
+		return nil
 	}
 	timeout := time.Millisecond * 250
 	timeoutHalf := timeout / 2
-	timePrune := timeout + (timeout / 10)
-	c := New[int, string](WithAge[int, string](timeout), WithCount[int, string](countMax), WithPrune[int, string](pruneFn))
+	timePrune := timeout + (timeout / 5)
+	c := New[int, string](Opts[int, string]{
+		Age:     timeout,
+		Count:   countMax,
+		PruneFn: pruneFn,
+	})
 	// add entries beyond limit
 	for i, v := range testData {
 		c.Set(i, v)
 	}
+	// short delay to ensure prune has run
+	prunedMu.Lock()
+	if len(pruned) < pruneCutoff {
+		prunedMu.Unlock()
+		time.Sleep(timeoutHalf)
+		prunedMu.Lock()
+	}
+	prunedMu.Unlock()
 	// delete last 2 entries
 	for i := len(testData) - countDel; i < len(testData); i++ {
 		c.Delete(i)
@@ -42,28 +70,27 @@ func TestCache(t *testing.T) {
 		t.Errorf("cache is empty after adding entries")
 	}
 	// get entries, verify some deleted
-	pruneCutoff := len(testData) - countMax
-	saveCutoff := len(testData) - countMin
-	checkCutoff := len(testData) - (countMax / 2)
 	for i, v := range testData {
 		getVal, err := c.Get(i)
-		if i < pruneCutoff || i >= len(testData)-countDel {
-			if !pruned[v] {
-				t.Errorf("value not found on pruned map: %s", v)
-			}
-			if err == nil {
-				t.Errorf("value found that should have been pruned: %d", i)
-			}
-		} else if i >= saveCutoff && i < len(testData)-countDel {
+		prunedMu.Lock()
+		if v == saveKey || (i >= saveCutoff && i < len(testData)-countDel) {
 			if pruned[v] {
 				t.Errorf("value found on pruned map: %s", v)
 			}
 			if err != nil {
-				t.Errorf("value not found: %d", i)
+				t.Errorf("value not found: %s", v)
 			} else if getVal != v {
 				t.Errorf("value mismatch: %d, expect %s, received %s", i, v, getVal)
 			}
+		} else if i < pruneCutoff || i >= len(testData)-countDel {
+			if !pruned[v] {
+				t.Errorf("value not found on pruned map: %s", v)
+			}
+			if err == nil {
+				t.Errorf("value found that should have been pruned: %s", v)
+			}
 		}
+		prunedMu.Unlock()
 	}
 	entries, err := c.List()
 	if err != nil {
@@ -79,7 +106,7 @@ func TestCache(t *testing.T) {
 		if i >= saveCutoff && i < checkCutoff {
 			getVal, err := c.Get(i)
 			if err != nil {
-				t.Errorf("value not found: %d", i)
+				t.Errorf("value not found: %s", v)
 			} else if getVal != v {
 				t.Errorf("value mismatch: %d, expect %s, received %s", i, v, getVal)
 			}
@@ -89,37 +116,49 @@ func TestCache(t *testing.T) {
 	time.Sleep(timePrune - time.Since(start))
 	for i, v := range testData {
 		getVal, err := c.Get(i)
-		if i >= saveCutoff && i < checkCutoff {
+		if v == saveKey || (i >= saveCutoff && i < checkCutoff) {
 			if err != nil {
-				t.Errorf("value not found: %d", i)
+				t.Errorf("value not found: [%d]%s", i, v)
 			} else if getVal != v {
 				t.Errorf("value mismatch: %d, expect %s, received %s", i, v, getVal)
 			}
 		} else {
 			if err == nil {
-				t.Errorf("value not pruned: %d", i)
+				t.Errorf("value not pruned: [%d]%s", i, v)
 			}
 		}
 	}
 	// delay to after maxAge for all entries
 	time.Sleep(timePrune + timePrune/5)
-	for i := range testData {
+	for i, v := range testData {
 		_, err := c.Get(i)
-		if err == nil {
-			t.Errorf("value not pruned: %d", i)
+		if v == saveKey {
+			if err != nil {
+				t.Errorf("value was pruned: [%d]%s", i, v)
+			}
+		} else if err == nil {
+			t.Errorf("value not pruned: [%d]%s", i, v)
 		}
 	}
-	if !c.IsEmpty() {
-		t.Errorf("cache is not empty after prune time")
+	if c.IsEmpty() {
+		t.Errorf("cache is empty when \"a\" should not be pruned")
 	}
 	// set and delete a key
 	c.Set(42, "x")
 	c.Delete(42)
 	// delete non-existent key
 	c.Delete(42)
+	// delete all entries with a prune function
+	err = c.DeleteAll()
+	if !errors.Is(err, errBlocked) {
+		t.Errorf("DeleteAll: expected %v, received %v", errBlocked, err)
+	}
 
 	// set and get a struct based key
-	c2 := New[testKey, string](WithAge[testKey, string](timeout), WithCount[testKey, string](countMax))
+	c2 := New[testKey, string](Opts[testKey, string]{
+		Age:   timeout,
+		Count: countMax,
+	})
 	c2.Set(testKey{i: 42, s: "test"}, "value")
 	v, err := c2.Get(testKey{i: 42, s: "test"})
 	if err != nil {
@@ -135,7 +174,7 @@ func TestCache(t *testing.T) {
 	if len(c2.entries) > 0 {
 		t.Errorf("entries remain after DeleteAll")
 	}
-	if !c.IsEmpty() {
+	if !c2.IsEmpty() {
 		t.Errorf("cache is not empty after deleting entries")
 	}
 }

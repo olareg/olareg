@@ -32,6 +32,7 @@ type mem struct {
 type memRepo struct {
 	mu      sync.Mutex
 	wg      sync.WaitGroup
+	wgBlock chan struct{}
 	timeMod time.Time
 	index   types.Index
 	blobs   map[digest.Digest]*memRepoBlob
@@ -86,19 +87,25 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 	default:
 	}
 	if mr, ok := m.repos[repoStr]; ok {
+		// wgBlock prevents adding to the WG while a wg.Wait is running, GC blocks new requests
+		m.mu.Unlock()
+		<-mr.wgBlock
 		mr.wg.Add(1)
+		mr.wgBlock <- struct{}{}
+		m.mu.Lock()
 		return mr, nil
 	}
-	uploadCacheOpts := []cache.CacheOpts[string, *memRepoUpload]{
-		cache.WithPrune(func(_ string, mru *memRepoUpload) { mru.buffer.Truncate(0) }),
+	uploadCacheOpt := cache.Opts[string, *memRepoUpload]{
+		PruneFn: func(_ string, mru *memRepoUpload) error { mru.buffer.Truncate(0); return nil },
 	}
 	if m.conf.Storage.GC.RepoUploadMax > 0 {
-		uploadCacheOpts = append(uploadCacheOpts, cache.WithCount[string, *memRepoUpload](m.conf.Storage.GC.RepoUploadMax))
+		uploadCacheOpt.Count = m.conf.Storage.GC.RepoUploadMax
 	}
 	if m.conf.Storage.GC.GracePeriod > 0 {
-		uploadCacheOpts = append(uploadCacheOpts, cache.WithAge[string, *memRepoUpload](m.conf.Storage.GC.GracePeriod))
+		uploadCacheOpt.Age = m.conf.Storage.GC.GracePeriod
 	}
 	mr := &memRepo{
+		wgBlock: make(chan struct{}, 1),
 		index: types.Index{
 			SchemaVersion: 2,
 			MediaType:     types.MediaTypeOCI1ManifestList,
@@ -106,16 +113,17 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 			Annotations:   map[string]string{},
 		},
 		blobs:   map[digest.Digest]*memRepoBlob{},
-		uploads: cache.New[string, *memRepoUpload](uploadCacheOpts...),
+		uploads: cache.New[string, *memRepoUpload](uploadCacheOpt),
 		log:     m.log,
 		conf:    m.conf,
 	}
+	mr.wgBlock <- struct{}{}
 	if *m.conf.API.Referrer.Enabled {
 		mr.index.Annotations[types.AnnotReferrerConvert] = "true"
 	}
 	if m.conf.Storage.RootDir != "" {
 		mr.path = filepath.Join(m.conf.Storage.RootDir, repoStr)
-		err := mr.repoGetIndex()
+		err := mr.repoInit()
 		if err != nil {
 			return nil, err
 		}
@@ -134,6 +142,7 @@ func (m *mem) Close() error {
 	for r := range m.repos {
 		repoNames = append(repoNames, r)
 	}
+	errs := []error{}
 	for _, r := range repoNames {
 		repo, ok := m.repos[r]
 		if !ok {
@@ -142,13 +151,19 @@ func (m *mem) Close() error {
 		m.mu.Unlock()
 		repo.wg.Wait()
 		// cancel all uploads
-		repo.uploads.DeleteAll()
+		err := repo.uploads.DeleteAll()
+		if err != nil {
+			errs = append(errs, err)
+		}
 		m.mu.Lock()
 		delete(m.repos, r)
 	}
 	// wait for background jobs to finish
 	m.mu.Unlock()
 	m.wg.Wait()
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	return nil
 }
 
@@ -171,22 +186,17 @@ func (m *mem) gcTicker() {
 
 // run a GC on every repo
 func (m *mem) gc(cur, prev time.Time) error {
-	if cur.IsZero() {
-		cur = time.Now()
-	}
 	start := prev
-	stop := cur
 	if m.conf.Storage.GC.GracePeriod > 0 {
 		start = start.Add(m.conf.Storage.GC.GracePeriod * -1)
-		stop = stop.Add(m.conf.Storage.GC.GracePeriod * -1)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	// since the lock isn't held for the entire GC, build a list of repos to check
+	m.mu.Lock()
 	repoNames := make([]string, 0, len(m.repos))
 	for r := range m.repos {
 		repoNames = append(repoNames, r)
 	}
+	m.mu.Unlock()
 	for _, r := range repoNames {
 		// if stop ch was closed, exit immediately
 		select {
@@ -194,58 +204,23 @@ func (m *mem) gc(cur, prev time.Time) error {
 			return fmt.Errorf("stop signal received")
 		default:
 		}
+		m.mu.Lock()
 		repo, ok := m.repos[r]
+		m.mu.Unlock()
 		if !ok {
 			continue
 		}
 		// skip repos that were not updated since the last check, offsetting for the grace period
 		repo.mu.Lock()
-		outsideRange := repo.timeMod.Before(start) || repo.timeMod.After(stop)
+		outsideRange := repo.timeMod.Before(start)
 		repo.mu.Unlock()
 		if outsideRange {
 			continue
 		}
-		// drop top level lock while GCing a single repo
-		repo.wg.Add(1)
-		m.mu.Unlock()
 		err := repo.gc()
-		repo.wg.Done()
-		m.mu.Lock()
 		if err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func (mr *memRepo) repoGetIndex() error {
-	// initialize index from backend dir if available
-	// validate directory is an OCI Layout
-	statIndex, errIndex := os.Stat(filepath.Join(mr.path, indexFile))
-	//#nosec G304 internal method is only called with filenames within admin provided path.
-	layoutBytes, errLayout := os.ReadFile(filepath.Join(mr.path, layoutFile))
-	if errIndex != nil || errLayout != nil || statIndex.IsDir() || !layoutVerify(layoutBytes) {
-		return nil
-	}
-	// read the index.json
-	fh, err := os.Open(filepath.Join(mr.path, indexFile))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	defer fh.Close()
-	parseIndex := types.Index{}
-	err = json.NewDecoder(fh).Decode(&parseIndex)
-	if err != nil {
-		return err
-	}
-	mr.index = parseIndex
-	// ingest to load child descriptors and configure referrers
-	_, err = indexIngest(mr, &mr.index, mr.conf, true)
-	if err != nil {
-		return err
 	}
 	return nil
 }
@@ -486,8 +461,43 @@ func (mr *memRepo) Done() {
 	mr.wg.Done()
 }
 
+func (mr *memRepo) repoInit() error {
+	// initialize index from backend dir if available
+	// validate directory is an OCI Layout
+	statIndex, errIndex := os.Stat(filepath.Join(mr.path, indexFile))
+	//#nosec G304 internal method is only called with filenames within admin provided path.
+	layoutBytes, errLayout := os.ReadFile(filepath.Join(mr.path, layoutFile))
+	if errIndex != nil || errLayout != nil || statIndex.IsDir() || !layoutVerify(layoutBytes) {
+		return nil
+	}
+	// read the index.json
+	fh, err := os.Open(filepath.Join(mr.path, indexFile))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer fh.Close()
+	parseIndex := types.Index{}
+	err = json.NewDecoder(fh).Decode(&parseIndex)
+	if err != nil {
+		return err
+	}
+	mr.index = parseIndex
+	// ingest to load child descriptors and configure referrers
+	_, err = indexIngest(mr, &mr.index, mr.conf, true)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // gc runs the garbage collect
 func (mr *memRepo) gc() error {
+	<-mr.wgBlock
+	defer func() { mr.wgBlock <- struct{}{} }()
+	mr.wg.Wait()
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
 	i, mod, err := repoGarbageCollect(mr, mr.conf, mr.index, true)
@@ -496,6 +506,7 @@ func (mr *memRepo) gc() error {
 	}
 	if mod {
 		mr.index = i
+		mr.timeMod = time.Now()
 	}
 	return nil
 }
@@ -525,13 +536,12 @@ func (mru *memRepoUpload) Close() error {
 			mod: time.Now(),
 		},
 	}
-	mru.mr.uploads.Delete(mru.sessionID)
-	return nil
+	return mru.mr.uploads.Delete(mru.sessionID)
 }
 
 // Cancel is used to stop an upload.
 func (mru *memRepoUpload) Cancel() {
-	mru.mr.uploads.Delete(mru.sessionID)
+	_ = mru.mr.uploads.Delete(mru.sessionID)
 }
 
 // Size reports the number of bytes pushed.
