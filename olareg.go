@@ -31,10 +31,10 @@ func New(conf config.Config) *Server {
 	s := &Server{
 		conf: conf,
 		log:  conf.Log,
-		referrerCache: cache.New[referrerKey, referrerResponses](
-			cache.WithAge[referrerKey, referrerResponses](conf.API.Referrer.PageCacheExpire),
-			cache.WithCount[referrerKey, referrerResponses](conf.API.Referrer.PageCacheLimit),
-		),
+		referrerCache: cache.New[referrerKey, referrerResponses](cache.Opts[referrerKey, referrerResponses]{
+			Age:   conf.API.Referrer.PageCacheExpire,
+			Count: conf.API.Referrer.PageCacheLimit,
+		}),
 	}
 	if s.log == nil {
 		s.log = slog.Null{}

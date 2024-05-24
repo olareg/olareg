@@ -14,6 +14,7 @@ import (
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/copy"
+	"github.com/olareg/olareg/internal/godbg"
 	"github.com/olareg/olareg/types"
 )
 
@@ -24,6 +25,10 @@ var (
 	_ Store = &mem{}
 	_ Repo  = &memRepo{}
 )
+
+func init() {
+	godbg.SignalTrace()
+}
 
 func TestStore(t *testing.T) {
 	t.Parallel()
@@ -1259,9 +1264,14 @@ func TestGarbageCollect(t *testing.T) {
 				}
 			}
 			// run gc
+			repo.Done()
 			err = repo.gc()
 			if err != nil {
 				t.Fatalf("failed to run GC: %v", err)
+			}
+			repo, err = s.RepoGet(testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
 			}
 			// check for blobs in expect lists
 			for _, dig := range tc.expectExist {
@@ -1405,8 +1415,13 @@ func TestGarbageCollectUpload(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create blob")
 			}
-			// sleep, releasing repo during sleep for GC
+			// sleep to GC slow upload
+			repo.Done()
 			time.Sleep(sleep)
+			repo, err = s.RepoGet(testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
+			}
 			if tc.expectGC {
 				success := false
 				for i := 0; i < retry && !success; i++ {
@@ -1414,7 +1429,12 @@ func TestGarbageCollectUpload(t *testing.T) {
 					if err != nil {
 						success = true
 					} else {
+						repo.Done()
 						time.Sleep(sleep)
+						repo, err = s.RepoGet(testRepo)
+						if err != nil {
+							t.Fatalf("failed to get repo: %v", err)
+						}
 					}
 				}
 				if !success {
@@ -1435,7 +1455,12 @@ func TestGarbageCollectUpload(t *testing.T) {
 						if err != nil {
 							success = true
 						} else {
+							repo.Done()
 							time.Sleep(sleep)
+							repo, err = s.RepoGet(testRepo)
+							if err != nil {
+								t.Fatalf("failed to get repo: %v", err)
+							}
 						}
 					}
 					if !success {
@@ -1460,6 +1485,8 @@ func TestGarbageCollectUpload(t *testing.T) {
 					}
 					sessions[i] = sessionID
 				}
+				// short sleep to give prune a chance to run
+				time.Sleep(freq / 2)
 				for i := 0; i < countDel; i++ {
 					_, err = repo.BlobSession(sessions[i])
 					if err == nil {

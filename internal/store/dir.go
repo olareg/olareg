@@ -37,6 +37,7 @@ type dir struct {
 type dirRepo struct {
 	mu        sync.Mutex
 	wg        sync.WaitGroup
+	wgBlock   chan struct{}
 	timeCheck time.Time
 	timeMod   time.Time
 	name      string
@@ -66,11 +67,27 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 	for _, opt := range opts {
 		opt(&sc)
 	}
-	cacheOpts := []cache.CacheOpts[string, *dirRepo]{}
-	// TODO: add limits/options to prune repo cache?
+	cacheOpts := cache.Opts[string, *dirRepo]{
+		PruneFn: func(_ string, dr *dirRepo) error {
+			if !dr.uploads.IsEmpty() {
+				return fmt.Errorf("uploads in progress")
+			}
+			// warning, this will block, ensure repos are always held open for a minimal time (this mostly affects the design of tests)
+			if !*dr.conf.Storage.ReadOnly {
+				if err := dr.gc(); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	// TODO: consider a config for an upper limit on the number of repos
+	if conf.Storage.GC.GracePeriod > 0 {
+		cacheOpts.Age = conf.Storage.GC.GracePeriod
+	}
 	d := &dir{
 		root:  conf.Storage.RootDir,
-		repos: cache.New[string, *dirRepo](cacheOpts...),
+		repos: cache.New[string, *dirRepo](cacheOpts),
 		log:   sc.log,
 		conf:  conf,
 		stop:  make(chan struct{}),
@@ -95,28 +112,38 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 	default:
 	}
 	if dr, err := d.repos.Get(repoStr); err == nil {
+		// wgBlock prevents adding to the WG while a wg.Wait is running, GC blocks new requests\
+		d.mu.Unlock()
+		<-dr.wgBlock
 		dr.wg.Add(1)
+		dr.wgBlock <- struct{}{}
+		d.mu.Lock()
 		return dr, nil
 	}
 	if stringsHasAny(strings.Split(repoStr, "/"), indexFile, layoutFile, blobsDir) {
 		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
 	}
-	uploadCacheOpts := []cache.CacheOpts[string, *dirRepoUpload]{
-		cache.WithPrune(func(_ string, dru *dirRepoUpload) { dru.delete() }),
+	uploadCacheOpts := cache.Opts[string, *dirRepoUpload]{
+		PruneFn: func(_ string, dru *dirRepoUpload) error {
+			dru.delete()
+			return nil
+		},
 	}
 	if d.conf.Storage.GC.RepoUploadMax > 0 {
-		uploadCacheOpts = append(uploadCacheOpts, cache.WithCount[string, *dirRepoUpload](d.conf.Storage.GC.RepoUploadMax))
+		uploadCacheOpts.Count = d.conf.Storage.GC.RepoUploadMax
 	}
 	if d.conf.Storage.GC.GracePeriod > 0 {
-		uploadCacheOpts = append(uploadCacheOpts, cache.WithAge[string, *dirRepoUpload](d.conf.Storage.GC.GracePeriod))
+		uploadCacheOpts.Age = d.conf.Storage.GC.GracePeriod
 	}
 	dr := dirRepo{
+		wgBlock: make(chan struct{}, 1),
 		path:    filepath.Join(d.root, repoStr),
 		name:    repoStr,
 		conf:    d.conf,
-		uploads: cache.New[string, *dirRepoUpload](uploadCacheOpts...),
+		uploads: cache.New[string, *dirRepoUpload](uploadCacheOpts),
 		log:     d.log,
 	}
+	dr.wgBlock <- struct{}{}
 	d.repos.Set(repoStr, &dr)
 	statDir, err := os.Stat(dr.path)
 	if err == nil && statDir.IsDir() {
@@ -139,23 +166,32 @@ func (d *dir) Close() error {
 	if err != nil {
 		return fmt.Errorf("failed to list repos during close: %w", err)
 	}
+	errs := []error{}
 	for _, r := range repoNames {
 		repo, err := d.repos.Get(r)
 		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
-		d.mu.Unlock()
 		repo.wg.Wait()
 		if !*d.conf.Storage.ReadOnly {
-			repo.uploads.DeleteAll()
-			_ = repo.gc()
+			err = repo.uploads.DeleteAll()
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
 		}
-		d.mu.Lock()
-		d.repos.Delete(r)
+		err = d.repos.Delete(r)
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 	// wait for background jobs to finish
 	d.mu.Unlock()
 	d.wg.Wait()
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	return nil
 }
 
@@ -179,14 +215,9 @@ func (d *dir) gcTicker() {
 // run a GC on every repo
 func (d *dir) gc(cur, prev time.Time) error {
 	start := prev
-	stop := cur
 	if d.conf.Storage.GC.GracePeriod > 0 {
 		start = start.Add(d.conf.Storage.GC.GracePeriod * -1)
-		stop = stop.Add(d.conf.Storage.GC.GracePeriod * -1)
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	// since the lock isn't held for the entire GC, build a list of repos to check
 	repoNames, err := d.repos.List()
 	if err != nil {
 		return fmt.Errorf("failed to list repos in gc: %w", err)
@@ -203,19 +234,14 @@ func (d *dir) gc(cur, prev time.Time) error {
 		if err != nil {
 			continue
 		}
-		// skip repos that were not last updated between grace period and frequency
+		// skip repos that were have not been recently updated
 		repo.mu.Lock()
-		outsideRange := repo.timeMod.Before(start) || repo.timeMod.After(stop)
+		outsideRange := repo.timeMod.Before(start)
 		repo.mu.Unlock()
 		if outsideRange {
 			continue
 		}
-		// drop top level lock while GCing a single repo
-		repo.wg.Add(1)
-		d.mu.Unlock()
 		err = repo.gc()
-		repo.wg.Done()
-		d.mu.Lock()
 		if err != nil {
 			return err
 		}
@@ -395,6 +421,9 @@ func (dr *dirRepo) blobList(locked bool) ([]digest.Digest, error) {
 	dl := []digest.Digest{}
 	algoS, err := os.ReadDir(filepath.Join(dr.path, blobsDir))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return dl, nil
+		}
 		return dl, fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir), err)
 	}
 	for _, algo := range algoS {
@@ -425,6 +454,12 @@ func (dr *dirRepo) BlobSession(sessionID string) (BlobCreator, error) {
 		return bc, nil
 	}
 	return nil, types.ErrNotFound
+}
+
+// Done indicates the routine using this repo is finished.
+// This must be called exactly once for every instance of [Store.RepoGet].
+func (dr *dirRepo) Done() {
+	dr.wg.Done()
 }
 
 func (dr *dirRepo) repoInit(locked bool) error {
@@ -573,14 +608,11 @@ func (dr *dirRepo) indexSave(locked bool) error {
 	return nil
 }
 
-// Done indicates the routine using this repo is finished.
-// This must be called exactly once for every instance of [Store.RepoGet].
-func (dr *dirRepo) Done() {
-	dr.wg.Done()
-}
-
 // gc runs the garbage collect
 func (dr *dirRepo) gc() error {
+	<-dr.wgBlock
+	defer func() { dr.wgBlock <- struct{}{} }()
+	dr.wg.Wait()
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
 	// attempt to remove an empty upload folder, ignore errors (e.g. uploads managed by another tool)
@@ -610,6 +642,7 @@ func (dr *dirRepo) gc() error {
 	}()
 	// prune an empty repo dir and mark the repo as empty if successful
 	if *dr.conf.Storage.GC.EmptyRepo && len(dr.index.Manifests) == 0 && dr.uploads.IsEmpty() {
+		// TODO: switch to a slice of errors instead of a function with a return
 		errDir := func() error {
 			for _, dir := range []string{
 				filepath.Join(dr.path, uploadDir),
@@ -646,12 +679,8 @@ func (dru *dirRepoUpload) Write(p []byte) (int, error) {
 	if _, err := dru.dr.uploads.Get(dru.sessionID); err != nil {
 		return 0, fmt.Errorf("session expired %s: %w", dru.sessionID, err)
 	}
-	dru.dr.mu.Lock()
-	now := time.Now()
-	dru.dr.timeMod = now
 	n, err := dru.w.Write(p)
 	dru.size += int64(n)
-	dru.dr.mu.Unlock()
 	return n, err
 }
 
@@ -683,20 +712,31 @@ func (dru *dirRepoUpload) Close() error {
 	}
 	blobName := filepath.Join(tgtDir, dru.d.Digest().Encoded())
 	err = os.Rename(dru.filename, blobName)
-	dru.dr.uploads.Delete(dru.sessionID)
+	_ = dru.dr.uploads.Delete(dru.sessionID)
 	return err
 }
 
 // Cancel is used to stop an upload.
 func (dru *dirRepoUpload) Cancel() {
-	dru.dr.uploads.Delete(dru.sessionID)
+	_ = dru.dr.uploads.Delete(dru.sessionID)
 }
 
 func (dru *dirRepoUpload) delete() {
+	dru.w = nil
 	if dru.fh != nil {
 		_ = dru.fh.Close()
+		dru.fh = nil
 	}
 	_ = os.Remove(dru.filename)
+	now := time.Now()
+	// goroutine to avoid deadlock, the dr.mu lock may already be held depending on how prune is called
+	go func() {
+		dru.dr.mu.Lock()
+		if dru.dr.timeMod.Before(now) {
+			dru.dr.timeMod = now
+		}
+		dru.dr.mu.Unlock()
+	}()
 }
 
 // Size reports the number of bytes pushed.
