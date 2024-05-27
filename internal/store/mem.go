@@ -252,6 +252,7 @@ func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) er
 	mr.timeMod = time.Now()
 	mr.index.AddDesc(desc, opts...)
 	mr.mu.Unlock()
+	mr.log.Debug("index entry added", "repo", mr.path, "desc", desc)
 	return nil
 }
 
@@ -264,6 +265,7 @@ func (mr *memRepo) IndexRemove(desc types.Descriptor) error {
 	mr.timeMod = time.Now()
 	mr.index.RmDesc(desc)
 	mr.mu.Unlock()
+	mr.log.Debug("index entry removed", "repo", mr.path, "desc", desc)
 	return nil
 }
 
@@ -413,6 +415,7 @@ func (mr *memRepo) blobDelete(d digest.Digest, locked bool) error {
 		}
 	}
 	mr.timeMod = time.Now()
+	mr.log.Debug("blob deleted", "repo", mr.path, "digest", d.String())
 	return nil
 }
 
@@ -510,6 +513,7 @@ func (mr *memRepo) gc() error {
 	mr.wg.Wait()
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
+	mr.log.Debug("starting GC", "repo", mr.path)
 	i, mod, err := repoGarbageCollect(mr, mr.conf, mr.index, true)
 	if err != nil {
 		return err
@@ -518,6 +522,7 @@ func (mr *memRepo) gc() error {
 		mr.index = i
 		mr.timeMod = time.Now()
 	}
+	mr.log.Debug("finished GC", "repo", mr.path)
 	return nil
 }
 
@@ -546,6 +551,7 @@ func (mru *memRepoUpload) Close() error {
 			mod: time.Now(),
 		},
 	}
+	mru.mr.log.Debug("blob created", "repo", mru.mr.path, "digest", mru.d.Digest().String())
 	return mru.mr.uploads.Delete(mru.sessionID)
 }
 
