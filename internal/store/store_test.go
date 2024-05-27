@@ -2,7 +2,9 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,6 +34,7 @@ func init() {
 
 func TestStore(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 	existingRepo := "testrepo"
 	existingTag := "v1"
 	newRepo := "new-repo"
@@ -122,7 +125,7 @@ func TestStore(t *testing.T) {
 			t.Parallel()
 			t.Run("Restart", func(t *testing.T) {
 				// not parallel since store is recreated
-				repo, err := s.RepoGet(newRepo)
+				repo, err := s.RepoGet(ctx, newRepo)
 				if err != nil {
 					t.Fatalf("failed to create repo: %v", err)
 				}
@@ -162,7 +165,7 @@ func TestStore(t *testing.T) {
 				}
 				t.Parallel()
 				// query testrepo content
-				repo, err := s.RepoGet(existingRepo)
+				repo, err := s.RepoGet(ctx, existingRepo)
 				if err != nil {
 					t.Errorf("failed to get repo %s: %v", existingRepo, err)
 					return
@@ -279,7 +282,7 @@ func TestStore(t *testing.T) {
 				// subtract a second to deal with race conditions in the time granularity from directory storage
 				start := time.Now().Add(time.Second * -1)
 				// get new repo
-				repo, err := s.RepoGet(newRepo)
+				repo, err := s.RepoGet(ctx, newRepo)
 				if err != nil {
 					t.Errorf("failed to get repo %s: %v", newRepo, err)
 					return
@@ -494,6 +497,7 @@ func TestStore(t *testing.T) {
 
 func TestGarbageCollect(t *testing.T) {
 	var err error
+	ctx := context.Background()
 	// TODO: track description of each blob for error messages
 	testRepo := "testrepo"
 	// create test data to push
@@ -1232,7 +1236,7 @@ func TestGarbageCollect(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			repo, err := s.RepoGet(testRepo)
+			repo, err := s.RepoGet(ctx, testRepo)
 			if err != nil {
 				t.Fatalf("failed to get repo: %v", err)
 			}
@@ -1269,7 +1273,7 @@ func TestGarbageCollect(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to run GC: %v", err)
 			}
-			repo, err = s.RepoGet(testRepo)
+			repo, err = s.RepoGet(ctx, testRepo)
 			if err != nil {
 				t.Fatalf("failed to get repo: %v", err)
 			}
@@ -1293,8 +1297,94 @@ func TestGarbageCollect(t *testing.T) {
 	}
 }
 
+func TestGarbageCollectContext(t *testing.T) {
+	ctx := context.Background()
+	testRepo := "test"
+	tempDir := t.TempDir()
+	tt := []struct {
+		name string
+		conf config.Config
+	}{
+
+		{
+			name: "Mem No GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+				},
+			},
+		},
+		{
+			name: "Dir No GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "no-gc"),
+				},
+			},
+		},
+	}
+	for _, tc := range tt {
+		tc := tc
+		tc.conf.SetDefaults()
+		var s Store
+		switch tc.conf.Storage.StoreType {
+		case config.StoreDir:
+			s = NewDir(tc.conf)
+		case config.StoreMem:
+			s = NewMem(tc.conf)
+		default:
+			t.Errorf("unsupported store type: %d", tc.conf.Storage.StoreType)
+			return
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repo, err := s.RepoGet(ctx, testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
+			}
+			repo.Done()
+			// simulate a long running GC
+			switch repo := repo.(type) {
+			case *dirRepo:
+				<-repo.wgBlock
+				repo.wg.Wait()
+			case *memRepo:
+				<-repo.wgBlock
+				repo.wg.Wait()
+			}
+			// verify access with a short lived context fails
+			ctxTimeout, cancel := context.WithTimeout(ctx, time.Millisecond*5)
+			repoTimeout, err := s.RepoGet(ctxTimeout, testRepo)
+			if err == nil {
+				repoTimeout.Done()
+				t.Fatalf("RepoGet during GC simulation did not fail")
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("unexpected error, expected %v, received %v", context.DeadlineExceeded, err)
+			}
+			cancel()
+			// simulate end of long running GC
+			switch repo := repo.(type) {
+			case *dirRepo:
+				repo.wgBlock <- struct{}{}
+			case *memRepo:
+				repo.wgBlock <- struct{}{}
+			}
+			// verify access after GC finishes
+			repo, err = s.RepoGet(ctx, testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
+			}
+			repo.Done()
+		})
+	}
+}
+
 func TestGarbageCollectUpload(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 	grace := time.Millisecond * 20
 	freq := time.Millisecond * 10
 	sleep := (freq * 2) + grace + (time.Millisecond * 50)
@@ -1405,7 +1495,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			repo, err := s.RepoGet(testRepo)
+			repo, err := s.RepoGet(ctx, testRepo)
 			if err != nil {
 				t.Fatalf("failed to get repo: %v", err)
 			}
@@ -1418,7 +1508,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 			// sleep to GC slow upload
 			repo.Done()
 			time.Sleep(sleep)
-			repo, err = s.RepoGet(testRepo)
+			repo, err = s.RepoGet(ctx, testRepo)
 			if err != nil {
 				t.Fatalf("failed to get repo: %v", err)
 			}
@@ -1431,7 +1521,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 					} else {
 						repo.Done()
 						time.Sleep(sleep)
-						repo, err = s.RepoGet(testRepo)
+						repo, err = s.RepoGet(ctx, testRepo)
 						if err != nil {
 							t.Fatalf("failed to get repo: %v", err)
 						}
@@ -1457,7 +1547,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 						} else {
 							repo.Done()
 							time.Sleep(sleep)
-							repo, err = s.RepoGet(testRepo)
+							repo, err = s.RepoGet(ctx, testRepo)
 							if err != nil {
 								t.Fatalf("failed to get repo: %v", err)
 							}

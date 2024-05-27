@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,9 +78,14 @@ func NewMem(conf config.Config, opts ...Opts) Store {
 	return m
 }
 
-func (m *mem) RepoGet(repoStr string) (Repo, error) {
+func (m *mem) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			m.mu.Unlock()
+		}
+	}()
 	// if stop ch was closed, fail
 	select {
 	case <-m.stop:
@@ -87,13 +93,17 @@ func (m *mem) RepoGet(repoStr string) (Repo, error) {
 	default:
 	}
 	if mr, ok := m.repos[repoStr]; ok {
-		// wgBlock prevents adding to the WG while a wg.Wait is running, GC blocks new requests
 		m.mu.Unlock()
-		<-mr.wgBlock
-		mr.wg.Add(1)
-		mr.wgBlock <- struct{}{}
-		m.mu.Lock()
-		return mr, nil
+		locked = false
+		// wgBlock prevents adding to the WG while a wg.Wait is running, GC blocks new requests
+		select {
+		case <-mr.wgBlock:
+			mr.wg.Add(1)
+			mr.wgBlock <- struct{}{}
+			return mr, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	uploadCacheOpt := cache.Opts[string, *memRepoUpload]{
 		PruneFn: func(_ string, mru *memRepoUpload) error { mru.buffer.Truncate(0); return nil },
