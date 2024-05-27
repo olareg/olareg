@@ -69,7 +69,7 @@ olareg serve --tls-cert host.pem --tls-key host.key --port 443
 	newCmd.Flags().StringVar(&opts.storeType, "store-type", "dir", "storage type (dir, mem)")
 	newCmd.Flags().BoolVar(&opts.storeRO, "store-ro", false, "restrict storage as read-only")
 	newCmd.Flags().BoolVar(&opts.apiPush, "api-push", true, "enable push APIs")
-	newCmd.Flags().BoolVar(&opts.apiDelete, "api-delete", true, "enable delete APIs")
+	newCmd.Flags().BoolVar(&opts.apiDelete, "api-delete", false, "enable delete APIs")
 	newCmd.Flags().BoolVar(&opts.apiBlobDel, "api-blob-delete", false, "enable blob delete API")
 	newCmd.Flags().BoolVar(&opts.apiReferrer, "api-referrer", true, "enable referrer API")
 	newCmd.Flags().DurationVar(&opts.gcFreq, "gc-frequency", time.Minute*15, "garbage collection frequency")

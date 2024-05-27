@@ -82,7 +82,7 @@ type ConfigAPIReferrer struct {
 }
 
 func (c *Config) SetDefaults() {
-	c.API.DeleteEnabled = boolDefault(c.API.DeleteEnabled, true)
+	c.API.DeleteEnabled = boolDefault(c.API.DeleteEnabled, false)
 	c.API.PushEnabled = boolDefault(c.API.PushEnabled, true)
 	c.API.Blob.DeleteEnabled = boolDefault(c.API.Blob.DeleteEnabled, false)
 	c.API.Referrer.Enabled = boolDefault(c.API.Referrer.Enabled, true)

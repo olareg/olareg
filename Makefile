@@ -167,18 +167,18 @@ oci-conformance: ci-setup ci-oci-conformance ci-cleanup ## Run OCI Conformance
 .PHONY: ci-setup
 ci-setup: docker-olareg
 	docker rm -f olareg-ci || true
-	docker run --rm -d --name olareg-ci -p 5000 olareg/olareg serve
+	docker run --rm -d --name olareg-ci -p 5000 olareg/olareg serve --api-delete
 
 .PHONY: ci-oci-conformance
 ci-oci-conformance:
 	docker run \
 		--rm --net container:olareg-ci \
 		-e OCI_ROOT_URL="http://localhost:5000" \
-  	-e OCI_NAMESPACE="myorg/myrepo" \
+		-e OCI_NAMESPACE="myorg/myrepo" \
 		-e OCI_TEST_PULL=1 \
 		-e OCI_TEST_PUSH=1 \
-  	-e OCI_TEST_CONTENT_DISCOVERY=1 \
-  	-e OCI_TEST_CONTENT_MANAGEMENT=1 \
+		-e OCI_TEST_CONTENT_DISCOVERY=1 \
+		-e OCI_TEST_CONTENT_MANAGEMENT=1 \
 		ghcr.io/opencontainers/distribution-spec/conformance:main
 
 # TODO: add CI tests with regclient, crane, skopeo, oras, and docker

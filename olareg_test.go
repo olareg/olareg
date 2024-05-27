@@ -68,6 +68,7 @@ func TestServer(t *testing.T) {
 					StoreType: config.StoreMem,
 				},
 				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
@@ -82,6 +83,7 @@ func TestServer(t *testing.T) {
 					RootDir:   "./testdata",
 				},
 				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
@@ -101,6 +103,7 @@ func TestServer(t *testing.T) {
 					},
 				},
 				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
@@ -118,6 +121,7 @@ func TestServer(t *testing.T) {
 					ReadOnly:  &boolT,
 				},
 				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
