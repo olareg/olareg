@@ -42,7 +42,7 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 			SchemaVersion: 2,
 			MediaType:     types.MediaTypeOCI1ManifestList,
 		}
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
 			w.WriteHeader(http.StatusOK)

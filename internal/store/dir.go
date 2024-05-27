@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,9 +103,14 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 	return d
 }
 
-func (d *dir) RepoGet(repoStr string) (Repo, error) {
+func (d *dir) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			d.mu.Unlock()
+		}
+	}()
 	// if stop ch was closed, fail
 	select {
 	case <-d.stop:
@@ -112,13 +118,17 @@ func (d *dir) RepoGet(repoStr string) (Repo, error) {
 	default:
 	}
 	if dr, err := d.repos.Get(repoStr); err == nil {
-		// wgBlock prevents adding to the WG while a wg.Wait is running, GC blocks new requests\
 		d.mu.Unlock()
-		<-dr.wgBlock
-		dr.wg.Add(1)
-		dr.wgBlock <- struct{}{}
-		d.mu.Lock()
-		return dr, nil
+		locked = false
+		// wgBlock prevents adding to the WG while a wg.Wait is running, GC blocks new requests
+		select {
+		case <-dr.wgBlock:
+			dr.wg.Add(1)
+			dr.wgBlock <- struct{}{}
+			return dr, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	if stringsHasAny(strings.Split(repoStr, "/"), indexFile, layoutFile, blobsDir) {
 		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)

@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -37,7 +38,7 @@ var (
 type Store interface {
 	// RepoGet returns a repo from the store.
 	// When finished, the method [Repo.Done] must be called.
-	RepoGet(repoStr string) (Repo, error)
+	RepoGet(ctx context.Context, repoStr string) (Repo, error)
 
 	// Close releases resources used by the store.
 	// The store should not be used after being closed.

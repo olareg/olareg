@@ -30,7 +30,7 @@ func (s *Server) blobGet(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest cannot be parsed"))
 			return
 		}
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -76,7 +76,7 @@ func (s *Server) blobDelete(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest cannot be parsed"))
 			return
 		}
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -109,7 +109,7 @@ type blobUploadState struct {
 
 func (s *Server) blobUploadDelete(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -135,7 +135,7 @@ func (s *Server) blobUploadDelete(repoStr, sessionID string) http.HandlerFunc {
 
 func (s *Server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -210,7 +210,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			bOpts = append(bOpts, store.BlobWithDigest(d))
 		}
 		// start a new upload session with the backend storage and track as current upload
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -298,12 +298,12 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 // Any errors return the error without writing to the response.
 // This allows the registry to fall back to a standard blob push.
 // If the return is nil, the location header and created status are first be written to the response.
-func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.ResponseWriter, _ *http.Request) error {
+func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.ResponseWriter, r *http.Request) error {
 	dig, err := digest.Parse(digStr)
 	if err != nil {
 		return err
 	}
-	repoTgt, err := s.store.RepoGet(repoTgtStr)
+	repoTgt, err := s.store.RepoGet(r.Context(), repoTgtStr)
 	if err != nil {
 		return err
 	}
@@ -323,7 +323,7 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 		}
 		return err
 	}
-	repoSrc, err := s.store.RepoGet(repoSrcStr)
+	repoSrc, err := s.store.RepoGet(r.Context(), repoSrcStr)
 	if err != nil {
 		bc.Cancel()
 		return err
@@ -358,7 +358,7 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 
 func (s *Server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -439,7 +439,7 @@ func (s *Server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 
 func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)

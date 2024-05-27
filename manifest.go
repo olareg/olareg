@@ -28,7 +28,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
 			return
 		}
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -97,7 +97,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 
 func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -193,7 +193,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 		tag := ""
 		var dExpect digest.Digest
 		addOpts := []types.IndexOpt{}
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
