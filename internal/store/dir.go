@@ -280,6 +280,7 @@ func (dr *dirRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) er
 	defer dr.mu.Unlock()
 	_ = dr.indexLoad(false, true)
 	dr.index.AddDesc(desc, opts...)
+	dr.log.Debug("index entry added", "repo", dr.name, "desc", desc)
 	return dr.indexSave(true)
 }
 
@@ -292,6 +293,7 @@ func (dr *dirRepo) IndexRemove(desc types.Descriptor) error {
 	defer dr.mu.Unlock()
 	_ = dr.indexLoad(false, true)
 	dr.index.RmDesc(desc)
+	dr.log.Debug("index entry removed", "repo", dr.name, "desc", desc)
 	return dr.indexSave(true)
 }
 
@@ -423,6 +425,7 @@ func (dr *dirRepo) blobDelete(d digest.Digest, locked bool) error {
 	if fi.IsDir() {
 		return fmt.Errorf("invalid blob %s: %s is a directory", d.String(), filename)
 	}
+	dr.log.Debug("blob deleted", "repo", dr.name, "digest", d.String())
 	err = os.Remove(filename)
 	return err
 }
@@ -625,6 +628,7 @@ func (dr *dirRepo) gc() error {
 	dr.wg.Wait()
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
+	dr.log.Debug("starting GC", "repo", dr.name)
 	// attempt to remove an empty upload folder, ignore errors (e.g. uploads managed by another tool)
 	if dr.uploads.IsEmpty() {
 		fi, err := os.Stat(filepath.Join(dr.path, uploadDir))
@@ -674,6 +678,7 @@ func (dr *dirRepo) gc() error {
 			dr.exists = false
 		}
 	}
+	dr.log.Debug("finished GC", "repo", dr.name, "err", errGC)
 	if errGC != nil {
 		return errGC
 	}
@@ -723,6 +728,7 @@ func (dru *dirRepoUpload) Close() error {
 	blobName := filepath.Join(tgtDir, dru.d.Digest().Encoded())
 	err = os.Rename(dru.filename, blobName)
 	_ = dru.dr.uploads.Delete(dru.sessionID)
+	dru.dr.log.Debug("blob created", "repo", dru.dr.name, "digest", dru.d.Digest().String(), "err", err)
 	return err
 }
 
