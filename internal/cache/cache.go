@@ -13,14 +13,16 @@ import (
 )
 
 type Cache[k comparable, v any] struct {
-	mu       sync.Mutex
-	minAge   time.Duration
-	maxAge   time.Duration
-	minCount int
-	maxCount int
-	timer    *time.Timer
-	entries  map[k]*Entry[v]
-	pruneFn  func(k, v) error
+	mu          sync.Mutex
+	minAge      time.Duration
+	maxAge      time.Duration
+	minCount    int
+	maxCount    int
+	timer       *time.Timer
+	entries     map[k]*Entry[v]
+	pruneFn     func(k, v) error
+	prunePreFn  func(k, v)
+	prunePostFn func(k, v)
 }
 
 type Entry[v any] struct {
@@ -34,9 +36,11 @@ type sortKeys[k comparable] struct {
 }
 
 type Opts[k comparable, v any] struct {
-	Age     time.Duration
-	Count   int
-	PruneFn func(k, v) error
+	Age         time.Duration    // when entries become eligible for pruning
+	Count       int              // size that triggers pruning
+	PruneFn     func(k, v) error // function to run when pruning entries and manually deleting
+	PrunePreFn  func(k, v)       // function to run before asynchronous pruning (e.g. mutex lock)
+	PrunePostFn func(k, v)       // function to run after asynchronous pruning (e.g. mutex unlock)
 }
 
 // New returns a new cache.
@@ -47,12 +51,14 @@ func New[k comparable, v any](opt Opts[k, v]) *Cache[k, v] {
 		minCount = int(float64(opt.Count) * 0.9)
 	}
 	return &Cache[k, v]{
-		minAge:   opt.Age,
-		maxAge:   maxAge,
-		minCount: minCount,
-		maxCount: opt.Count,
-		pruneFn:  opt.PruneFn,
-		entries:  map[k]*Entry[v]{},
+		minAge:      opt.Age,
+		maxAge:      maxAge,
+		minCount:    minCount,
+		maxCount:    opt.Count,
+		pruneFn:     opt.PruneFn,
+		prunePreFn:  opt.PrunePreFn,
+		prunePostFn: opt.PrunePostFn,
+		entries:     map[k]*Entry[v]{},
 	}
 }
 
@@ -184,7 +190,13 @@ func (c *Cache[k, v]) pruneAge() {
 	for key := range c.entries {
 		if c.entries[key].used.Before(cutoff) {
 			if c.pruneFn != nil {
+				if c.prunePreFn != nil {
+					c.prunePreFn(key, c.entries[key].value)
+				}
 				err := c.pruneFn(key, c.entries[key].value)
+				if c.prunePostFn != nil {
+					c.prunePostFn(key, c.entries[key].value)
+				}
 				if err != nil {
 					c.entries[key].used = now
 					continue
@@ -237,7 +249,13 @@ func (c *Cache[k, v]) pruneCount() {
 	delCount := 0
 	for _, key := range keyList {
 		if c.pruneFn != nil {
+			if c.prunePreFn != nil {
+				c.prunePreFn(key, c.entries[key].value)
+			}
 			err := c.pruneFn(key, c.entries[key].value)
+			if c.prunePostFn != nil {
+				c.prunePostFn(key, c.entries[key].value)
+			}
 			if err != nil {
 				c.entries[key].used = time.Now()
 				continue
