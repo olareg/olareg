@@ -103,22 +103,22 @@ func (i Index) Copy() Index {
 
 // GetDesc returns a descriptor for a tag or digest, including child descriptors.
 func (i Index) GetDesc(arg string) (Descriptor, error) {
-	var dRet Descriptor
+	var dZero Descriptor
 	if len(i.Manifests) == 0 {
-		return dRet, ErrNotFound
+		return dZero, ErrNotFound
 	}
 	if RefTagRE.MatchString(arg) {
 		// search for tag
 		for _, d := range i.Manifests {
 			if d.Annotations != nil && d.Annotations[AnnotRefName] == arg {
-				return d, nil
+				return d.Copy(), nil
 			}
 		}
 	} else {
 		// else, attempt to parse digest
 		dig, err := digest.Parse(arg)
 		if err != nil {
-			return dRet, err
+			return dZero, err
 		}
 		// return a matching descriptor, but stripped of any annotations to avoid mixing with tags
 		for _, d := range i.Manifests {
@@ -142,7 +142,7 @@ func (i Index) GetDesc(arg string) (Descriptor, error) {
 			}
 		}
 	}
-	return dRet, ErrNotFound
+	return dZero, ErrNotFound
 }
 
 // GetByAnnotation finds an entry with a matching annotation.

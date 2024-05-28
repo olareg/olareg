@@ -54,7 +54,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
 			return
 		}
-		// if referrers is enabled, get the manifest to check for a subject
+		// if referrers is enabled, remove entry from the referrers list
 		if *s.conf.API.Referrer.Enabled {
 			// wrap in a func to allow a return from errors without breaking the actual delete
 			err = func() error {
@@ -81,7 +81,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 				return nil
 			}()
 			if err != nil {
-				s.log.Info("failed to delete referrer", "repo", repoStr, "arg", arg, "err", err)
+				s.log.Info("failed to delete entry from referrers response", "repo", repoStr, "arg", arg, "err", err)
 			}
 		}
 		// delete the digest or tag
