@@ -49,6 +49,7 @@ type memRepoBlob struct {
 }
 
 type memRepoUpload struct {
+	mu        sync.Mutex
 	buffer    *bytes.Buffer
 	w         io.Writer
 	d         digest.Digester
@@ -105,15 +106,6 @@ func (m *mem) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 			return nil, ctx.Err()
 		}
 	}
-	uploadCacheOpt := cache.Opts[string, *memRepoUpload]{
-		PruneFn: func(_ string, mru *memRepoUpload) error { mru.buffer.Truncate(0); return nil },
-	}
-	if m.conf.Storage.GC.RepoUploadMax > 0 {
-		uploadCacheOpt.Count = m.conf.Storage.GC.RepoUploadMax
-	}
-	if m.conf.Storage.GC.GracePeriod > 0 {
-		uploadCacheOpt.Age = m.conf.Storage.GC.GracePeriod
-	}
 	mr := &memRepo{
 		wgBlock: make(chan struct{}, 1),
 		index: types.Index{
@@ -122,11 +114,22 @@ func (m *mem) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 			Manifests:     []types.Descriptor{},
 			Annotations:   map[string]string{},
 		},
-		blobs:   map[digest.Digest]*memRepoBlob{},
-		uploads: cache.New[string, *memRepoUpload](uploadCacheOpt),
-		log:     m.log,
-		conf:    m.conf,
+		blobs: map[digest.Digest]*memRepoBlob{},
+		log:   m.log,
+		conf:  m.conf,
 	}
+	uploadCacheOpt := cache.Opts[string, *memRepoUpload]{
+		PruneFn:     func(_ string, mru *memRepoUpload) error { mru.buffer.Truncate(0); return nil },
+		PrunePreFn:  func(_ string, mru *memRepoUpload) { mru.mu.Lock() },
+		PrunePostFn: func(_ string, mru *memRepoUpload) { mru.mu.Unlock() },
+	}
+	if m.conf.Storage.GC.RepoUploadMax > 0 {
+		uploadCacheOpt.Count = m.conf.Storage.GC.RepoUploadMax
+	}
+	if m.conf.Storage.GC.GracePeriod > 0 {
+		uploadCacheOpt.Age = m.conf.Storage.GC.GracePeriod
+	}
+	mr.uploads = cache.New[string, *memRepoUpload](uploadCacheOpt)
 	mr.wgBlock <- struct{}{}
 	if *m.conf.API.Referrer.Enabled {
 		mr.index.Annotations[types.AnnotReferrerConvert] = "true"
@@ -528,8 +531,8 @@ func (mr *memRepo) gc() error {
 
 // Write sends data to the buffer.
 func (mru *memRepoUpload) Write(p []byte) (int, error) {
-	mru.mr.mu.Lock()
-	defer mru.mr.mu.Unlock()
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
 	// verify session still exists and update last write time
 	if _, err := mru.mr.uploads.Get(mru.sessionID); err != nil {
 		return 0, fmt.Errorf("session expired %s: %w", mru.sessionID, err)
@@ -538,12 +541,13 @@ func (mru *memRepoUpload) Write(p []byte) (int, error) {
 }
 
 func (mru *memRepoUpload) Close() error {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
 	if mru.expect != "" && mru.d.Digest() != mru.expect {
 		return fmt.Errorf("digest mismatch, expected %s, received %s", mru.expect, mru.d.Digest())
 	}
 	// relocate []byte to in memory blob store
 	mru.mr.mu.Lock()
-	defer mru.mr.mu.Unlock()
 	mru.mr.timeMod = time.Now()
 	mru.mr.blobs[mru.d.Digest()] = &memRepoBlob{
 		b: mru.buffer.Bytes(),
@@ -551,27 +555,36 @@ func (mru *memRepoUpload) Close() error {
 			mod: time.Now(),
 		},
 	}
+	mru.mr.mu.Unlock()
 	mru.mr.log.Debug("blob created", "repo", mru.mr.path, "digest", mru.d.Digest().String())
 	return mru.mr.uploads.Delete(mru.sessionID)
 }
 
 // Cancel is used to stop an upload.
 func (mru *memRepoUpload) Cancel() {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
 	_ = mru.mr.uploads.Delete(mru.sessionID)
 }
 
 // Size reports the number of bytes pushed.
 func (mru *memRepoUpload) Size() int64 {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
 	return int64(mru.buffer.Len())
 }
 
 // Digest is used to get the current digest of the content.
 func (mru *memRepoUpload) Digest() digest.Digest {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
 	return mru.d.Digest()
 }
 
 // Verify ensures a digest matches the content.
 func (mru *memRepoUpload) Verify(expect digest.Digest) error {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
 	if mru.d.Digest() != expect {
 		return fmt.Errorf("digest mismatch, expected %s, received %s", expect, mru.d.Digest())
 	}

@@ -51,6 +51,7 @@ type dirRepo struct {
 }
 
 type dirRepoUpload struct {
+	mu        sync.Mutex
 	fh        *os.File
 	w         io.Writer
 	size      int64
@@ -133,11 +134,17 @@ func (d *dir) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 	if stringsHasAny(strings.Split(repoStr, "/"), indexFile, layoutFile, blobsDir) {
 		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
 	}
+	dr := dirRepo{
+		wgBlock: make(chan struct{}, 1),
+		path:    filepath.Join(d.root, repoStr),
+		name:    repoStr,
+		conf:    d.conf,
+		log:     d.log,
+	}
 	uploadCacheOpts := cache.Opts[string, *dirRepoUpload]{
-		PruneFn: func(_ string, dru *dirRepoUpload) error {
-			dru.delete()
-			return nil
-		},
+		PruneFn:     func(_ string, dru *dirRepoUpload) error { dru.delete(); return nil },
+		PrunePreFn:  func(_ string, dru *dirRepoUpload) { dru.mu.Lock() },
+		PrunePostFn: func(_ string, dru *dirRepoUpload) { dru.mu.Unlock() },
 	}
 	if d.conf.Storage.GC.RepoUploadMax > 0 {
 		uploadCacheOpts.Count = d.conf.Storage.GC.RepoUploadMax
@@ -145,14 +152,7 @@ func (d *dir) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 	if d.conf.Storage.GC.GracePeriod > 0 {
 		uploadCacheOpts.Age = d.conf.Storage.GC.GracePeriod
 	}
-	dr := dirRepo{
-		wgBlock: make(chan struct{}, 1),
-		path:    filepath.Join(d.root, repoStr),
-		name:    repoStr,
-		conf:    d.conf,
-		uploads: cache.New[string, *dirRepoUpload](uploadCacheOpts),
-		log:     d.log,
-	}
+	dr.uploads = cache.New[string, *dirRepoUpload](uploadCacheOpts)
 	dr.wgBlock <- struct{}{}
 	d.repos.Set(repoStr, &dr)
 	statDir, err := os.Stat(dr.path)
@@ -687,6 +687,8 @@ func (dr *dirRepo) gc() error {
 
 // Write is used to push content into the blob.
 func (dru *dirRepoUpload) Write(p []byte) (int, error) {
+	dru.mu.Lock()
+	defer dru.mu.Unlock()
 	if dru.w == nil {
 		return 0, fmt.Errorf("writer is closed")
 	}
@@ -701,6 +703,8 @@ func (dru *dirRepoUpload) Write(p []byte) (int, error) {
 
 // Close finishes an upload, verifying digest if requested, and moves it into the blob store.
 func (dru *dirRepoUpload) Close() error {
+	dru.mu.Lock()
+	defer dru.mu.Unlock()
 	err := dru.fh.Close()
 	if err != nil {
 		_ = os.Remove(dru.filename)
@@ -734,6 +738,8 @@ func (dru *dirRepoUpload) Close() error {
 
 // Cancel is used to stop an upload.
 func (dru *dirRepoUpload) Cancel() {
+	dru.mu.Lock()
+	defer dru.mu.Unlock()
 	_ = dru.dr.uploads.Delete(dru.sessionID)
 }
 
@@ -744,29 +750,34 @@ func (dru *dirRepoUpload) delete() {
 		dru.fh = nil
 	}
 	_ = os.Remove(dru.filename)
-	now := time.Now()
-	// goroutine to avoid deadlock, the dr.mu lock may already be held depending on how prune is called
+	// Update dr.timeMod to trigger a GC that would delete an empty upload folder.
+	// Use a goroutine to avoid circular deadlocks.
+	// A method holding the dr.mu lock may wait on the cache.mu, and the cache.mu is locked when calling this method.
 	go func() {
 		dru.dr.mu.Lock()
-		if dru.dr.timeMod.Before(now) {
-			dru.dr.timeMod = now
-		}
+		dru.dr.timeMod = time.Now()
 		dru.dr.mu.Unlock()
 	}()
 }
 
 // Size reports the number of bytes pushed.
 func (dru *dirRepoUpload) Size() int64 {
+	dru.mu.Lock()
+	defer dru.mu.Unlock()
 	return dru.size
 }
 
 // Digest is used to get the current digest of the content.
 func (dru *dirRepoUpload) Digest() digest.Digest {
+	dru.mu.Lock()
+	defer dru.mu.Unlock()
 	return dru.d.Digest()
 }
 
 // Verify ensures a digest matches the content.
 func (dru *dirRepoUpload) Verify(expect digest.Digest) error {
+	dru.mu.Lock()
+	defer dru.mu.Unlock()
 	if dru.d.Digest() != expect {
 		return fmt.Errorf("digest mismatch, expected %s, received %s", expect, dru.d.Digest())
 	}
