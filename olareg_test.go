@@ -34,6 +34,9 @@ func TestServer(t *testing.T) {
 		t.Errorf("failed to generate sample data: %v", err)
 		return
 	}
+	grace := time.Millisecond * 250
+	freq := time.Millisecond * 100
+	sleep := (freq * 2) + grace + (time.Millisecond * 100)
 	existingRepo := "testrepo"
 	existingTag := "v2"
 	existingReferrerCountAll := 2
@@ -54,6 +57,7 @@ func TestServer(t *testing.T) {
 		return
 	}
 	boolT := true
+	boolF := false
 	ttServer := []struct {
 		name     string
 		conf     config.Config
@@ -66,6 +70,14 @@ func TestServer(t *testing.T) {
 			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         freq,
+						GracePeriod:       grace,
+						RepoUploadMax:     10,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
 				},
 				API: config.ConfigAPI{
 					DeleteEnabled: &boolT,
@@ -74,6 +86,7 @@ func TestServer(t *testing.T) {
 					},
 				},
 			},
+			testGC: true,
 		},
 		{
 			name: "Mem with Dir",
@@ -81,6 +94,14 @@ func TestServer(t *testing.T) {
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
 					RootDir:   "./testdata",
+					GC: config.ConfigGC{
+						Frequency:         freq,
+						GracePeriod:       grace,
+						RepoUploadMax:     10,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
 				},
 				API: config.ConfigAPI{
 					DeleteEnabled: &boolT,
@@ -90,6 +111,7 @@ func TestServer(t *testing.T) {
 				},
 			},
 			existing: true,
+			testGC:   true,
 		},
 		{
 			name: "Dir",
@@ -98,8 +120,12 @@ func TestServer(t *testing.T) {
 					StoreType: config.StoreDir,
 					RootDir:   tempDir,
 					GC: config.ConfigGC{
-						Frequency:   time.Second * -1,
-						GracePeriod: time.Second * -1,
+						Frequency:         freq,
+						GracePeriod:       grace,
+						RepoUploadMax:     10,
+						Untagged:          &boolT,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
 					},
 				},
 				API: config.ConfigAPI{
@@ -395,36 +421,75 @@ func TestServer(t *testing.T) {
 				if !tcServer.testGC || tcServer.readOnly {
 					return
 				}
-				// this test is not parallel because the server is closed and restarted
-				// push two images
+				t.Parallel()
+				// push two images with three tags
 				if err := testSampleEntryPush(t, s, *sd["image-amd64"], "gc", "amd64"); err != nil {
+					return
+				}
+				if err := testSampleEntryPush(t, s, *sd["image-amd64"], "gc", "amd64-copy"); err != nil {
 					return
 				}
 				if err := testSampleEntryPush(t, s, *sd["image-arm64"], "gc", "arm64"); err != nil {
 					return
 				}
-				// delete one manifest
+				// delete one manifest by digest
 				if _, err := testAPIManifestRm(t, s, "gc", sd["image-arm64"].manifestList[0].String()); err != nil {
 					t.Fatalf("failed to remove manifest: %v", err)
 				}
-				// close server and recreate
-				if err := s.Close(); err != nil {
-					t.Errorf("failed to close server: %v", err)
+				// delete the other manifest by tag
+				if _, err := testAPIManifestRm(t, s, "gc", "amd64-copy"); err != nil {
+					t.Fatalf("failed to remove manifest: %v", err)
 				}
-				s = New(tcServer.conf)
+				// delay for GC
+				for retry := 0; retry < 10; retry++ {
+					time.Sleep(sleep)
+					if _, err := testClientRun(t, s, "GET", "/v2/gc/blobs/"+string(sd["image-arm64"].manifest[sd["image-arm64"].manifestList[0]]), nil,
+						testClientRespStatus(http.StatusNotFound)); err != nil {
+						break
+					}
+				}
 				// verify get
 				if err := testSampleEntryPull(t, s, *sd["image-amd64"], "gc", "amd64"); err != nil {
 					t.Errorf("failed to pull entry after recreating server: %v", err)
 				}
 				// verify GC
+				if _, err := testClientRun(t, s, "GET", "/v2/gc/manifest/amd64-copy", nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientRespStatus(http.StatusNotFound)); err != nil {
+					t.Errorf("pulled image after it should have been deleted and GC'd: %v", err)
+				} else {
+					t.Log("amd64-copy was garbage collected")
+				}
+				if _, err := testClientRun(t, s, "GET", "/v2/gc/manifest/arm64", nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientRespStatus(http.StatusNotFound)); err != nil {
+					t.Errorf("pulled image after it should have been deleted and GC'd: %v", err)
+				} else {
+					t.Log("arm64 was garbage collected")
+				}
 				for dig := range sd["image-arm64"].blob {
 					if _, ok := sd["image-amd64"].blob[dig]; ok {
 						continue // skip dup blobs
 					}
-					_, err := testClientRun(t, s, "GET", "/v2/gc/blobs/"+dig.String(), nil,
-						testClientRespStatus(http.StatusNotFound))
-					if err != nil {
+					if _, err := testClientRun(t, s, "GET", "/v2/gc/blobs/"+dig.String(), nil,
+						testClientRespStatus(http.StatusNotFound)); err != nil {
 						t.Errorf("did not receive a not-found error on a GC blob: %v", err)
+					} else {
+						t.Logf("blog GC verified: %s", dig.String())
+					}
+				}
+				for dig := range sd["image-amd64"].blob {
+					if _, err := testClientRun(t, s, "HEAD", "/v2/gc/blobs/"+dig.String(), nil,
+						testClientRespStatus(http.StatusOK)); err != nil {
+						t.Errorf("GC blob of image that should have been preserved: %v", err)
+					} else {
+						t.Logf("blog retention verified: %s", dig.String())
 					}
 				}
 			})
