@@ -64,7 +64,10 @@ func TestCache(t *testing.T) {
 	prunedMu.Unlock()
 	// delete last 2 entries
 	for i := len(testData) - countDel; i < len(testData); i++ {
-		c.Delete(i)
+		err := c.Delete(i)
+		if err != nil {
+			t.Errorf("failed to delete %d: %v", i, err)
+		}
 	}
 	if c.IsEmpty() {
 		t.Errorf("cache is empty after adding entries")
@@ -145,9 +148,15 @@ func TestCache(t *testing.T) {
 	}
 	// set and delete a key
 	c.Set(42, "x")
-	c.Delete(42)
+	err = c.Delete(42)
+	if err != nil {
+		t.Errorf("failed to delete key 42: %v", err)
+	}
 	// delete non-existent key
-	c.Delete(42)
+	err = c.Delete(42)
+	if err != nil {
+		t.Errorf("failed to delete missing key 42: %v", err)
+	}
 	// delete all entries with a prune function
 	err = c.DeleteAll()
 	if !errors.Is(err, errBlocked) {
@@ -170,7 +179,10 @@ func TestCache(t *testing.T) {
 	if c2.IsEmpty() {
 		t.Errorf("cache is empty before deleting entries")
 	}
-	c2.DeleteAll()
+	err = c2.DeleteAll()
+	if err != nil {
+		t.Errorf("failed to delete all entries: %v", err)
+	}
 	if len(c2.entries) > 0 {
 		t.Errorf("entries remain after DeleteAll")
 	}

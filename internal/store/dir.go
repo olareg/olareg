@@ -142,7 +142,7 @@ func (d *dir) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 		log:     d.log,
 	}
 	uploadCacheOpts := cache.Opts[string, *dirRepoUpload]{
-		PruneFn:     func(_ string, dru *dirRepoUpload) error { dru.delete(); return nil },
+		PruneFn:     func(_ string, dru *dirRepoUpload) error { return dru.delete() },
 		PrunePreFn:  func(_ string, dru *dirRepoUpload) { dru.mu.Lock() },
 		PrunePostFn: func(_ string, dru *dirRepoUpload) { dru.mu.Unlock() },
 	}
@@ -656,8 +656,8 @@ func (dr *dirRepo) gc() error {
 	}()
 	// prune an empty repo dir and mark the repo as empty if successful
 	if *dr.conf.Storage.GC.EmptyRepo && len(dr.index.Manifests) == 0 && dr.uploads.IsEmpty() {
-		// TODO: switch to a slice of errors instead of a function with a return
 		errDir := func() error {
+			errs := []error{}
 			for _, dir := range []string{
 				filepath.Join(dr.path, uploadDir),
 				filepath.Join(dr.path, blobsDir, "sha256"),
@@ -669,10 +669,10 @@ func (dr *dirRepo) gc() error {
 			} {
 				err := os.Remove(dir)
 				if err != nil && !errors.Is(err, fs.ErrNotExist) {
-					return err
+					errs = append(errs, err)
 				}
 			}
-			return nil
+			return errors.Join(errs...)
 		}()
 		if errDir == nil {
 			dr.exists = false
@@ -707,43 +707,41 @@ func (dru *dirRepoUpload) Close() error {
 	defer dru.mu.Unlock()
 	err := dru.fh.Close()
 	if err != nil {
-		_ = os.Remove(dru.filename)
-		return err // TODO: join multiple errors after 1.19 support is removed
+		return errors.Join(err, os.Remove(dru.filename))
 	}
 	if dru.expect != "" && dru.d.Digest() != dru.expect {
-		_ = os.Remove(dru.filename)
-		return fmt.Errorf("digest mismatch, expected %s, received %s", dru.expect, dru.d.Digest())
+		return errors.Join(fmt.Errorf("digest mismatch, expected %s, received %s", dru.expect, dru.d.Digest()),
+			os.Remove(dru.filename))
 	}
 	// move temp file to blob store
 	tgtDir := filepath.Join(dru.path, blobsDir, dru.d.Digest().Algorithm().String())
 	fi, err := os.Stat(tgtDir)
 	if err == nil && !fi.IsDir() {
-		_ = os.Remove(dru.filename)
-		return fmt.Errorf("failed to move file to blob storage, %s is not a directory", tgtDir)
+		return errors.Join(fmt.Errorf("failed to move file to blob storage, %s is not a directory", tgtDir),
+			os.Remove(dru.filename))
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
 		err = os.MkdirAll(tgtDir, 0755)
 		if err != nil {
-			_ = os.Remove(dru.filename)
-			return fmt.Errorf("unable to create blob storage directory %s: %w", tgtDir, err)
+			return errors.Join(fmt.Errorf("unable to create blob storage directory %s: %w", tgtDir, err),
+				os.Remove(dru.filename))
 		}
 	}
 	blobName := filepath.Join(tgtDir, dru.d.Digest().Encoded())
-	err = os.Rename(dru.filename, blobName)
-	_ = dru.dr.uploads.Delete(dru.sessionID)
+	err = errors.Join(os.Rename(dru.filename, blobName), dru.dr.uploads.Delete(dru.sessionID))
 	dru.dr.log.Debug("blob created", "repo", dru.dr.name, "digest", dru.d.Digest().String(), "err", err)
 	return err
 }
 
 // Cancel is used to stop an upload.
-func (dru *dirRepoUpload) Cancel() {
+func (dru *dirRepoUpload) Cancel() error {
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
-	_ = dru.dr.uploads.Delete(dru.sessionID)
+	return dru.dr.uploads.Delete(dru.sessionID)
 }
 
-func (dru *dirRepoUpload) delete() {
+func (dru *dirRepoUpload) delete() error {
 	dru.w = nil
 	if dru.fh != nil {
 		_ = dru.fh.Close()
@@ -758,6 +756,8 @@ func (dru *dirRepoUpload) delete() {
 		dru.dr.timeMod = time.Now()
 		dru.dr.mu.Unlock()
 	}()
+	// always return nil, even on errors, to allow entry to be removed from upload session list
+	return nil
 }
 
 // Size reports the number of bytes pushed.
