@@ -128,7 +128,12 @@ func (s *Server) blobUploadDelete(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Error("upload session not found", "repo", repoStr, "sessionID", sessionID)
 			return
 		}
-		bc.Cancel()
+		err = bc.Cancel()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to cancel upload", "err", err, "repo", repoStr, "sessionID", sessionID)
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 	}
 }
@@ -159,7 +164,6 @@ func (s *Server) blobUploadGet(repoStr, sessionID string) http.HandlerFunc {
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Error("failed to marshal new state", "err", err)
-			bc.Cancel()
 			return
 		}
 		state := base64.RawURLEncoding.EncodeToString(stateJSON)
@@ -251,7 +255,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			}
 			err = bc.Verify(d)
 			if err != nil {
-				bc.Cancel()
+				_ = bc.Cancel()
 				w.WriteHeader(http.StatusBadRequest)
 				_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("digest mismatch"))
 				s.log.Debug("failed to verify blob digest", "repo", repoStr, "digest", d.String(), "err", err)
@@ -277,7 +281,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Error("failed to marshal new state", "err", err)
-			bc.Cancel()
+			_ = bc.Cancel()
 			return
 		}
 		state := base64.RawURLEncoding.EncodeToString(stateJSON)
@@ -325,24 +329,19 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 	}
 	repoSrc, err := s.store.RepoGet(r.Context(), repoSrcStr)
 	if err != nil {
-		bc.Cancel()
-		return err
+		return errors.Join(err, bc.Cancel())
 	}
 	rdr, err := repoSrc.BlobGet(dig)
 	repoSrc.Done()
 	if err != nil {
-		bc.Cancel()
-		return err
+		return errors.Join(err, bc.Cancel())
 	}
 	// copy content from source repo
 	_, err = io.Copy(bc, rdr)
 	if err != nil {
-		bc.Cancel()
-		_ = rdr.Close()
-		return err
+		return errors.Join(err, bc.Cancel(), rdr.Close())
 	}
-	_ = rdr.Close()
-	err = bc.Close()
+	err = errors.Join(rdr.Close(), bc.Close())
 	if err != nil {
 		return err
 	}
@@ -421,7 +420,6 @@ func (s *Server) blobUploadPatch(repoStr, sessionID string) http.HandlerFunc {
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Error("failed to marshal new state", "err", err)
-			bc.Cancel()
 			return
 		}
 		state := base64.RawURLEncoding.EncodeToString(stateJSON)
@@ -509,7 +507,9 @@ func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 		err = bc.Verify(d)
 		if err != nil {
 			s.log.Error("invalid digest", "err", err, "repo", repoStr, "sessionID", sessionID, "expected", bc.Digest().String(), "received", d.String(), "size", bc.Size())
-			bc.Cancel()
+			if err = bc.Cancel(); err != nil {
+				s.log.Error("canceling upload", "err", err, "repo", repoStr, "sessionID", sessionID, "expected", bc.Digest().String(), "received", d.String(), "size", bc.Size())
+			}
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoBlobUploadInvalid("invalid digest, expected: "+bc.Digest().String()))
 			return

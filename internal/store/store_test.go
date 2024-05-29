@@ -355,7 +355,10 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to create new blob: %v", err)
 				}
-				bc.Cancel()
+				err = bc.Cancel()
+				if err != nil {
+					t.Errorf("failed canceling upload: %v", err)
+				}
 				// verify closed and canceled sessions are no longer available
 				for i, sessionID := range []string{session1, session2, session3} {
 					_, err := repo.BlobSession(sessionID)

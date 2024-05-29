@@ -104,7 +104,7 @@ type BlobCreator interface {
 	// WriteCloser is used to push the blob content.
 	io.WriteCloser
 	// Cancel is used to stop an upload.
-	Cancel()
+	Cancel() error
 	// Size reports the number of bytes pushed.
 	Size() int64
 	// Digest is used to get the current digest of the content.

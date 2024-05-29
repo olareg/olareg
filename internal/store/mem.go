@@ -561,10 +561,10 @@ func (mru *memRepoUpload) Close() error {
 }
 
 // Cancel is used to stop an upload.
-func (mru *memRepoUpload) Cancel() {
+func (mru *memRepoUpload) Cancel() error {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
-	_ = mru.mr.uploads.Delete(mru.sessionID)
+	return mru.mr.uploads.Delete(mru.sessionID)
 }
 
 // Size reports the number of bytes pushed.
