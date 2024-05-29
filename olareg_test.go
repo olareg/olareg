@@ -164,6 +164,20 @@ func TestServer(t *testing.T) {
 			// new server
 			s := New(tcServer.conf)
 			t.Cleanup(func() { _ = s.Close() })
+			t.Run("Unknown Method", func(t *testing.T) {
+				t.Parallel()
+				if _, err := testClientRun(t, s, "GET", "/unknown/url", nil,
+					testClientRespStatus(http.StatusNotFound),
+				); err != nil {
+					t.Errorf("unknown URL: %v", err)
+				}
+
+				if _, err := testClientRun(t, s, "GET", "/v2/unknown/method", nil,
+					testClientRespStatus(http.StatusNotFound),
+				); err != nil {
+					t.Errorf("unknown v2 method: %v", err)
+				}
+			})
 			t.Run("Tag List", func(t *testing.T) {
 				if !tcServer.existing {
 					return

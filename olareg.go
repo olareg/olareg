@@ -2,7 +2,6 @@ package olareg
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -200,15 +199,7 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		}
 	} else {
 		resp.WriteHeader(http.StatusNotFound)
-		// TODO: remove response, this is for debugging/development
-		errResp := struct {
-			Method string
-			Path   []string
-		}{
-			Method: req.Method,
-			Path:   pathEl,
-		}
-		_ = json.NewEncoder(resp).Encode(errResp)
+		s.log.Debug("unknown request", "method", req.Method, "path", pathEl)
 	}
 	// TODO: include a status/health endpoint?
 	// TODO: add handler wrappers: auth, rate limit, etc
