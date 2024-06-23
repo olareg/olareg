@@ -29,7 +29,7 @@ jobs:
 
     env:
       ALPINE_NAME: "alpine:3"
-      ALPINE_DIGEST: "sha256:77726ef6b57ddf65bb551896826ec38bc3e53f75cdde31354fbffb4f25238ebd" # 3.20.0
+      ALPINE_DIGEST: "sha256:b89d9c93e9ed3597455c90a0b88a8bbb5cb7188438f70953fede212a0c4394e0" # 3.20.1
 
     steps:
     - name: Check out code
@@ -104,7 +104,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Build
-      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+      uses: docker/build-push-action@31159d49c0d4756269a0940a750801a1ea5d7003 # v6.1.0
       id: build
       with:
         context: .
@@ -133,7 +133,7 @@ jobs:
     
     # Use regctl to modify olareg images to improve reproducibility
     - name: Install regctl
-      uses: regclient/actions/regctl-installer@2dac4eff5925ed07edbfe12d2d11af6304df29a6 # main
+      uses: regclient/actions/regctl-installer@35bc5829dd3d37ace2717971f3151894b43bfabc # main
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
 
     - name: Mutate
