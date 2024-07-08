@@ -2,7 +2,7 @@ ARG REGISTRY=docker.io
 ARG ALPINE_VER=3.20.1@sha256:b89d9c93e9ed3597455c90a0b88a8bbb5cb7188438f70953fede212a0c4394e0
 ARG GO_VER=1.22.5-alpine@sha256:8c9183f715b0b4eca05b8b3dbf59766aaedb41ec07477b132ee2891ac0110a07
 
-FROM ${REGISTRY}/library/golang:${GO_VER} as golang
+FROM ${REGISTRY}/library/golang:${GO_VER} AS golang
 RUN apk add --no-cache \
       ca-certificates \
       git \
@@ -12,7 +12,7 @@ RUN adduser -D appuser \
  && chown -R appuser /home/appuser
 WORKDIR /src
 
-FROM golang as build
+FROM golang AS build
 COPY go.mod go.sum /src/
 RUN go mod download
 COPY . /src/
@@ -20,7 +20,7 @@ RUN make bin/olareg
 USER appuser
 CMD [ "bin/olareg" ]
 
-FROM ${REGISTRY}/library/alpine:${ALPINE_VER} as release-alpine
+FROM ${REGISTRY}/library/alpine:${ALPINE_VER} AS release-alpine
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build --chown=appuser /home/appuser /home/appuser
@@ -46,7 +46,7 @@ LABEL maintainer="" \
       org.opencontainers.image.title="olareg" \
       org.opencontainers.image.description="olareg is a minimal registry based on the OCI Layout"
 
-FROM scratch as release-scratch
+FROM scratch AS release-scratch
 COPY --from=build /tmp /
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
