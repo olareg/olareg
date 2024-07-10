@@ -186,6 +186,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
 			return
 		}
+		bOpts := []store.BlobOpt{}
 		// check for mount=digest&from=repo, consider allowing anonymous blob mounts
 		mountStr := r.URL.Query().Get("mount")
 		fromStr := r.URL.Query().Get("from")
@@ -194,8 +195,19 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 				return
 			}
 		}
-		// check for digest parameter
-		bOpts := []store.BlobOpt{}
+		// check for digest and algorithm parameters
+		// TODO(bmitch): the digest-algorithm field is EXPERIMENTAL and needs to be adopted by OCI
+		algoStr := r.URL.Query().Get("digest-algorithm")
+		if algoStr != "" {
+			algo := digest.Algorithm(algoStr)
+			if !algo.Available() {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("unsupported digest algorithm"))
+				s.log.Error("invalid digest algorithm", "algo", algoStr, "repo", repoStr)
+				return
+			}
+			bOpts = append(bOpts, store.BlobWithAlgorithm(algo))
+		}
 		dStr := r.URL.Query().Get("digest")
 		var d digest.Digest
 		var err error

@@ -39,7 +39,9 @@ func TestStore(t *testing.T) {
 	existingTag := "v1"
 	newRepo := "new-repo"
 	newBlobRaw := []byte("{}")
-	newBlobDigest := digest.Canonical.FromBytes(newBlobRaw)
+	newBlobDigest := digest.SHA256.FromBytes(newBlobRaw)
+	newBlobDigest512 := digest.SHA512.FromBytes(newBlobRaw)
+	invalidBlobDigest := digest.Digest("invalid:digest")
 	newManifest := types.Manifest{
 		SchemaVersion: 2,
 		MediaType:     types.MediaTypeOCI1Manifest,
@@ -167,8 +169,7 @@ func TestStore(t *testing.T) {
 				// query testrepo content
 				repo, err := s.RepoGet(ctx, existingRepo)
 				if err != nil {
-					t.Errorf("failed to get repo %s: %v", existingRepo, err)
-					return
+					t.Fatalf("failed to get repo %s: %v", existingRepo, err)
 				}
 				defer repo.Done()
 				// get the index
@@ -178,19 +179,16 @@ func TestStore(t *testing.T) {
 				}
 				desc, err := i.GetDesc(existingTag)
 				if err != nil {
-					t.Errorf("failed to get tag %s: %v", existingTag, err)
-					return
+					t.Fatalf("failed to get tag %s: %v", existingTag, err)
 				}
 				// get a manifest
 				rdr, err := repo.BlobGet(desc.Digest)
 				if err != nil {
-					t.Errorf("failed to get manifest: %v", err)
-					return
+					t.Fatalf("failed to get manifest: %v", err)
 				}
 				blobRaw, err := io.ReadAll(rdr)
 				if err != nil {
-					t.Errorf("failed to read blob: %v", err)
-					return
+					t.Fatalf("failed to read blob: %v", err)
 				}
 				err = rdr.Close()
 				if err != nil {
@@ -233,8 +231,7 @@ func TestStore(t *testing.T) {
 				// push again
 				bc, _, err := repo.BlobCreate(BlobWithDigest(desc.Digest))
 				if err != nil {
-					t.Errorf("failed to create new blob: %v", err)
-					return
+					t.Fatalf("failed to create new blob: %v", err)
 				}
 				_, err = bc.Write(blobRaw)
 				if err != nil {
@@ -284,8 +281,7 @@ func TestStore(t *testing.T) {
 				// get new repo
 				repo, err := s.RepoGet(ctx, newRepo)
 				if err != nil {
-					t.Errorf("failed to get repo %s: %v", newRepo, err)
-					return
+					t.Fatalf("failed to get repo %s: %v", newRepo, err)
 				}
 				defer repo.Done()
 				// get index
@@ -493,6 +489,139 @@ func TestStore(t *testing.T) {
 					t.Errorf("entries found in empty index: %v", i)
 				}
 			})
+			t.Run("sha512-digest", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo+"-512-digest")
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo+"-512-digest", err)
+				}
+				defer repo.Done()
+				rdr, err := repo.BlobGet(newBlobDigest512)
+				if err == nil {
+					t.Errorf("blob get on new repo did not fail")
+					_ = rdr.Close()
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err == nil {
+					t.Errorf("blobMeta on new repo did not fail")
+				}
+				// create blob
+				bc, session, err := repo.BlobCreate(BlobWithDigest(newBlobDigest512))
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				_, err = bc.Write(newBlobRaw)
+				if err != nil {
+					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to verify new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest)
+				if err == nil {
+					t.Errorf("verify did not fail when using different digest algorithm")
+				}
+				_, err = repo.BlobSession(session)
+				if err == nil {
+					t.Errorf("session was returned after close/cancel")
+				}
+				// get blob
+				rdr, err = repo.BlobGet(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to get blob: %v", err)
+				}
+				b, err := io.ReadAll(rdr)
+				if err != nil {
+					t.Errorf("failed to read blob: %v", err)
+				}
+				if !bytes.Equal(b, newBlobRaw) {
+					t.Errorf("blob mismatch, expected %s, received %s", string(newBlobRaw), string(b))
+				}
+				err = rdr.Close()
+				if err != nil {
+					t.Errorf("failed to close blob: %v", err)
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+			})
+			t.Run("sha512-algo", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo+"-512-algo")
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo+"-512-algo", err)
+				}
+				defer repo.Done()
+				// create blob
+				bc, session, err := repo.BlobCreate(BlobWithAlgorithm(digest.SHA512))
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				_, err = bc.Write(newBlobRaw)
+				if err != nil {
+					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to verify new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest)
+				if err == nil {
+					t.Errorf("verify did not fail when using different digest algorithm")
+				}
+				_, err = repo.BlobSession(session)
+				if err == nil {
+					t.Errorf("session was returned after close/cancel")
+				}
+				// get blob
+				rdr, err := repo.BlobGet(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to get blob: %v", err)
+				}
+				b, err := io.ReadAll(rdr)
+				if err != nil {
+					t.Errorf("failed to read blob: %v", err)
+				}
+				if !bytes.Equal(b, newBlobRaw) {
+					t.Errorf("blob mismatch, expected %s, received %s", string(newBlobRaw), string(b))
+				}
+				err = rdr.Close()
+				if err != nil {
+					t.Errorf("failed to close blob: %v", err)
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+			})
+			t.Run("invalid-digest", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo)
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo, err)
+				}
+				defer repo.Done()
+				// create blob
+				bc, _, err := repo.BlobCreate(BlobWithDigest(invalidBlobDigest))
+				if err == nil {
+					t.Errorf("blob create with invalid digest did not fail")
+					_ = bc.Cancel()
+				}
+			})
+
 		})
 	}
 	// TODO: add concurrency tests, multiple uploads, multiple gets

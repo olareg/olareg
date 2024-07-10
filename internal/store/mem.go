@@ -278,6 +278,9 @@ func (mr *memRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
 }
 
 func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error) {
+	if err := d.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	}
 	if !locked {
 		mr.mu.Lock()
 		defer mr.mu.Unlock()
@@ -307,11 +310,14 @@ func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 
 // blobMeta returns metadata on a blob.
 func (mr *memRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
+	m := blobMeta{}
+	if err := d.Validate(); err != nil {
+		return m, fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	}
 	if !locked {
 		mr.mu.Lock()
 		defer mr.mu.Unlock()
 	}
-	m := blobMeta{}
 	b, ok := mr.blobs[d]
 	if ok {
 		// when there is a directory backing, nil indicates an explicit delete or blob doesn't exist
@@ -345,7 +351,10 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 		algo: digest.Canonical,
 	}
 	for _, opt := range opts {
-		opt(&conf)
+		err := opt(&conf)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
@@ -392,6 +401,9 @@ func (mr *memRepo) BlobDelete(d digest.Digest) error {
 func (mr *memRepo) blobDelete(d digest.Digest, locked bool) error {
 	if *mr.conf.Storage.ReadOnly {
 		return types.ErrReadOnly
+	}
+	if err := d.Validate(); err != nil {
+		return fmt.Errorf("invalid digest: %s: %w", string(d), err)
 	}
 	if !locked {
 		mr.mu.Lock()

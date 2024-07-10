@@ -81,6 +81,9 @@ func TestServer(t *testing.T) {
 				},
 				API: config.ConfigAPI{
 					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
@@ -105,6 +108,9 @@ func TestServer(t *testing.T) {
 				},
 				API: config.ConfigAPI{
 					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
@@ -130,6 +136,9 @@ func TestServer(t *testing.T) {
 				},
 				API: config.ConfigAPI{
 					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
@@ -147,7 +156,6 @@ func TestServer(t *testing.T) {
 					ReadOnly:  &boolT,
 				},
 				API: config.ConfigAPI{
-					DeleteEnabled: &boolT,
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
@@ -456,9 +464,24 @@ func TestServer(t *testing.T) {
 				}
 				// delay for GC
 				for retry := 0; retry < 10; retry++ {
-					time.Sleep(sleep)
-					if _, err := testClientRun(t, s, "GET", "/v2/gc/blobs/"+string(sd["image-arm64"].manifest[sd["image-arm64"].manifestList[0]]), nil,
-						testClientRespStatus(http.StatusNotFound)); err != nil {
+					time.Sleep(sleep + (time.Millisecond * 200 * time.Duration(retry)))
+					remaining := false
+					for dig := range sd["image-arm64"].blob {
+						if _, ok := sd["image-amd64"].blob[dig]; ok {
+							continue // skip dup blobs
+						}
+						resp, err := testClientRun(t, s, "HEAD", "/v2/gc/blobs/"+string(dig), nil)
+						if err != nil {
+							t.Errorf("failed to run head request: %v", err)
+						}
+						if resp.Result().StatusCode == http.StatusOK {
+							remaining = true
+							t.Logf("waiting for %s to be cleaned", dig.String())
+							break
+						}
+					}
+					if !remaining {
+						t.Logf("All deleted after %d tries", retry)
 						break
 					}
 				}
@@ -579,13 +602,11 @@ func TestServer(t *testing.T) {
 				}
 				loc := resp.Header().Get("Location")
 				if loc == "" {
-					t.Errorf("location header missing on blob POST")
-					return
+					t.Fatalf("location header missing on blob POST")
 				}
 				uLoc, err := url.Parse(loc)
 				if err != nil {
-					t.Errorf("failed to parse location header URL fragment %s: %v", loc, err)
-					return
+					t.Fatalf("failed to parse location header URL fragment %s: %v", loc, err)
 				}
 				u = u.ResolveReference(uLoc)
 				resp, err = testClientRun(t, s, "PATCH", u.String(), exBlob,
@@ -600,13 +621,11 @@ func TestServer(t *testing.T) {
 				}
 				loc = resp.Header().Get("Location")
 				if loc == "" {
-					t.Errorf("location header missing on blob POST")
-					return
+					t.Fatalf("location header missing on blob POST")
 				}
 				uLoc, err = url.Parse(loc)
 				if err != nil {
-					t.Errorf("failed to parse location header URL fragment %s: %v", loc, err)
-					return
+					t.Fatalf("failed to parse location header URL fragment %s: %v", loc, err)
 				}
 				u = u.ResolveReference(uLoc)
 				_, err = testClientRun(t, s, "DELETE", u.String(), nil,
@@ -874,8 +893,325 @@ func TestServer(t *testing.T) {
 					return
 				}
 			})
+			t.Run("digest-512", func(t *testing.T) {
+				if tcServer.readOnly {
+					return
+				}
+				t.Parallel()
+				repo := "digest-512"
+				tag := "sha512"
+				// setup image content with one layer sha256, and rest of the content sha512
+				layer1Blob := []byte("hello sha256")
+				layer1Dig := digest.SHA256.FromBytes(layer1Blob)
+				layer2Blob := []byte("hello sha512")
+				layer2Dig := digest.SHA512.FromBytes(layer2Blob)
+				configJSON := sampleImage{
+					Platform: types.Platform{
+						OS:           "linux",
+						Architecture: "amd64",
+					},
+					Config: sampleConfig{
+						Cmd: []string{"yolo"},
+					},
+					RootFS: sampleRootFS{
+						Type: "layers",
+						DiffIDs: []digest.Digest{
+							layer1Dig, layer2Dig,
+						},
+					},
+				}
+				configBlob, err := json.Marshal(configJSON)
+				if err != nil {
+					t.Fatalf("failed to marshal config: %v", err)
+				}
+				configDig := digest.SHA512.FromBytes(configBlob)
+				man := types.Manifest{
+					SchemaVersion: 2,
+					MediaType:     types.MediaTypeOCI1Manifest,
+					Config: types.Descriptor{
+						MediaType: types.MediaTypeOCI1ImageConfig,
+						Digest:    configDig,
+						Size:      int64(len(configBlob)),
+					},
+					Layers: []types.Descriptor{
+						{
+							MediaType: types.MediaTypeOCI1Layer,
+							Size:      int64(len(layer1Blob)),
+							Digest:    layer1Dig,
+						},
+						{
+							MediaType: types.MediaTypeOCI1Layer,
+							Size:      int64(len(layer2Blob)),
+							Digest:    layer2Dig,
+						},
+					},
+				}
+				manBlob, err := json.Marshal(man)
+				if err != nil {
+					t.Fatalf("failed to marshal manifest: %v", err)
+				}
+				manDig := digest.SHA512.FromBytes(manBlob)
+				ind := types.Index{
+					SchemaVersion: 2,
+					MediaType:     types.MediaTypeOCI1ManifestList,
+					Manifests: []types.Descriptor{
+						{
+							MediaType: types.MediaTypeOCI1Manifest,
+							Digest:    manDig,
+							Size:      int64(len(manBlob)),
+						},
+					},
+				}
+				indBlob, err := json.Marshal(ind)
+				if err != nil {
+					t.Fatalf("failed to marshal index: %v", err)
+				}
+				indDig := digest.SHA512.FromBytes(indBlob)
+				// push content
+				// first sha256 blob is a standard push
+				_, err = testAPIBlobPostPut(t, s, repo, layer1Dig, layer1Blob)
+				if err != nil {
+					t.Fatalf("failed to blob post: %v", err)
+				}
+				// second blob is a sha512 pushed with a POST/PATCH/PUT
+				u, err := url.Parse("/v2/" + repo + "/blobs/uploads/")
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				q := u.Query()
+				q.Add("digest-algorithm", layer2Dig.Algorithm().String())
+				u.RawQuery = q.Encode()
+				resp, err := testClientRun(t, s, "POST", u.String(), nil,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespStatus(http.StatusAccepted),
+					testClientRespHeader("Location", ""))
+				if err != nil {
+					t.Fatalf("failed to run monolithic upload: %v", err)
+				}
+				loc := resp.Header().Get("Location")
+				if loc == "" {
+					t.Fatalf("location header missing in blob POST")
+				}
+				uLoc, err := url.Parse(loc)
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				u = u.ResolveReference(uLoc)
+				resp, err = testClientRun(t, s, "PATCH", u.String(), layer2Blob,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(layer2Blob))),
+					testClientRespStatus(http.StatusAccepted))
+				if err != nil {
+					t.Errorf("failed to send blob patch: %v", err)
+					return
+				}
+				loc = resp.Header().Get("Location")
+				if loc == "" {
+					t.Fatalf("location header missing in blob POST")
+				}
+				uLoc, err = url.Parse(loc)
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				u = u.ResolveReference(uLoc)
+				q = u.Query()
+				q.Add("digest", layer2Dig.String())
+				u.RawQuery = q.Encode()
+				_, err = testClientRun(t, s, "PUT", u.String(), nil,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespStatus(http.StatusCreated),
+				)
+				if err != nil {
+					t.Fatalf("failed to send blob put: %v", err)
+				}
+				// config blob is pushed with a monolithic POST
+				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/")
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				q = u.Query()
+				q.Add("digest", configDig.String())
+				u.RawQuery = q.Encode()
+				_, err = testClientRun(t, s, "POST", u.String(), configBlob,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespStatus(http.StatusCreated),
+					testClientRespHeader("Location", ""))
+				if err != nil {
+					t.Fatalf("failed to run monolithic upload: %v", err)
+				}
+				// push manifest with sha512 by digest
+				_, err = testAPIManifestPut(t, s, repo, manDig.String(), manBlob)
+				if err != nil {
+					t.Fatalf("failed to manifest put by digest: %v", err)
+				}
+				// push index by tag with sha512 digest arg
+				u, err = url.Parse("/v2/" + repo + "/manifests/" + tag)
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				q = u.Query()
+				q.Set("digest", indDig.String())
+				u.RawQuery = q.Encode()
+				_, err = testClientRun(t, s, "PUT", u.String(), indBlob,
+					testClientReqHeader("Content-Type", types.MediaTypeOCI1ManifestList),
+					testClientRespStatus(http.StatusCreated),
+					testClientRespHeader("Location", ""),
+				)
+				if err != nil {
+					t.Fatalf("failed to manifest put by tag+digest: %v", err)
+				}
+				// pull content
+				resp, err = testAPIManifestHead(t, s, repo, tag, indBlob)
+				if err != nil {
+					t.Errorf("failed to run manifest head by tag: %v", err)
+				}
+				d := resp.Header().Get(types.HeaderDockerDigest)
+				if d != indDig.String() {
+					t.Errorf("unexpected digest header, expected %s, received %s", indDig.String(), d)
+				}
+				_, err = testAPIManifestGet(t, s, repo, indDig.String(), indBlob)
+				if err != nil {
+					t.Errorf("failed to get index by digest: %v", err)
+				}
+				_, err = testAPIManifestGet(t, s, repo, manDig.String(), manBlob)
+				if err != nil {
+					t.Errorf("failed to get manifest by digest: %v", err)
+				}
+				_, err = testAPIBlobHead(t, s, repo, layer2Dig)
+				if err != nil {
+					t.Errorf("failed to head layer2: %v", err)
+				}
+				_, err = testAPIBlobGet(t, s, repo, layer2Dig, layer2Blob)
+				if err != nil {
+					t.Errorf("failed to get layer2: %v", err)
+				}
+				_, err = testAPIBlobGet(t, s, repo, configDig, configBlob)
+				if err != nil {
+					t.Errorf("failed to get config: %v", err)
+				}
+				// delete blobs by digest
+				_, err = testAPIBlobRm(t, s, repo, layer1Dig)
+				if err != nil {
+					t.Errorf("failed to delete layer1: %v", err)
+				}
+				_, err = testAPIBlobRm(t, s, repo, layer2Dig)
+				if err != nil {
+					t.Errorf("failed to delete layer2: %v", err)
+				}
+				_, err = testAPIBlobRm(t, s, repo, configDig)
+				if err != nil {
+					t.Errorf("failed to delete config: %v", err)
+				}
+				// delete manifest by digest
+				_, err = testAPIManifestRm(t, s, repo, manDig.String())
+				if err != nil {
+					t.Errorf("failed to delete manifest by digest: %v", err)
+				}
+				_, err = testAPIManifestRm(t, s, repo, indDig.String())
+				if err != nil {
+					t.Errorf("failed to delete index by digest: %v", err)
+				}
+			})
+			t.Run("digest-algo-unknown", func(t *testing.T) {
+				if tcServer.readOnly {
+					return
+				}
+				t.Parallel()
+				repo := "digest-unknown"
+				sd, err := genSampleData(t)
+				if err != nil {
+					t.Fatalf("failed to generate sample data")
+				}
+				// create a digest with an unknown algorithm
+				badDig := digest.Digest("unknown:12345")
+				// attempt to get/head blob
+				u, err := url.Parse("/v2/" + repo + "/blobs/" + badDig.String())
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				_, err = testClientRun(t, s, "HEAD", u.String(), nil,
+					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send head request: %v", err)
+				}
+				_, err = testClientRun(t, s, "GET", u.String(), nil,
+					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send get request: %v", err)
+				}
+				// attempt to delete blob
+				_, err = testClientRun(t, s, "DELETE", u.String(), nil,
+					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send delete request: %v", err)
+				}
+				// attempt to push blob
+				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/?digest=" + url.QueryEscape(badDig.String()))
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				_, err = testClientRun(t, s, "POST", u.String(), nil,
+					testClientRespStatus(http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send blob post with digest: %v", err)
+				}
+				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/?digest-algorithm=unknown")
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				_, err = testClientRun(t, s, "POST", u.String(), nil,
+					testClientRespStatus(http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send blob post with algorithm: %v", err)
+				}
+				// attempt to get/head manifest
+				u, err = url.Parse("/v2/" + repo + "/manifests/" + badDig.String())
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				_, err = testClientRun(t, s, "HEAD", u.String(), nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send manifest head: %v", err)
+				}
+				_, err = testClientRun(t, s, "GET", u.String(), nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send manifest get: %v", err)
+				}
+				// attempt to push manifest
+				_, err = testClientRun(t, s, "PUT", u.String(), sd["image-amd64"].manifest[sd["image-amd64"].manifestList[0]],
+					testClientReqHeader("Content-Type", types.MediaTypeOCI1Manifest),
+					testClientRespStatus(http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send manifest put: %v", err)
+				}
+				u, err = url.Parse("/v2/" + repo + "/manifests/bad?digest=" + url.QueryEscape(badDig.String()))
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				_, err = testClientRun(t, s, "PUT", u.String(), sd["image-amd64"].manifest[sd["image-amd64"].manifestList[0]],
+					testClientReqHeader("Content-Type", types.MediaTypeOCI1Manifest),
+					testClientRespStatus(http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send manifest put: %v", err)
+				}
+				// attempt to delete manifest
+				_, err = testClientRun(t, s, "DELETE", u.String(), nil,
+					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
+				if err != nil {
+					t.Errorf("failed to send manifest delete: %v", err)
+				}
+			})
 			// TODO: test tag listing before and after pushing manifest
-			// TODO: test deleting manifests and blobs
 			// TODO: test blob chunked upload, and stream upload
 			// TODO: test referrers pagination: push referrer with annotations too large to fit in the referrers response manifest, verify response does not include the referrer
 		})
@@ -1175,7 +1511,6 @@ func testAPIManifestHead(t *testing.T, s *Server, repo string, digOrTag string, 
 		testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
 	}
 	if body != nil {
-		tcgList = append(tcgList, testClientRespBody(body))
 		if mt := detectMediaType(body); mt != "" {
 			tcgList = append(tcgList, testClientRespHeader("Content-Type", mt))
 		}
@@ -1240,6 +1575,19 @@ func testAPIBlobGet(t *testing.T, s *Server, repo string, dig digest.Digest, bod
 	return resp, nil
 }
 
+func testAPIBlobHead(t *testing.T, s *Server, repo string, dig digest.Digest) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+	tcgList := []testClientGen{testClientRespStatus(http.StatusOK)}
+	resp, err := testClientRun(t, s, "HEAD", "/v2/"+repo+"/blobs/"+dig.String(), nil, tcgList...)
+	if err != nil {
+		if !errors.Is(err, errValidationFailed) {
+			t.Errorf("failed to send blob head: %v", err)
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
 func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest, blob []byte) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	u, err := url.Parse("/v2/" + repo + "/blobs/uploads/")
@@ -1278,6 +1626,19 @@ func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest,
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
 			t.Errorf("failed to send blob put: %v", err)
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+func testAPIBlobRm(t *testing.T, s *Server, repo string, dig digest.Digest) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+	tcgList := []testClientGen{testClientRespStatus(http.StatusAccepted)}
+	resp, err := testClientRun(t, s, "DELETE", "/v2/"+repo+"/blobs/"+dig.String(), nil, tcgList...)
+	if err != nil {
+		if !errors.Is(err, errValidationFailed) {
+			t.Errorf("failed to delete blob: %v", err)
 		}
 		return nil, err
 	}

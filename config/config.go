@@ -59,23 +59,23 @@ type ConfigGC struct {
 }
 
 type ConfigAPI struct {
-	PushEnabled   *bool
-	DeleteEnabled *bool
+	PushEnabled   *bool // enable push to repository, enabled by default
+	DeleteEnabled *bool // enable deletion, disabled by default
 	Manifest      ConfigAPIManifest
 	Blob          ConfigAPIBlob
 	Referrer      ConfigAPIReferrer
 }
 
 type ConfigAPIManifest struct {
-	Limit int64
+	Limit int64 // max size of a manifest, default is 8MB (manifestLimitDefault)
 }
 
 type ConfigAPIBlob struct {
-	DeleteEnabled *bool
+	DeleteEnabled *bool // enable blob deletion, disabled by default, ConfigAPI.DeleteEnabled must also be true
 }
 
 type ConfigAPIReferrer struct {
-	Enabled         *bool
+	Enabled         *bool         // enable referrer API, enabled by default
 	PageCacheExpire time.Duration // time to save pages for a paged response
 	PageCacheLimit  int           // max number of paged responses to keep in memory
 	Limit           int64         // max size of a referrers response (OCI recommends 4MiB)
