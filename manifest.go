@@ -227,6 +227,17 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid(fmt.Sprintf("manifest too large, limited to %d bytes", s.conf.API.Manifest.Limit)))
 			return
 		}
+		// parse params
+		// TODO(bmitch): the digest field is EXPERIMENTAL and needs to be adopted by OCI
+		if dStr := r.URL.Query().Get("digest"); dStr != "" {
+			dExpect, err = digest.Parse(dStr)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest invalid"))
+				s.log.Debug("failed to parse digest", "repo", repoStr, "digest", dStr, "err", err)
+				return
+			}
+		}
 		// parse arg
 		if types.RefTagRE.MatchString(arg) {
 			tag = arg

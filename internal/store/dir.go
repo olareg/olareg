@@ -224,7 +224,7 @@ func (d *dir) gcTicker() {
 
 // run a GC on every repo
 func (d *dir) gc(cur, prev time.Time) error {
-	start := prev
+	start := prev.Add(time.Millisecond * -250)
 	if d.conf.Storage.GC.GracePeriod > 0 {
 		start = start.Add(d.conf.Storage.GC.GracePeriod * -1)
 	}
@@ -306,6 +306,9 @@ func (dr *dirRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 	if !dr.exists {
 		return nil, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
+	if err := d.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	}
 	fh, err := os.Open(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -321,6 +324,10 @@ func (dr *dirRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
 	m := blobMeta{}
 	if !dr.exists {
 		return m, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
+	}
+
+	if err := d.Validate(); err != nil {
+		return m, fmt.Errorf("invalid digest: %s: %w", string(d), err)
 	}
 	fi, err := os.Stat(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
 	if err != nil {
@@ -342,7 +349,10 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 		algo: digest.Canonical,
 	}
 	for _, opt := range opts {
-		opt(&conf)
+		err := opt(&conf)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	if !dr.exists {
 		err := dr.repoInit(false)
@@ -352,6 +362,9 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 	}
 	// if blob exists, return the appropriate error
 	if conf.expect != "" {
+		if err := conf.expect.Validate(); err != nil {
+			return nil, "", fmt.Errorf("invalid digest: %s: %w", string(conf.expect), err)
+		}
 		_, err := os.Stat(filepath.Join(dr.path, blobsDir, conf.expect.Algorithm().String(), conf.expect.Encoded()))
 		if err == nil {
 			return nil, "", types.ErrBlobExists
@@ -413,6 +426,9 @@ func (dr *dirRepo) blobDelete(d digest.Digest, locked bool) error {
 	}
 	if !dr.exists {
 		return fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
+	}
+	if err := d.Validate(); err != nil {
+		return fmt.Errorf("invalid digest: %s: %w", string(d), err)
 	}
 	filename := filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded())
 	fi, err := os.Stat(filename)

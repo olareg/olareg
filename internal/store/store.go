@@ -79,7 +79,7 @@ type Repo interface {
 	gc() error
 }
 
-type BlobOpt func(*blobConfig)
+type BlobOpt func(*blobConfig) error
 
 type blobConfig struct {
 	algo   digest.Algorithm
@@ -87,15 +87,23 @@ type blobConfig struct {
 }
 
 func BlobWithAlgorithm(a digest.Algorithm) BlobOpt {
-	return func(bc *blobConfig) {
+	return func(bc *blobConfig) error {
+		if !a.Available() {
+			return fmt.Errorf("digest algorithm is unavailable: %s", string(a))
+		}
 		bc.algo = a
+		return nil
 	}
 }
 
 func BlobWithDigest(d digest.Digest) BlobOpt {
-	return func(bc *blobConfig) {
+	return func(bc *blobConfig) error {
+		if err := d.Validate(); err != nil {
+			return fmt.Errorf("invalid digest: %s: %w", d.String(), err)
+		}
 		bc.expect = d
 		bc.algo = d.Algorithm()
+		return nil
 	}
 }
 
