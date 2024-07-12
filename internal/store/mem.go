@@ -118,11 +118,7 @@ func (m *mem) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 		log:   m.log,
 		conf:  m.conf,
 	}
-	uploadCacheOpt := cache.Opts[string, *memRepoUpload]{
-		PruneFn:     func(_ string, mru *memRepoUpload) error { mru.buffer.Truncate(0); return nil },
-		PrunePreFn:  func(_ string, mru *memRepoUpload) { mru.mu.Lock() },
-		PrunePostFn: func(_ string, mru *memRepoUpload) { mru.mu.Unlock() },
-	}
+	uploadCacheOpt := cache.Opts[string, *memRepoUpload]{}
 	if m.conf.Storage.GC.RepoUploadMax > 0 {
 		uploadCacheOpt.Count = m.conf.Storage.GC.RepoUploadMax
 	}
@@ -586,6 +582,21 @@ func (mru *memRepoUpload) Size() int64 {
 	return int64(mru.buffer.Len())
 }
 
+// ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
+func (mru *memRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
+	if algo == mru.d.Digest().Algorithm() {
+		return nil
+	}
+	if mru.buffer.Len() > 0 {
+		return fmt.Errorf("unable to change algorithm after first write")
+	}
+	mru.d = algo.Digester()
+	mru.w = io.MultiWriter(mru.buffer, mru.d.Hash())
+	return nil
+}
+
 // Digest is used to get the current digest of the content.
 func (mru *memRepoUpload) Digest() digest.Digest {
 	mru.mu.Lock()
@@ -597,8 +608,23 @@ func (mru *memRepoUpload) Digest() digest.Digest {
 func (mru *memRepoUpload) Verify(expect digest.Digest) error {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
-	if mru.d.Digest() != expect {
-		return fmt.Errorf("digest mismatch, expected %s, received %s", expect, mru.d.Digest())
+	if mru.d.Digest() == expect {
+		return nil
 	}
-	return nil
+	if err := expect.Validate(); err != nil {
+		return fmt.Errorf("invalid digest: %w", err)
+	}
+	if mru.d.Digest().Algorithm() != expect.Algorithm() {
+		// rescan content on algorithm change
+		mru.d = expect.Algorithm().Digester()
+		mru.w = io.MultiWriter(mru.buffer, mru.d.Hash())
+		_, err := mru.d.Hash().Write(mru.buffer.Bytes())
+		if err != nil {
+			return err
+		}
+		if mru.d.Digest() == expect {
+			return nil
+		}
+	}
+	return fmt.Errorf("digest mismatch, expected %s, received %s", expect, mru.d.Digest())
 }

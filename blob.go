@@ -485,6 +485,13 @@ func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Error("invalid or missing digest", "err", err, "repo", repoStr, "sessionID", sessionID, "digest", r.URL.Query().Get("digest"))
 			return
 		}
+		if bc.Size() == 0 && d.Algorithm() != bc.Digest().Algorithm() {
+			err = bc.ChangeAlgorithm(d.Algorithm())
+			if err != nil {
+				// non-fatal error, there's a second chance to handle this with bc.Verify
+				s.log.Error("failed to change digest algorithm", "err", err, "repo", repoStr, "sessionID", sessionID, "digest", d.String())
+			}
+		}
 		// check state
 		stateStr := r.URL.Query().Get("state")
 		stateIn := blobUploadState{}
