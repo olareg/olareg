@@ -783,6 +783,21 @@ func (dru *dirRepoUpload) Size() int64 {
 	return dru.size
 }
 
+// ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
+func (dru *dirRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
+	dru.mu.Lock()
+	defer dru.mu.Unlock()
+	if algo == dru.d.Digest().Algorithm() {
+		return nil
+	}
+	if dru.size > 0 {
+		return fmt.Errorf("unable to change algorithm after first write")
+	}
+	dru.d = algo.Digester()
+	dru.w = io.MultiWriter(dru.fh, dru.d.Hash())
+	return nil
+}
+
 // Digest is used to get the current digest of the content.
 func (dru *dirRepoUpload) Digest() digest.Digest {
 	dru.mu.Lock()
@@ -794,10 +809,29 @@ func (dru *dirRepoUpload) Digest() digest.Digest {
 func (dru *dirRepoUpload) Verify(expect digest.Digest) error {
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
-	if dru.d.Digest() != expect {
-		return fmt.Errorf("digest mismatch, expected %s, received %s", expect, dru.d.Digest())
+	if dru.d.Digest() == expect {
+		return nil
 	}
-	return nil
+	if err := expect.Validate(); err != nil {
+		return fmt.Errorf("invalid digest: %w", err)
+	}
+	if dru.d.Digest().Algorithm() != expect.Algorithm() {
+		// rescan content on algorithm change
+		dru.d = expect.Algorithm().Digester()
+		dru.w = io.MultiWriter(dru.fh, dru.d.Hash())
+		_, err := dru.fh.Seek(0, io.SeekStart)
+		if err != nil {
+			return fmt.Errorf("seek failed, required to recompute digest: %w", err)
+		}
+		_, err = io.Copy(dru.d.Hash(), dru.fh)
+		if err != nil {
+			return fmt.Errorf("failed to scan the file to recompute the digest: %w", err)
+		}
+		if dru.d.Digest() == expect {
+			return nil
+		}
+	}
+	return fmt.Errorf("digest mismatch, expected %s, received %s", expect, dru.d.Digest())
 }
 
 func stringsHasAny(list []string, check ...string) bool {

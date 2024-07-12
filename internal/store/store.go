@@ -119,6 +119,8 @@ type BlobCreator interface {
 	Digest() digest.Digest
 	// Verify ensures a digest matches the content.
 	Verify(digest.Digest) error
+	// ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
+	ChangeAlgorithm(digest.Algorithm) error
 }
 
 // blobMeta includes metadata available for blobs.

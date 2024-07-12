@@ -311,10 +311,6 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to write new blob: %v", err)
 				}
-				err = bc.Close()
-				if err != nil {
-					t.Errorf("failed to close new blob: %v", err)
-				}
 				err = bc.Verify(newBlobDigest)
 				if err != nil {
 					t.Errorf("failed to verify new blob: %v", err)
@@ -322,6 +318,16 @@ func TestStore(t *testing.T) {
 				err = bc.Verify(newManifestDigest)
 				if err == nil {
 					t.Errorf("blob did not fail when verifying with manifest digest")
+				}
+				if bc.Size() != int64(len(newBlobRaw)) {
+					t.Errorf("blob size mismatch, expected %d, received %d", len(newBlobRaw), bc.Size())
+				}
+				if bc.Digest() != newBlobDigest {
+					t.Errorf("blob digest mismatch, expected %s, received %s", newBlobDigest.String(), bc.Digest().String())
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
 				}
 				_, err = repo.blobMeta(newManifestDigest, false)
 				if err == nil {
@@ -523,16 +529,116 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to verify new blob: %v", err)
 				}
-				err = bc.Verify(newBlobDigest)
-				if err == nil {
-					t.Errorf("verify did not fail when using different digest algorithm")
-				}
 				_, err = repo.BlobSession(session)
 				if err == nil {
 					t.Errorf("session was returned after close/cancel")
 				}
 				// get blob
 				rdr, err = repo.BlobGet(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to get blob: %v", err)
+				}
+				b, err := io.ReadAll(rdr)
+				if err != nil {
+					t.Errorf("failed to read blob: %v", err)
+				}
+				if !bytes.Equal(b, newBlobRaw) {
+					t.Errorf("blob mismatch, expected %s, received %s", string(newBlobRaw), string(b))
+				}
+				err = rdr.Close()
+				if err != nil {
+					t.Errorf("failed to close blob: %v", err)
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+			})
+			t.Run("sha512-algo-change", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo+"-512-algo-change")
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo+"-512-algo-change", err)
+				}
+				defer repo.Done()
+				// create blob
+				bc, session, err := repo.BlobCreate()
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				err = bc.ChangeAlgorithm(newBlobDigest512.Algorithm())
+				if err != nil {
+					t.Errorf("failed to change digest algorithm: %v", err)
+				}
+				_, err = bc.Write(newBlobRaw)
+				if err != nil {
+					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to verify new blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
+				}
+				_, err = repo.BlobSession(session)
+				if err == nil {
+					t.Errorf("session was returned after close/cancel")
+				}
+				// get blob
+				rdr, err := repo.BlobGet(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to get blob: %v", err)
+				}
+				b, err := io.ReadAll(rdr)
+				if err != nil {
+					t.Errorf("failed to read blob: %v", err)
+				}
+				if !bytes.Equal(b, newBlobRaw) {
+					t.Errorf("blob mismatch, expected %s, received %s", string(newBlobRaw), string(b))
+				}
+				err = rdr.Close()
+				if err != nil {
+					t.Errorf("failed to close blob: %v", err)
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+			})
+			t.Run("sha512-digest-verify", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo+"-512-digest-verify")
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo+"-512-digest-verify", err)
+				}
+				defer repo.Done()
+				// create blob
+				bc, session, err := repo.BlobCreate()
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				_, err = bc.Write(newBlobRaw)
+				if err != nil {
+					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to verify new blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
+				}
+				_, err = repo.BlobSession(session)
+				if err == nil {
+					t.Errorf("session was returned after close/cancel")
+				}
+				// get blob
+				rdr, err := repo.BlobGet(newBlobDigest512)
 				if err != nil {
 					t.Errorf("failed to get blob: %v", err)
 				}
@@ -576,10 +682,6 @@ func TestStore(t *testing.T) {
 				err = bc.Verify(newBlobDigest512)
 				if err != nil {
 					t.Errorf("failed to verify new blob: %v", err)
-				}
-				err = bc.Verify(newBlobDigest)
-				if err == nil {
-					t.Errorf("verify did not fail when using different digest algorithm")
 				}
 				_, err = repo.BlobSession(session)
 				if err == nil {

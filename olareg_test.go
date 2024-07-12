@@ -901,10 +901,12 @@ func TestServer(t *testing.T) {
 				repo := "digest-512"
 				tag := "sha512"
 				// setup image content with one layer sha256, and rest of the content sha512
-				layer1Blob := []byte("hello sha256")
-				layer1Dig := digest.SHA256.FromBytes(layer1Blob)
-				layer2Blob := []byte("hello sha512")
+				layer1Blob := []byte("hello layer1")
+				layer1Dig := digest.SHA512.FromBytes(layer1Blob)
+				layer2Blob := []byte("hello layer2")
 				layer2Dig := digest.SHA512.FromBytes(layer2Blob)
+				layer3Blob := []byte("hello layer3")
+				layer3Dig := digest.SHA512.FromBytes(layer3Blob)
 				configJSON := sampleImage{
 					Platform: types.Platform{
 						OS:           "linux",
@@ -944,6 +946,11 @@ func TestServer(t *testing.T) {
 							Size:      int64(len(layer2Blob)),
 							Digest:    layer2Dig,
 						},
+						{
+							MediaType: types.MediaTypeOCI1Layer,
+							Size:      int64(len(layer3Blob)),
+							Digest:    layer3Dig,
+						},
 					},
 				}
 				manBlob, err := json.Marshal(man)
@@ -968,12 +975,12 @@ func TestServer(t *testing.T) {
 				}
 				indDig := digest.SHA512.FromBytes(indBlob)
 				// push content
-				// first sha256 blob is a standard push
+				// first blob is a standard post/put, depends on backend store able to change digest algorithm
 				_, err = testAPIBlobPostPut(t, s, repo, layer1Dig, layer1Blob)
 				if err != nil {
 					t.Fatalf("failed to blob post: %v", err)
 				}
-				// second blob is a sha512 pushed with a POST/PATCH/PUT
+				// second blob is a sha512 pushed with a POST/PATCH/PUT and digest-algorithm parameter
 				u, err := url.Parse("/v2/" + repo + "/blobs/uploads/")
 				if err != nil {
 					t.Fatalf("failed to parse URL: %v", err)
@@ -1016,6 +1023,54 @@ func TestServer(t *testing.T) {
 				u = u.ResolveReference(uLoc)
 				q = u.Query()
 				q.Add("digest", layer2Dig.String())
+				u.RawQuery = q.Encode()
+				_, err = testClientRun(t, s, "PUT", u.String(), nil,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespStatus(http.StatusCreated),
+				)
+				if err != nil {
+					t.Fatalf("failed to send blob put: %v", err)
+				}
+				// third blob is a sha512 pushed with a POST/PATCH/PUT without digest-algorithm parameter
+				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/")
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				resp, err = testClientRun(t, s, "POST", u.String(), nil,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespStatus(http.StatusAccepted),
+					testClientRespHeader("Location", ""))
+				if err != nil {
+					t.Fatalf("failed to run monolithic upload: %v", err)
+				}
+				loc = resp.Header().Get("Location")
+				if loc == "" {
+					t.Fatalf("location header missing in blob POST")
+				}
+				uLoc, err = url.Parse(loc)
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				u = u.ResolveReference(uLoc)
+				resp, err = testClientRun(t, s, "PATCH", u.String(), layer3Blob,
+					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(layer3Blob))),
+					testClientRespStatus(http.StatusAccepted))
+				if err != nil {
+					t.Errorf("failed to send blob patch: %v", err)
+					return
+				}
+				loc = resp.Header().Get("Location")
+				if loc == "" {
+					t.Fatalf("location header missing in blob POST")
+				}
+				uLoc, err = url.Parse(loc)
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				u = u.ResolveReference(uLoc)
+				q = u.Query()
+				q.Add("digest", layer3Dig.String())
 				u.RawQuery = q.Encode()
 				_, err = testClientRun(t, s, "PUT", u.String(), nil,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
