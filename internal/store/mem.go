@@ -584,6 +584,9 @@ func (mru *memRepoUpload) Size() int64 {
 
 // ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
 func (mru *memRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
+	if !algo.Available() {
+		return fmt.Errorf("algorithm not available: %s", string(algo))
+	}
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
 	if algo == mru.d.Digest().Algorithm() {
