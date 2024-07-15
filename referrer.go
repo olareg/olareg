@@ -8,6 +8,10 @@ import (
 	"net/http"
 	"strconv"
 
+	// imports required for go-digest
+	_ "crypto/sha256"
+	_ "crypto/sha512"
+
 	"github.com/opencontainers/go-digest"
 
 	"github.com/olareg/olareg/internal/store"
