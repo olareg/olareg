@@ -785,6 +785,9 @@ func (dru *dirRepoUpload) Size() int64 {
 
 // ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
 func (dru *dirRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
+	if !algo.Available() {
+		return fmt.Errorf("algorithm not available: %s", string(algo))
+	}
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
 	if algo == dru.d.Digest().Algorithm() {

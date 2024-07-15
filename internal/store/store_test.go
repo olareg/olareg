@@ -307,9 +307,21 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to create new blob: %v", err)
 				}
+				err = bc.ChangeAlgorithm(digest.Algorithm("bad-algo"))
+				if err == nil {
+					t.Errorf("change to invalid algorithm did not fail")
+				}
+				err = bc.ChangeAlgorithm(digest.SHA256)
+				if err != nil {
+					t.Errorf("changing algorithm to same value failed: %v", err)
+				}
 				_, err = bc.Write(newBlobRaw)
 				if err != nil {
 					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.ChangeAlgorithm(digest.SHA512)
+				if err == nil {
+					t.Errorf("change algorithm after first write did not fail")
 				}
 				err = bc.Verify(newBlobDigest)
 				if err != nil {
