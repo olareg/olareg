@@ -335,7 +335,7 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 	// search for matching referrer descriptor
 	dOld, err := index.GetByAnnotation(types.AnnotReferrerSubject, subject.String())
 	if err != nil {
-		if errors.Is(types.ErrNotFound, err) {
+		if errors.Is(err, types.ErrNotFound) {
 			return nil
 		}
 		return err

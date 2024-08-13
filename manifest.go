@@ -69,7 +69,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 				}
 				subject, refDesc, err := types.ManifestReferrerDescriptor(raw, desc)
 				if err != nil {
-					if errors.Is(types.ErrNotFound, err) {
+					if errors.Is(err, types.ErrNotFound) {
 						return nil
 					}
 					return err
