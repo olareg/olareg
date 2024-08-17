@@ -128,6 +128,9 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	// parse request path, cleaning traversal attacks, and stripping leading and trailing slash
 	pathEl := strings.Split(strings.Trim(path.Clean("/"+req.URL.Path), "/"), "/")
 	resp.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+	for _, msg := range s.conf.API.Warnings {
+		resp.Header().Add("Warning", "299 - \""+msg+"\"")
+	}
 	if _, ok := matchV2(pathEl); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle v2 ping
 		s.v2Ping(resp, req)

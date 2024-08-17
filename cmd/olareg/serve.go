@@ -33,6 +33,7 @@ type serveOpts struct {
 	gcUntagged       bool
 	gcRefDangling    bool
 	gcRefWithSubject bool
+	warnings         []string
 }
 
 func newServeCmd(root *rootOpts) *cobra.Command {
@@ -77,6 +78,7 @@ olareg serve --tls-cert host.pem --tls-key host.key --port 443
 	newCmd.Flags().BoolVar(&opts.gcUntagged, "gc-untagged", false, "garbage collect untagged manifests")
 	newCmd.Flags().BoolVar(&opts.gcRefDangling, "gc-referrer-dangling", false, "garbage collect dangling referrers")
 	newCmd.Flags().BoolVar(&opts.gcRefWithSubject, "gc-referrer-subject", true, "garbage collect referrers when subject is deleted")
+	newCmd.Flags().StringArrayVar(&opts.warnings, "warning", []string{}, "warning headers to include with all responses")
 	return newCmd
 }
 
@@ -110,6 +112,7 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 			DeleteEnabled: &opts.apiDelete,
 			Blob:          config.ConfigAPIBlob{DeleteEnabled: &opts.apiBlobDel},
 			Referrer:      config.ConfigAPIReferrer{Enabled: &opts.apiReferrer},
+			Warnings:      opts.warnings,
 		},
 	}
 	s := olareg.New(conf)

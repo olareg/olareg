@@ -45,6 +45,7 @@ func TestServer(t *testing.T) {
 	missingReferrerAT := "application/example.missing"
 	corruptRepo := "corrupt"
 	corruptTag := "v2"
+	warningMsg := "test warning message"
 	tempDir := t.TempDir()
 	err = copy.Copy(tempDir+"/"+existingRepo, "./testdata/"+existingRepo)
 	if err != nil {
@@ -64,6 +65,7 @@ func TestServer(t *testing.T) {
 		existing bool
 		readOnly bool
 		testGC   bool
+		testWarn bool
 	}{
 		{
 			name: "Mem",
@@ -87,9 +89,11 @@ func TestServer(t *testing.T) {
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
+					Warnings: []string{warningMsg},
 				},
 			},
-			testGC: true,
+			testGC:   true,
+			testWarn: true,
 		},
 		{
 			name: "Mem with Dir",
@@ -159,10 +163,12 @@ func TestServer(t *testing.T) {
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
+					Warnings: []string{warningMsg},
 				},
 			},
 			existing: true,
 			readOnly: true,
+			testWarn: true,
 		},
 	}
 	for _, tcServer := range ttServer {
@@ -1264,6 +1270,19 @@ func TestServer(t *testing.T) {
 					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
 				if err != nil {
 					t.Errorf("failed to send manifest delete: %v", err)
+				}
+			})
+			t.Run("warning", func(t *testing.T) {
+				if !tcServer.testWarn {
+					return
+				}
+				t.Parallel()
+				_, err := testClientRun(t, s, "GET", "/v2/"+existingRepo+"/tags/list", nil,
+					testClientRespHeader("Warning", "299 - \""+warningMsg+"\""),
+					testClientRespStatus(http.StatusOK),
+				)
+				if err != nil {
+					return
 				}
 			})
 			// TODO: test tag listing before and after pushing manifest
