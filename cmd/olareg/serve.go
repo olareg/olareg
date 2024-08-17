@@ -28,6 +28,7 @@ type serveOpts struct {
 	apiDelete        bool
 	apiBlobDel       bool
 	apiReferrer      bool
+	apiRateLimit     int
 	gcFreq           time.Duration
 	gcGracePeriod    time.Duration
 	gcUntagged       bool
@@ -73,6 +74,7 @@ olareg serve --tls-cert host.pem --tls-key host.key --port 443
 	newCmd.Flags().BoolVar(&opts.apiDelete, "api-delete", false, "enable delete APIs")
 	newCmd.Flags().BoolVar(&opts.apiBlobDel, "api-blob-delete", false, "enable blob delete API")
 	newCmd.Flags().BoolVar(&opts.apiReferrer, "api-referrer", true, "enable referrer API")
+	newCmd.Flags().IntVar(&opts.apiRateLimit, "rate-limit", 0, "limit requests per second per source IP")
 	newCmd.Flags().DurationVar(&opts.gcFreq, "gc-frequency", time.Minute*15, "garbage collection frequency")
 	newCmd.Flags().DurationVar(&opts.gcGracePeriod, "gc-grace-period", time.Hour, "garbage collection grace period")
 	newCmd.Flags().BoolVar(&opts.gcUntagged, "gc-untagged", false, "garbage collect untagged manifests")
@@ -112,6 +114,7 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 			DeleteEnabled: &opts.apiDelete,
 			Blob:          config.ConfigAPIBlob{DeleteEnabled: &opts.apiBlobDel},
 			Referrer:      config.ConfigAPIReferrer{Enabled: &opts.apiReferrer},
+			RateLimit:     opts.apiRateLimit,
 			Warnings:      opts.warnings,
 		},
 	}

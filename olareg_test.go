@@ -1292,6 +1292,43 @@ func TestServer(t *testing.T) {
 	}
 }
 
+func TestRateLimit(t *testing.T) {
+	limit := 10
+	s := New(config.Config{
+		Storage: config.ConfigStorage{
+			StoreType: config.StoreMem,
+		},
+		API: config.ConfigAPI{
+			RateLimit: limit,
+		},
+	})
+	t.Cleanup(func() { _ = s.Close() })
+	reachedLimit := false
+	for i := 0; i < limit*2; i++ {
+		resp, err := testClientRun(t, s, "GET", "/v2/", nil)
+		if err != nil {
+			return
+		}
+		if resp.Result().StatusCode == http.StatusTooManyRequests {
+			reachedLimit = true
+			if resp.Header().Get("Retry-After") != "1" {
+				t.Errorf("unexpected Retry-After header, expected 1, received %s", resp.Header().Get("Retry-After"))
+			}
+		} else if resp.Result().StatusCode != http.StatusOK {
+			t.Errorf("unexpected status, expected %d, received %d", http.StatusOK, resp.Result().StatusCode)
+		}
+	}
+	if !reachedLimit {
+		t.Errorf("never reached rate limit")
+	}
+	_, err := testClientRun(t, s, "GET", "/v2/", nil,
+		testClientReqHeader("X-Forwarded-For", "127.0.0.2"),
+		testClientRespStatus(http.StatusOK))
+	if err != nil {
+		return
+	}
+}
+
 func TestMatchV2(t *testing.T) {
 	tt := []struct {
 		name        string
