@@ -35,6 +35,11 @@ func New(conf config.Config) *Server {
 			Count: conf.API.Referrer.PageCacheLimit,
 		}),
 	}
+	if conf.API.RateLimit > 0 {
+		s.rateLimit = cache.New(cache.Opts[string, *rateLimitEntry]{
+			Age: time.Second * 10,
+		})
+	}
 	if s.log == nil {
 		s.log = slog.Null{}
 	}
@@ -54,6 +59,12 @@ type Server struct {
 	log           slog.Logger
 	httpServer    *http.Server
 	referrerCache *cache.Cache[referrerKey, referrerResponses]
+	rateLimit     *cache.Cache[string, *rateLimitEntry]
+}
+
+type rateLimitEntry struct {
+	first time.Time
+	count int
 }
 
 // Close is used to release the backend store resources.
@@ -130,6 +141,46 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	resp.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 	for _, msg := range s.conf.API.Warnings {
 		resp.Header().Add("Warning", "299 - \""+msg+"\"")
+	}
+	if s.conf.API.RateLimit > 0 {
+		ip := req.Header.Get("X-Forwarded-For")
+		if ip != "" {
+			ip, _, _ = strings.Cut(ip, ", ")
+		} else {
+			ip = req.RemoteAddr
+			portSep := strings.LastIndex(ip, ":")
+			if portSep > 0 {
+				ip = ip[:portSep]
+			}
+		}
+		s.mu.Lock()
+		now := time.Now()
+		limit, err := s.rateLimit.Get(ip)
+		count := 1
+		if err != nil || limit == nil {
+			// not found, make a new entry
+			limit = &rateLimitEntry{
+				first: now,
+				count: count,
+			}
+			s.rateLimit.Set(ip, limit)
+		} else {
+			if now.Sub(limit.first) > time.Second {
+				limit.count = count
+				limit.first = now
+			} else {
+				limit.count++
+				count = limit.count
+			}
+		}
+		s.rateLimit.Set(ip, limit)
+		s.mu.Unlock()
+		if count > s.conf.API.RateLimit {
+			// block, retry after 1 second
+			resp.Header().Add("Retry-After", "1")
+			resp.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
 	}
 	if _, ok := matchV2(pathEl); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle v2 ping

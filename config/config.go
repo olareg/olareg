@@ -65,6 +65,7 @@ type ConfigAPI struct {
 	Blob          ConfigAPIBlob
 	Referrer      ConfigAPIReferrer
 	Warnings      []string
+	RateLimit     int // number of requests per second from a given IP address
 }
 
 type ConfigAPIManifest struct {
