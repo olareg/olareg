@@ -64,6 +64,7 @@ type ConfigAPI struct {
 	Manifest      ConfigAPIManifest
 	Blob          ConfigAPIBlob
 	Referrer      ConfigAPIReferrer
+	Warnings      []string
 }
 
 type ConfigAPIManifest struct {
