@@ -2,7 +2,6 @@ package olareg
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +9,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/olareg/olareg/config"
@@ -30,10 +30,15 @@ func New(conf config.Config) *Server {
 	s := &Server{
 		conf: conf,
 		log:  conf.Log,
-		referrerCache: cache.New[referrerKey, referrerResponses](
-			cache.WithAge(conf.API.Referrer.PageCacheExpire),
-			cache.WithCount(conf.API.Referrer.PageCacheLimit),
-		),
+		referrerCache: cache.New[referrerKey, referrerResponses](cache.Opts[referrerKey, referrerResponses]{
+			Age:   conf.API.Referrer.PageCacheExpire,
+			Count: conf.API.Referrer.PageCacheLimit,
+		}),
+	}
+	if conf.API.RateLimit > 0 {
+		s.rateLimit = cache.New(cache.Opts[string, *rateLimitEntry]{
+			Age: time.Second * 10,
+		})
 	}
 	if s.log == nil {
 		s.log = slog.Null{}
@@ -48,11 +53,18 @@ func New(conf config.Config) *Server {
 }
 
 type Server struct {
+	mu            sync.Mutex
 	conf          config.Config
 	store         store.Store
 	log           slog.Logger
 	httpServer    *http.Server
 	referrerCache *cache.Cache[referrerKey, referrerResponses]
+	rateLimit     *cache.Cache[string, *rateLimitEntry]
+}
+
+type rateLimitEntry struct {
+	first time.Time
+	count int
 }
 
 // Close is used to release the backend store resources.
@@ -68,6 +80,8 @@ func (s *Server) Close() error {
 // Run starts a listener and serves requests.
 // It only returns after a call to [Server.Shutdown].
 func (s *Server) Run(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.httpServer != nil {
 		return fmt.Errorf("server is already running, run shutdown first")
 	}
@@ -81,12 +95,14 @@ func (s *Server) Run(ctx context.Context) error {
 	if ctx != nil {
 		hs.BaseContext = func(l net.Listener) context.Context { return ctx }
 	}
+	s.mu.Unlock()
 	var err error
 	if s.conf.HTTP.CertFile != "" && s.conf.HTTP.KeyFile != "" {
 		err = hs.ListenAndServeTLS(s.conf.HTTP.CertFile, s.conf.HTTP.KeyFile)
 	} else {
 		err = hs.ListenAndServe()
 	}
+	s.mu.Lock()
 	// graceful exit should not error
 	if err != nil && errors.Is(err, http.ErrServerClosed) {
 		err = nil
@@ -96,6 +112,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 // Shutdown is used to stop the http listener and close the backend store.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.httpServer == nil {
 		return fmt.Errorf("server is not running")
 	}
@@ -121,6 +139,49 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	// parse request path, cleaning traversal attacks, and stripping leading and trailing slash
 	pathEl := strings.Split(strings.Trim(path.Clean("/"+req.URL.Path), "/"), "/")
 	resp.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+	for _, msg := range s.conf.API.Warnings {
+		resp.Header().Add("Warning", "299 - \""+msg+"\"")
+	}
+	if s.conf.API.RateLimit > 0 {
+		ip := req.Header.Get("X-Forwarded-For")
+		if ip != "" {
+			ip, _, _ = strings.Cut(ip, ", ")
+		} else {
+			ip = req.RemoteAddr
+			portSep := strings.LastIndex(ip, ":")
+			if portSep > 0 {
+				ip = ip[:portSep]
+			}
+		}
+		s.mu.Lock()
+		now := time.Now()
+		limit, err := s.rateLimit.Get(ip)
+		count := 1
+		if err != nil || limit == nil {
+			// not found, make a new entry
+			limit = &rateLimitEntry{
+				first: now,
+				count: count,
+			}
+			s.rateLimit.Set(ip, limit)
+		} else {
+			if now.Sub(limit.first) > time.Second {
+				limit.count = count
+				limit.first = now
+			} else {
+				limit.count++
+				count = limit.count
+			}
+		}
+		s.rateLimit.Set(ip, limit)
+		s.mu.Unlock()
+		if count > s.conf.API.RateLimit {
+			// block, retry after 1 second
+			resp.Header().Add("Retry-After", "1")
+			resp.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+	}
 	if _, ok := matchV2(pathEl); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle v2 ping
 		s.v2Ping(resp, req)
@@ -192,15 +253,7 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		}
 	} else {
 		resp.WriteHeader(http.StatusNotFound)
-		// TODO: remove response, this is for debugging/development
-		errResp := struct {
-			Method string
-			Path   []string
-		}{
-			Method: req.Method,
-			Path:   pathEl,
-		}
-		_ = json.NewEncoder(resp).Encode(errResp)
+		s.log.Debug("unknown request", "method", req.Method, "path", pathEl)
 	}
 	// TODO: include a status/health endpoint?
 	// TODO: add handler wrappers: auth, rate limit, etc

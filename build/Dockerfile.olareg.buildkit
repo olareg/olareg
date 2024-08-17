@@ -1,21 +1,21 @@
 # syntax=docker/dockerfile:1
 
 ARG REGISTRY=docker.io
-ARG ALPINE_VER=3.19.1@sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b
-ARG GO_VER=1.22.1-alpine@sha256:0466223b8544fb7d4ff04748acc4d75a608234bf4e79563bff208d2060c0dd79
+ARG ALPINE_VER=3.20.2@sha256:0a4eaa0eecf5f8c050e5bba433f58c052be7587ee8af3e8b3910ef9ab5fbe9f5
+ARG GO_VER=1.22.6-alpine@sha256:1a478681b671001b7f029f94b5016aed984a23ad99c707f6a0ab6563860ae2f3
 
-FROM --platform=$BUILDPLATFORM ${REGISTRY}/library/golang:${GO_VER} as golang
+FROM --platform=$BUILDPLATFORM ${REGISTRY}/library/golang:${GO_VER} AS golang
 RUN apk add --no-cache \
       ca-certificates \
       git \
       make
 RUN addgroup -g 1000 appuser \
  && adduser -u 1000 -G appuser -D appuser \
- && mkdir -p /home/appuser \
+ && mkdir -p /home/appuser/registry \
  && chown -R appuser /home/appuser
 WORKDIR /src
 
-FROM --platform=$BUILDPLATFORM golang as build
+FROM --platform=$BUILDPLATFORM golang AS build
 COPY go.mod go.sum /src/
 ARG TARGETOS
 ARG TARGETARCH
@@ -31,15 +31,17 @@ RUN --mount=type=cache,id=gomod,target=/go/pkg/mod/cache \
 USER appuser
 CMD [ "bin/olareg" ]
 
-FROM scratch as artifact
+FROM scratch AS artifact
 COPY --from=build /src/bin/olareg /olareg
 
-FROM ${REGISTRY}/library/alpine:${ALPINE_VER} as release-alpine
+FROM ${REGISTRY}/library/alpine:${ALPINE_VER} AS release-alpine
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build --chown=1000:1000 /home/appuser/ /home/appuser/
 COPY --from=build /src/bin/olareg /usr/local/bin/olareg
 USER appuser
+VOLUME /home/appuser/registry
+WORKDIR /home/appuser/registry
 CMD [ "olareg", "--help" ]
 
 ARG BUILD_DATE
@@ -58,13 +60,15 @@ LABEL maintainer="" \
       org.opencontainers.image.title="olareg" \
       org.opencontainers.image.description="olareg is a minimal registry based on the OCI Layout"
 
-FROM scratch as release-scratch
+FROM scratch AS release-scratch
 COPY --from=build /tmp /
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build --chown=1000:1000 /home/appuser/ /home/appuser/
 COPY --from=build /src/bin/olareg /olareg
 USER appuser
+VOLUME /home/appuser/registry
+WORKDIR /home/appuser/registry
 ENTRYPOINT [ "/olareg" ]
 
 ARG BUILD_DATE

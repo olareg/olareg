@@ -14,7 +14,7 @@ import (
 
 func (s *Server) tagList(repoStr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -25,8 +25,8 @@ func (s *Server) tagList(repoStr string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr)
 			return
 		}
-		defer repo.Done()
 		index, err := repo.IndexGet()
+		repo.Done()
 		if err != nil {
 			// TODO: handle different errors (perm denied, not found, internal server error)
 			w.WriteHeader(http.StatusNotFound)

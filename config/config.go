@@ -14,6 +14,7 @@ const (
 	referrerCacheExpireDefault = time.Minute * 5
 	referrerCacheLimitDefault  = 1000
 	referrersLimitDefault      = 1024 * 1024 * 4
+	repoUploadMaxDefault       = 1000
 )
 
 type Store int
@@ -50,6 +51,7 @@ type ConfigStorage struct {
 type ConfigGC struct {
 	Frequency         time.Duration // frequency to run garbage collection, disable gc with a negative value
 	GracePeriod       time.Duration // time to preserve recently pushed manifests and blobs, disable with a negative value
+	RepoUploadMax     int           // limit on number of concurrent uploads to a repository, unlimited with a negative value
 	Untagged          *bool         // delete untagged manifests
 	EmptyRepo         *bool         // delete empty repo
 	ReferrersDangling *bool         // delete referrers when manifest does not exist
@@ -57,30 +59,32 @@ type ConfigGC struct {
 }
 
 type ConfigAPI struct {
-	PushEnabled   *bool
-	DeleteEnabled *bool
+	PushEnabled   *bool // enable push to repository, enabled by default
+	DeleteEnabled *bool // enable deletion, disabled by default
 	Manifest      ConfigAPIManifest
 	Blob          ConfigAPIBlob
 	Referrer      ConfigAPIReferrer
+	Warnings      []string
+	RateLimit     int // number of requests per second from a given IP address
 }
 
 type ConfigAPIManifest struct {
-	Limit int64
+	Limit int64 // max size of a manifest, default is 8MB (manifestLimitDefault)
 }
 
 type ConfigAPIBlob struct {
-	DeleteEnabled *bool
+	DeleteEnabled *bool // enable blob deletion, disabled by default, ConfigAPI.DeleteEnabled must also be true
 }
 
 type ConfigAPIReferrer struct {
-	Enabled         *bool
+	Enabled         *bool         // enable referrer API, enabled by default
 	PageCacheExpire time.Duration // time to save pages for a paged response
 	PageCacheLimit  int           // max number of paged responses to keep in memory
 	Limit           int64         // max size of a referrers response (OCI recommends 4MiB)
 }
 
 func (c *Config) SetDefaults() {
-	c.API.DeleteEnabled = boolDefault(c.API.DeleteEnabled, true)
+	c.API.DeleteEnabled = boolDefault(c.API.DeleteEnabled, false)
 	c.API.PushEnabled = boolDefault(c.API.PushEnabled, true)
 	c.API.Blob.DeleteEnabled = boolDefault(c.API.Blob.DeleteEnabled, false)
 	c.API.Referrer.Enabled = boolDefault(c.API.Referrer.Enabled, true)
@@ -109,6 +113,9 @@ func (c *Config) SetDefaults() {
 	}
 	if c.Storage.GC.GracePeriod == 0 {
 		c.Storage.GC.GracePeriod = time.Hour
+	}
+	if c.Storage.GC.RepoUploadMax == 0 {
+		c.Storage.GC.RepoUploadMax = repoUploadMaxDefault
 	}
 	c.Storage.GC.Untagged = boolDefault(c.Storage.GC.Untagged, false)
 	c.Storage.GC.EmptyRepo = boolDefault(c.Storage.GC.EmptyRepo, true)

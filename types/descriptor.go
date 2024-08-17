@@ -53,5 +53,11 @@ func (d Descriptor) Copy() Descriptor {
 		p := d.Platform.Copy()
 		d2.Platform = &p
 	}
+	if d.Annotations != nil {
+		d2.Annotations = make(map[string]string)
+		for k, v := range d.Annotations {
+			d2.Annotations[k] = v
+		}
+	}
 	return d2
 }

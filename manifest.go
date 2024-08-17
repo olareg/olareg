@@ -28,7 +28,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
 			return
 		}
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -54,7 +54,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
 			return
 		}
-		// if referrers is enabled, get the manifest to check for a subject
+		// if referrers is enabled, remove entry from the referrers list
 		if *s.conf.API.Referrer.Enabled {
 			// wrap in a func to allow a return from errors without breaking the actual delete
 			err = func() error {
@@ -69,7 +69,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 				}
 				subject, refDesc, err := types.ManifestReferrerDescriptor(raw, desc)
 				if err != nil {
-					if errors.Is(types.ErrNotFound, err) {
+					if errors.Is(err, types.ErrNotFound) {
 						return nil
 					}
 					return err
@@ -81,7 +81,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 				return nil
 			}()
 			if err != nil {
-				s.log.Info("failed to delete referrer", "repo", repoStr, "arg", arg, "err", err)
+				s.log.Info("failed to delete entry from referrers response", "repo", repoStr, "arg", arg, "err", err)
 			}
 		}
 		// delete the digest or tag
@@ -97,7 +97,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 
 func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -193,7 +193,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 		tag := ""
 		var dExpect digest.Digest
 		addOpts := []types.IndexOpt{}
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -226,6 +226,17 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid(fmt.Sprintf("manifest too large, limited to %d bytes", s.conf.API.Manifest.Limit)))
 			return
+		}
+		// parse params
+		// TODO(bmitch): the digest field is EXPERIMENTAL and needs to be adopted by OCI
+		if dStr := r.URL.Query().Get("digest"); dStr != "" {
+			dExpect, err = digest.Parse(dStr)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest invalid"))
+				s.log.Debug("failed to parse digest", "repo", repoStr, "digest", dStr, "err", err)
+				return
+			}
 		}
 		// parse arg
 		if types.RefTagRE.MatchString(arg) {

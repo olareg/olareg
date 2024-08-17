@@ -2,7 +2,9 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,10 +12,15 @@ import (
 	"testing"
 	"time"
 
+	// imports required for go-digest
+	_ "crypto/sha256"
+	_ "crypto/sha512"
+
 	"github.com/opencontainers/go-digest"
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/copy"
+	"github.com/olareg/olareg/internal/godbg"
 	"github.com/olareg/olareg/types"
 )
 
@@ -25,13 +32,20 @@ var (
 	_ Repo  = &memRepo{}
 )
 
+func init() {
+	godbg.SignalTrace()
+}
+
 func TestStore(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 	existingRepo := "testrepo"
 	existingTag := "v1"
 	newRepo := "new-repo"
 	newBlobRaw := []byte("{}")
-	newBlobDigest := digest.Canonical.FromBytes(newBlobRaw)
+	newBlobDigest := digest.SHA256.FromBytes(newBlobRaw)
+	newBlobDigest512 := digest.SHA512.FromBytes(newBlobRaw)
+	invalidBlobDigest := digest.Digest("invalid:digest")
 	newManifest := types.Manifest{
 		SchemaVersion: 2,
 		MediaType:     types.MediaTypeOCI1Manifest,
@@ -117,7 +131,7 @@ func TestStore(t *testing.T) {
 			t.Parallel()
 			t.Run("Restart", func(t *testing.T) {
 				// not parallel since store is recreated
-				repo, err := s.RepoGet(newRepo)
+				repo, err := s.RepoGet(ctx, newRepo)
 				if err != nil {
 					t.Fatalf("failed to create repo: %v", err)
 				}
@@ -157,10 +171,9 @@ func TestStore(t *testing.T) {
 				}
 				t.Parallel()
 				// query testrepo content
-				repo, err := s.RepoGet(existingRepo)
+				repo, err := s.RepoGet(ctx, existingRepo)
 				if err != nil {
-					t.Errorf("failed to get repo %s: %v", existingRepo, err)
-					return
+					t.Fatalf("failed to get repo %s: %v", existingRepo, err)
 				}
 				defer repo.Done()
 				// get the index
@@ -170,19 +183,16 @@ func TestStore(t *testing.T) {
 				}
 				desc, err := i.GetDesc(existingTag)
 				if err != nil {
-					t.Errorf("failed to get tag %s: %v", existingTag, err)
-					return
+					t.Fatalf("failed to get tag %s: %v", existingTag, err)
 				}
 				// get a manifest
 				rdr, err := repo.BlobGet(desc.Digest)
 				if err != nil {
-					t.Errorf("failed to get manifest: %v", err)
-					return
+					t.Fatalf("failed to get manifest: %v", err)
 				}
 				blobRaw, err := io.ReadAll(rdr)
 				if err != nil {
-					t.Errorf("failed to read blob: %v", err)
-					return
+					t.Fatalf("failed to read blob: %v", err)
 				}
 				err = rdr.Close()
 				if err != nil {
@@ -225,8 +235,7 @@ func TestStore(t *testing.T) {
 				// push again
 				bc, _, err := repo.BlobCreate(BlobWithDigest(desc.Digest))
 				if err != nil {
-					t.Errorf("failed to create new blob: %v", err)
-					return
+					t.Fatalf("failed to create new blob: %v", err)
 				}
 				_, err = bc.Write(blobRaw)
 				if err != nil {
@@ -274,10 +283,9 @@ func TestStore(t *testing.T) {
 				// subtract a second to deal with race conditions in the time granularity from directory storage
 				start := time.Now().Add(time.Second * -1)
 				// get new repo
-				repo, err := s.RepoGet(newRepo)
+				repo, err := s.RepoGet(ctx, newRepo)
 				if err != nil {
-					t.Errorf("failed to get repo %s: %v", newRepo, err)
-					return
+					t.Fatalf("failed to get repo %s: %v", newRepo, err)
 				}
 				defer repo.Done()
 				// get index
@@ -303,13 +311,21 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to create new blob: %v", err)
 				}
+				err = bc.ChangeAlgorithm(digest.Algorithm("bad-algo"))
+				if err == nil {
+					t.Errorf("change to invalid algorithm did not fail")
+				}
+				err = bc.ChangeAlgorithm(digest.SHA256)
+				if err != nil {
+					t.Errorf("changing algorithm to same value failed: %v", err)
+				}
 				_, err = bc.Write(newBlobRaw)
 				if err != nil {
 					t.Errorf("failed to write new blob: %v", err)
 				}
-				err = bc.Close()
-				if err != nil {
-					t.Errorf("failed to close new blob: %v", err)
+				err = bc.ChangeAlgorithm(digest.SHA512)
+				if err == nil {
+					t.Errorf("change algorithm after first write did not fail")
 				}
 				err = bc.Verify(newBlobDigest)
 				if err != nil {
@@ -318,6 +334,16 @@ func TestStore(t *testing.T) {
 				err = bc.Verify(newManifestDigest)
 				if err == nil {
 					t.Errorf("blob did not fail when verifying with manifest digest")
+				}
+				if bc.Size() != int64(len(newBlobRaw)) {
+					t.Errorf("blob size mismatch, expected %d, received %d", len(newBlobRaw), bc.Size())
+				}
+				if bc.Digest() != newBlobDigest {
+					t.Errorf("blob digest mismatch, expected %s, received %s", newBlobDigest.String(), bc.Digest().String())
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
 				}
 				_, err = repo.blobMeta(newManifestDigest, false)
 				if err == nil {
@@ -347,7 +373,10 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to create new blob: %v", err)
 				}
-				bc.Cancel()
+				err = bc.Cancel()
+				if err != nil {
+					t.Errorf("failed canceling upload: %v", err)
+				}
 				// verify closed and canceled sessions are no longer available
 				for i, sessionID := range []string{session1, session2, session3} {
 					_, err := repo.BlobSession(sessionID)
@@ -482,6 +511,235 @@ func TestStore(t *testing.T) {
 					t.Errorf("entries found in empty index: %v", i)
 				}
 			})
+			t.Run("sha512-digest", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo+"-512-digest")
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo+"-512-digest", err)
+				}
+				defer repo.Done()
+				rdr, err := repo.BlobGet(newBlobDigest512)
+				if err == nil {
+					t.Errorf("blob get on new repo did not fail")
+					_ = rdr.Close()
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err == nil {
+					t.Errorf("blobMeta on new repo did not fail")
+				}
+				// create blob
+				bc, session, err := repo.BlobCreate(BlobWithDigest(newBlobDigest512))
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				_, err = bc.Write(newBlobRaw)
+				if err != nil {
+					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to verify new blob: %v", err)
+				}
+				_, err = repo.BlobSession(session)
+				if err == nil {
+					t.Errorf("session was returned after close/cancel")
+				}
+				// get blob
+				rdr, err = repo.BlobGet(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to get blob: %v", err)
+				}
+				b, err := io.ReadAll(rdr)
+				if err != nil {
+					t.Errorf("failed to read blob: %v", err)
+				}
+				if !bytes.Equal(b, newBlobRaw) {
+					t.Errorf("blob mismatch, expected %s, received %s", string(newBlobRaw), string(b))
+				}
+				err = rdr.Close()
+				if err != nil {
+					t.Errorf("failed to close blob: %v", err)
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+			})
+			t.Run("sha512-algo-change", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo+"-512-algo-change")
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo+"-512-algo-change", err)
+				}
+				defer repo.Done()
+				// create blob
+				bc, session, err := repo.BlobCreate()
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				err = bc.ChangeAlgorithm(newBlobDigest512.Algorithm())
+				if err != nil {
+					t.Errorf("failed to change digest algorithm: %v", err)
+				}
+				_, err = bc.Write(newBlobRaw)
+				if err != nil {
+					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to verify new blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
+				}
+				_, err = repo.BlobSession(session)
+				if err == nil {
+					t.Errorf("session was returned after close/cancel")
+				}
+				// get blob
+				rdr, err := repo.BlobGet(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to get blob: %v", err)
+				}
+				b, err := io.ReadAll(rdr)
+				if err != nil {
+					t.Errorf("failed to read blob: %v", err)
+				}
+				if !bytes.Equal(b, newBlobRaw) {
+					t.Errorf("blob mismatch, expected %s, received %s", string(newBlobRaw), string(b))
+				}
+				err = rdr.Close()
+				if err != nil {
+					t.Errorf("failed to close blob: %v", err)
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+			})
+			t.Run("sha512-digest-verify", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo+"-512-digest-verify")
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo+"-512-digest-verify", err)
+				}
+				defer repo.Done()
+				// create blob
+				bc, session, err := repo.BlobCreate()
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				_, err = bc.Write(newBlobRaw)
+				if err != nil {
+					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to verify new blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
+				}
+				_, err = repo.BlobSession(session)
+				if err == nil {
+					t.Errorf("session was returned after close/cancel")
+				}
+				// get blob
+				rdr, err := repo.BlobGet(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to get blob: %v", err)
+				}
+				b, err := io.ReadAll(rdr)
+				if err != nil {
+					t.Errorf("failed to read blob: %v", err)
+				}
+				if !bytes.Equal(b, newBlobRaw) {
+					t.Errorf("blob mismatch, expected %s, received %s", string(newBlobRaw), string(b))
+				}
+				err = rdr.Close()
+				if err != nil {
+					t.Errorf("failed to close blob: %v", err)
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+			})
+			t.Run("sha512-algo", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo+"-512-algo")
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo+"-512-algo", err)
+				}
+				defer repo.Done()
+				// create blob
+				bc, session, err := repo.BlobCreate(BlobWithAlgorithm(digest.SHA512))
+				if err != nil {
+					t.Errorf("failed to create new blob: %v", err)
+				}
+				_, err = bc.Write(newBlobRaw)
+				if err != nil {
+					t.Errorf("failed to write new blob: %v", err)
+				}
+				err = bc.Close()
+				if err != nil {
+					t.Errorf("failed to close new blob: %v", err)
+				}
+				err = bc.Verify(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to verify new blob: %v", err)
+				}
+				_, err = repo.BlobSession(session)
+				if err == nil {
+					t.Errorf("session was returned after close/cancel")
+				}
+				// get blob
+				rdr, err := repo.BlobGet(newBlobDigest512)
+				if err != nil {
+					t.Errorf("failed to get blob: %v", err)
+				}
+				b, err := io.ReadAll(rdr)
+				if err != nil {
+					t.Errorf("failed to read blob: %v", err)
+				}
+				if !bytes.Equal(b, newBlobRaw) {
+					t.Errorf("blob mismatch, expected %s, received %s", string(newBlobRaw), string(b))
+				}
+				err = rdr.Close()
+				if err != nil {
+					t.Errorf("failed to close blob: %v", err)
+				}
+				_, err = repo.blobMeta(newBlobDigest512, false)
+				if err != nil {
+					t.Errorf("failed to get metadata on new blob: %v", err)
+				}
+			})
+			t.Run("invalid-digest", func(t *testing.T) {
+				t.Parallel()
+				// check initial state of repo before blob push
+				repo, err := s.RepoGet(ctx, newRepo)
+				if err != nil {
+					t.Fatalf("failed to get repo: %s: %v", newRepo, err)
+				}
+				defer repo.Done()
+				// create blob
+				bc, _, err := repo.BlobCreate(BlobWithDigest(invalidBlobDigest))
+				if err == nil {
+					t.Errorf("blob create with invalid digest did not fail")
+					_ = bc.Cancel()
+				}
+			})
+
 		})
 	}
 	// TODO: add concurrency tests, multiple uploads, multiple gets
@@ -489,6 +747,7 @@ func TestStore(t *testing.T) {
 
 func TestGarbageCollect(t *testing.T) {
 	var err error
+	ctx := context.Background()
 	// TODO: track description of each blob for error messages
 	testRepo := "testrepo"
 	// create test data to push
@@ -1227,7 +1486,7 @@ func TestGarbageCollect(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			repo, err := s.RepoGet(testRepo)
+			repo, err := s.RepoGet(ctx, testRepo)
 			if err != nil {
 				t.Fatalf("failed to get repo: %v", err)
 			}
@@ -1259,9 +1518,14 @@ func TestGarbageCollect(t *testing.T) {
 				}
 			}
 			// run gc
+			repo.Done()
 			err = repo.gc()
 			if err != nil {
 				t.Fatalf("failed to run GC: %v", err)
+			}
+			repo, err = s.RepoGet(ctx, testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
 			}
 			// check for blobs in expect lists
 			for _, dig := range tc.expectExist {
@@ -1283,53 +1547,22 @@ func TestGarbageCollect(t *testing.T) {
 	}
 }
 
-func TestGarbageCollectUpload(t *testing.T) {
-	t.Parallel()
-	grace := time.Millisecond * 20
-	freq := time.Millisecond * 10
-	sleep := (freq * 2) + grace + (time.Millisecond * 50)
-	retry := 100
+func TestGarbageCollectContext(t *testing.T) {
+	ctx := context.Background()
 	testRepo := "test"
-	boolT := true
-	boolF := false
 	tempDir := t.TempDir()
 	tt := []struct {
-		name     string
-		conf     config.Config
-		checkDir string
-		expectGC bool
+		name string
+		conf config.Config
 	}{
+
 		{
 			name: "Mem No GC",
 			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
-					GC: config.ConfigGC{
-						Frequency:         time.Second * -1,
-						GracePeriod:       time.Second * -1,
-						Untagged:          &boolF,
-						ReferrersDangling: &boolF,
-						ReferrersWithSubj: &boolT,
-					},
 				},
 			},
-			expectGC: false,
-		},
-		{
-			name: "Mem GC",
-			conf: config.Config{
-				Storage: config.ConfigStorage{
-					StoreType: config.StoreMem,
-					GC: config.ConfigGC{
-						Frequency:         freq,
-						GracePeriod:       grace,
-						Untagged:          &boolF,
-						ReferrersDangling: &boolF,
-						ReferrersWithSubj: &boolT,
-					},
-				},
-			},
-			expectGC: true,
 		},
 		{
 			name: "Dir No GC",
@@ -1337,37 +1570,8 @@ func TestGarbageCollectUpload(t *testing.T) {
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreDir,
 					RootDir:   filepath.Join(tempDir, "no-gc"),
-					GC: config.ConfigGC{
-						Frequency:         time.Second * -1,
-						GracePeriod:       time.Second * -1,
-						EmptyRepo:         &boolT,
-						Untagged:          &boolF,
-						ReferrersDangling: &boolF,
-						ReferrersWithSubj: &boolT,
-					},
 				},
 			},
-			checkDir: filepath.Join(tempDir, "no-gc", testRepo),
-			expectGC: false,
-		},
-		{
-			name: "Dir GC",
-			conf: config.Config{
-				Storage: config.ConfigStorage{
-					StoreType: config.StoreDir,
-					RootDir:   filepath.Join(tempDir, "gc"),
-					GC: config.ConfigGC{
-						Frequency:         freq,
-						GracePeriod:       grace,
-						EmptyRepo:         &boolT,
-						Untagged:          &boolF,
-						ReferrersDangling: &boolF,
-						ReferrersWithSubj: &boolT,
-					},
-				},
-			},
-			checkDir: filepath.Join(tempDir, "gc", testRepo),
-			expectGC: true,
 		},
 	}
 	for _, tc := range tt {
@@ -1386,7 +1590,162 @@ func TestGarbageCollectUpload(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			repo, err := s.RepoGet(testRepo)
+			repo, err := s.RepoGet(ctx, testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
+			}
+			repo.Done()
+			// simulate a long running GC
+			switch repo := repo.(type) {
+			case *dirRepo:
+				<-repo.wgBlock
+				repo.wg.Wait()
+			case *memRepo:
+				<-repo.wgBlock
+				repo.wg.Wait()
+			}
+			// verify access with a short lived context fails
+			ctxTimeout, cancel := context.WithTimeout(ctx, time.Millisecond*5)
+			repoTimeout, err := s.RepoGet(ctxTimeout, testRepo)
+			if err == nil {
+				repoTimeout.Done()
+				t.Fatalf("RepoGet during GC simulation did not fail")
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("unexpected error, expected %v, received %v", context.DeadlineExceeded, err)
+			}
+			cancel()
+			// simulate end of long running GC
+			switch repo := repo.(type) {
+			case *dirRepo:
+				repo.wgBlock <- struct{}{}
+			case *memRepo:
+				repo.wgBlock <- struct{}{}
+			}
+			// verify access after GC finishes
+			repo, err = s.RepoGet(ctx, testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
+			}
+			repo.Done()
+		})
+	}
+}
+
+func TestGarbageCollectUpload(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	grace := time.Millisecond * 20
+	freq := time.Millisecond * 10
+	sleep := (freq * 2) + grace + (time.Millisecond * 50)
+	retry := 100
+	testRepo := "test"
+	boolT := true
+	boolF := false
+	tempDir := t.TempDir()
+	tt := []struct {
+		name     string
+		conf     config.Config
+		checkDir string
+		expectGC bool
+		limit    int
+	}{
+		{
+			name: "Mem No GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						RepoUploadMax:     -1,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectGC: false,
+			limit:    -1,
+		},
+		{
+			name: "Mem GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency:         freq,
+						GracePeriod:       grace,
+						RepoUploadMax:     10,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			expectGC: true,
+			limit:    10,
+		},
+		{
+			name: "Dir No GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "no-gc"),
+					GC: config.ConfigGC{
+						Frequency:         time.Second * -1,
+						GracePeriod:       time.Second * -1,
+						RepoUploadMax:     -1,
+						EmptyRepo:         &boolT,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			checkDir: filepath.Join(tempDir, "no-gc", testRepo),
+			expectGC: false,
+			limit:    -1,
+		},
+		{
+			name: "Dir GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   filepath.Join(tempDir, "gc"),
+					GC: config.ConfigGC{
+						Frequency:         freq,
+						GracePeriod:       grace,
+						RepoUploadMax:     10,
+						EmptyRepo:         &boolT,
+						Untagged:          &boolF,
+						ReferrersDangling: &boolF,
+						ReferrersWithSubj: &boolT,
+					},
+				},
+			},
+			checkDir: filepath.Join(tempDir, "gc", testRepo),
+			expectGC: true,
+			limit:    10,
+		},
+	}
+	for _, tc := range tt {
+		tc := tc
+		tc.conf.SetDefaults()
+		var s Store
+		switch tc.conf.Storage.StoreType {
+		case config.StoreDir:
+			s = NewDir(tc.conf)
+		case config.StoreMem:
+			s = NewMem(tc.conf)
+		default:
+			t.Errorf("unsupported store type: %d", tc.conf.Storage.StoreType)
+			return
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repo, err := s.RepoGet(ctx, testRepo)
 			if err != nil {
 				t.Fatalf("failed to get repo: %v", err)
 			}
@@ -1396,8 +1755,13 @@ func TestGarbageCollectUpload(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create blob")
 			}
-			// sleep, releasing repo during sleep for GC
+			// sleep to GC slow upload
+			repo.Done()
 			time.Sleep(sleep)
+			repo, err = s.RepoGet(ctx, testRepo)
+			if err != nil {
+				t.Fatalf("failed to get repo: %v", err)
+			}
 			if tc.expectGC {
 				success := false
 				for i := 0; i < retry && !success; i++ {
@@ -1405,7 +1769,12 @@ func TestGarbageCollectUpload(t *testing.T) {
 					if err != nil {
 						success = true
 					} else {
+						repo.Done()
 						time.Sleep(sleep)
+						repo, err = s.RepoGet(ctx, testRepo)
+						if err != nil {
+							t.Fatalf("failed to get repo: %v", err)
+						}
 					}
 				}
 				if !success {
@@ -1426,7 +1795,12 @@ func TestGarbageCollectUpload(t *testing.T) {
 						if err != nil {
 							success = true
 						} else {
+							repo.Done()
 							time.Sleep(sleep)
+							repo, err = s.RepoGet(ctx, testRepo)
+							if err != nil {
+								t.Fatalf("failed to get repo: %v", err)
+							}
 						}
 					}
 					if !success {
@@ -1438,6 +1812,31 @@ func TestGarbageCollectUpload(t *testing.T) {
 					_, err = os.Stat(tc.checkDir)
 					if err != nil {
 						t.Errorf("directory deleted: %s", tc.checkDir)
+					}
+				}
+			}
+			if tc.limit > 0 {
+				countDel := 5
+				sessions := make([]string, tc.limit+countDel)
+				for i := 0; i < tc.limit+countDel; i++ {
+					_, sessionID, err := repo.BlobCreate()
+					if err != nil {
+						t.Fatalf("failed to create blob")
+					}
+					sessions[i] = sessionID
+				}
+				// short sleep to give prune a chance to run
+				time.Sleep(freq / 2)
+				for i := 0; i < countDel; i++ {
+					_, err = repo.BlobSession(sessions[i])
+					if err == nil {
+						t.Errorf("upload session not deleted: %d", i)
+					}
+				}
+				for i := countDel + int(float64(tc.limit)*0.1); i < tc.limit+countDel; i++ {
+					_, err = repo.BlobSession(sessions[i])
+					if err != nil {
+						t.Errorf("upload session deleted: %d", i)
 					}
 				}
 			}

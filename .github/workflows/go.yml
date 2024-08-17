@@ -32,10 +32,10 @@ jobs:
 
     steps:
     - name: Check out code
-      uses: actions/checkout@9bb56186c3b09b4f86b1c65136769dd318469633 # v4.1.2
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
     - name: "Set up Go ${{ matrix.gover }}"
-      uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+      uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
       with:
         go-version: "${{ matrix.gover }}"
         check-latest: true
@@ -60,10 +60,10 @@ jobs:
 
     - name: Install syft
       if: startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main'
-      uses: anchore/sbom-action/download-syft@9fece9e20048ca9590af301449208b2b8861333b # v0.15.9
+      uses: anchore/sbom-action/download-syft@d94f46e13c6c62f59525ac9a1e147a99dc0b9bf5 # v0.17.0
       id: syft
       with:
-        syft-version: "v1.0.1"
+        syft-version: "v1.11.0"
 
     - name: Build artifacts
       if: startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main'
@@ -71,9 +71,9 @@ jobs:
 
     - name: Install cosign
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
-      uses: sigstore/cosign-installer@e1523de7571e31dbe865fd2e80c5c7c23ae71eb4 # v3.4.0
+      uses: sigstore/cosign-installer@4959ce089c160fddf62f7b42464195ba1a56d382 # v3.6.0
       with:
-        cosign-release: "v2.2.3"
+        cosign-release: "v2.4.0"
 
     - name: Sign artifacts
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
@@ -112,7 +112,7 @@ jobs:
     - name: Create release
       if: steps.release_details.outputs.valid == 'true' && matrix.gover == env.RELEASE_GO_VER
       id: release_create
-      uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564 # v2.0.4
+      uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
@@ -124,7 +124,7 @@ jobs:
 
     - name: Save artifacts
       if: github.ref == 'refs/heads/main' && matrix.gover == env.RELEASE_GO_VER
-      uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
+      uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
       with:
         name: binaries
         path: ./artifacts/

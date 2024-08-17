@@ -8,6 +8,10 @@ import (
 	"net/http"
 	"strconv"
 
+	// imports required for go-digest
+	_ "crypto/sha256"
+	_ "crypto/sha512"
+
 	"github.com/opencontainers/go-digest"
 
 	"github.com/olareg/olareg/internal/store"
@@ -42,7 +46,7 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 			SchemaVersion: 2,
 			MediaType:     types.MediaTypeOCI1ManifestList,
 		}
-		repo, err := s.store.RepoGet(repoStr)
+		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
 			w.WriteHeader(http.StatusOK)
@@ -331,7 +335,7 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 	// search for matching referrer descriptor
 	dOld, err := index.GetByAnnotation(types.AnnotReferrerSubject, subject.String())
 	if err != nil {
-		if errors.Is(types.ErrNotFound, err) {
+		if errors.Is(err, types.ErrNotFound) {
 			return nil
 		}
 		return err

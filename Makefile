@@ -29,22 +29,22 @@ ifeq "$(strip $(VER_BUMP))" ''
 		-u "$(shell id -u):$(shell id -g)" \
 		$(VER_BUMP_CONTAINER)
 endif
-MARKDOWN_LINT_VER?=v0.12.1
-GOMAJOR_VER?=v0.10.1
-GOSEC_VER?=v2.19.0
-GO_VULNCHECK_VER?=v1.0.4
-OSV_SCANNER_VER?=v1.7.1
+MARKDOWN_LINT_VER?=v0.13.0
+GOMAJOR_VER?=v0.13.1
+GOSEC_VER?=v2.20.0
+GO_VULNCHECK_VER?=v1.1.3
+OSV_SCANNER_VER?=v1.8.3
 SYFT?=$(shell command -v syft 2>/dev/null)
 SYFT_CMD_VER:=$(shell [ -x "$(SYFT)" ] && echo "v$$($(SYFT) version | awk '/^Version: / {print $$2}')" || echo "0")
-SYFT_VERSION?=v1.0.1
-SYFT_CONTAINER?=anchore/syft:v1.0.1@sha256:d49defada853900861d55491ba549ab334148d51b11f23942abecb39ea83d4db
+SYFT_VERSION?=v1.11.0
+SYFT_CONTAINER?=anchore/syft:v1.11.0@sha256:726ee9bb981507deb8cce9d57e7c8a80994ae0a59ffa95dc433aa325e0235c8a
 ifneq "$(SYFT_CMD_VER)" "$(SYFT_VERSION)"
 	SYFT=docker run --rm \
 		-v "$(shell pwd)/:$(shell pwd)/" -w "$(shell pwd)" \
 		-u "$(shell id -u):$(shell id -g)" \
 		$(SYFT_CONTAINER)
 endif
-STATICCHECK_VER?=v0.4.7
+STATICCHECK_VER?=v0.5.0
 
 .PHONY: .FORCE
 .FORCE:
@@ -95,7 +95,7 @@ vulnerability-scan: osv-scanner vulncheck-go ## Run all vulnerability scanners
 
 .PHONY: osv-scanner
 osv-scanner: $(GOPATH)/bin/osv-scanner .FORCE ## Run OSV Scanner
-	$(GOPATH)/bin/osv-scanner scan -r --experimental-licenses="Apache-2.0,BSD-3-Clause,MIT,CC-BY-SA-4.0,UNKNOWN" .
+	$(GOPATH)/bin/osv-scanner scan --config .osv-scanner.toml -r --experimental-licenses="Apache-2.0,BSD-3-Clause,MIT,CC-BY-SA-4.0,UNKNOWN" .
 
 .PHONY: vulncheck-go
 vulncheck-go: $(GOPATH)/bin/govulncheck .FORCE ## Run govulncheck
@@ -155,6 +155,37 @@ test-docker: $(addprefix test-docker-,$(COMMANDS)) ## Build multi-platform docke
 test-docker-%:
 	docker buildx build --platform="$(TEST_PLATFORMS)" -f build/Dockerfile.$*.buildkit .
 	docker buildx build --platform="$(TEST_PLATFORMS)" -f build/Dockerfile.$*.buildkit --target release-alpine .
+
+# ci tests
+
+.PHONY: ci-tests
+ci-tests: ci-setup ci-oci-conformance ci-cleanup ## Run CI tests and OCI Conformance
+
+.PHONY: oci-conformance
+oci-conformance: ci-setup ci-oci-conformance ci-cleanup ## Run OCI Conformance
+
+.PHONY: ci-setup
+ci-setup: docker-olareg
+	docker rm -f olareg-ci || true
+	docker run --rm -d --name olareg-ci -p 5000 olareg/olareg serve --api-delete
+
+.PHONY: ci-oci-conformance
+ci-oci-conformance:
+	docker run \
+		--rm --net container:olareg-ci \
+		-e OCI_ROOT_URL="http://localhost:5000" \
+		-e OCI_NAMESPACE="myorg/myrepo" \
+		-e OCI_TEST_PULL=1 \
+		-e OCI_TEST_PUSH=1 \
+		-e OCI_TEST_CONTENT_DISCOVERY=1 \
+		-e OCI_TEST_CONTENT_MANAGEMENT=1 \
+		ghcr.io/opencontainers/distribution-spec/conformance:main
+
+# TODO: add CI tests with regclient, crane, skopeo, oras, and docker
+
+.PHONY: ci-cleanup
+ci-cleanup:
+	docker stop olareg-ci 
 
 # utilities for managing the project
 

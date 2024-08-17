@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -37,7 +38,7 @@ var (
 type Store interface {
 	// RepoGet returns a repo from the store.
 	// When finished, the method [Repo.Done] must be called.
-	RepoGet(repoStr string) (Repo, error)
+	RepoGet(ctx context.Context, repoStr string) (Repo, error)
 
 	// Close releases resources used by the store.
 	// The store should not be used after being closed.
@@ -78,7 +79,7 @@ type Repo interface {
 	gc() error
 }
 
-type BlobOpt func(*blobConfig)
+type BlobOpt func(*blobConfig) error
 
 type blobConfig struct {
 	algo   digest.Algorithm
@@ -86,15 +87,23 @@ type blobConfig struct {
 }
 
 func BlobWithAlgorithm(a digest.Algorithm) BlobOpt {
-	return func(bc *blobConfig) {
+	return func(bc *blobConfig) error {
+		if !a.Available() {
+			return fmt.Errorf("digest algorithm is unavailable: %s", string(a))
+		}
 		bc.algo = a
+		return nil
 	}
 }
 
 func BlobWithDigest(d digest.Digest) BlobOpt {
-	return func(bc *blobConfig) {
+	return func(bc *blobConfig) error {
+		if err := d.Validate(); err != nil {
+			return fmt.Errorf("invalid digest: %s: %w", d.String(), err)
+		}
 		bc.expect = d
 		bc.algo = d.Algorithm()
+		return nil
 	}
 }
 
@@ -103,13 +112,15 @@ type BlobCreator interface {
 	// WriteCloser is used to push the blob content.
 	io.WriteCloser
 	// Cancel is used to stop an upload.
-	Cancel()
+	Cancel() error
 	// Size reports the number of bytes pushed.
 	Size() int64
 	// Digest is used to get the current digest of the content.
 	Digest() digest.Digest
 	// Verify ensures a digest matches the content.
 	Verify(digest.Digest) error
+	// ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
+	ChangeAlgorithm(digest.Algorithm) error
 }
 
 // blobMeta includes metadata available for blobs.
