@@ -16,7 +16,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      RELEASE_GO_VER: "1.22"
+      RELEASE_GO_VER: "1.23"
       # do not automatically upgrade go to a different version: https://go.dev/doc/toolchain
       GOTOOLCHAIN: "local"
 
