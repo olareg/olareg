@@ -756,8 +756,12 @@ func TestGarbageCollect(t *testing.T) {
 	childList := []types.Descriptor{}
 	// - dangling blob
 	dataBlob := []byte("dangling blob")
-	digBlob := digest.Canonical.FromBytes(dataBlob)
+	digDataBlob := digest.Canonical.FromBytes(dataBlob)
 	blobList = append(blobList, dataBlob)
+	// - blob in index
+	indexBlob := []byte("index blob")
+	digIndexBlob := digest.Canonical.FromBytes(indexBlob)
+	blobList = append(blobList, indexBlob)
 	// - images
 	dataImageConf := []byte(`{}`)
 	digImageConf := digest.Canonical.FromBytes(dataImageConf)
@@ -827,7 +831,7 @@ func TestGarbageCollect(t *testing.T) {
 			Size:      int64(len(dataImage[imageUntagged])),
 		},
 	)
-	// - index of first two images
+	// - index of first two images and an extra blob that isn't a manifest
 	dataIndexMan := types.Index{
 		SchemaVersion: 2,
 		MediaType:     types.MediaTypeOCI1ManifestList,
@@ -841,6 +845,11 @@ func TestGarbageCollect(t *testing.T) {
 				MediaType: types.MediaTypeOCI1Manifest,
 				Digest:    digImage[1],
 				Size:      int64(len(dataImage[1])),
+			},
+			{
+				MediaType: "text/plain",
+				Digest:    digIndexBlob,
+				Size:      int64(len(indexBlob)),
 			},
 		},
 	}
@@ -909,7 +918,7 @@ func TestGarbageCollect(t *testing.T) {
 		},
 		referrerToPruned: {
 			MediaType: types.MediaTypeOCI1Manifest,
-			Digest:    digBlob,
+			Digest:    digDataBlob,
 			Size:      int64(len(dataBlob)),
 		},
 	}
@@ -1050,9 +1059,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
 				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 			},
 		},
 		{
@@ -1083,9 +1093,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
 			},
 		},
@@ -1115,9 +1126,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 				digImage[imageUntagged], digImageLayer[imageUntagged],
 				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
 				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
@@ -1148,9 +1160,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 				digImage[imageUntagged], digImageLayer[imageUntagged],
 				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
@@ -1182,9 +1195,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 				digImage[imageUntagged], digImageLayer[imageUntagged],
 				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
@@ -1216,7 +1230,8 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digCircular,
-				digBlob,
+				digIndexBlob,
+				digDataBlob,
 				digImage[imageUntagged], digImageLayer[imageUntagged],
 				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
@@ -1254,9 +1269,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
 				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 			},
 		},
 		{
@@ -1289,9 +1305,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
 				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 			},
 		},
 		{
@@ -1323,9 +1340,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
 			},
 		},
@@ -1356,9 +1374,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 				digImage[imageUntagged], digImageLayer[imageUntagged],
 				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
 				digReferrer[referrerToPruned], digReferrerLayer[referrerToPruned],
@@ -1390,9 +1409,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 				digImage[imageUntagged], digImageLayer[imageUntagged],
 				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
@@ -1425,9 +1445,10 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digCircular,
+				digIndexBlob,
 			},
 			expectMiss: []digest.Digest{
-				digBlob,
+				digDataBlob,
 				digImage[imageUntagged], digImageLayer[imageUntagged],
 				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
@@ -1460,7 +1481,8 @@ func TestGarbageCollect(t *testing.T) {
 				digReferrer[referrerToTagged], digReferrerLayer[referrerToTagged],
 				digReferrer[referrerToIndex], digReferrerLayer[referrerToIndex],
 				digCircular,
-				digBlob,
+				digIndexBlob,
+				digDataBlob,
 				digImage[imageUntagged], digImageLayer[imageUntagged],
 				digReferrer[referrerToUntagged], digReferrerLayer[referrerToUntagged],
 				digReferrer[referrerToDangling], digReferrerLayer[referrerToDangling],
@@ -1493,7 +1515,7 @@ func TestGarbageCollect(t *testing.T) {
 			defer repo.Done()
 			// push sample data
 			for _, blob := range blobList {
-				bc, _, err := repo.BlobCreate()
+				bc, _, err := repo.BlobCreate(BlobWithAlgorithm(digest.Canonical))
 				if err != nil {
 					t.Fatalf("failed to create blob: %v", err)
 				}

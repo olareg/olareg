@@ -480,6 +480,12 @@ func repoGarbageCollect(repo Repo, conf config.Config, index types.Index, locked
 			for _, layer := range man.Layers {
 				seen[layer.Digest] = true
 			}
+		} else {
+			// unknown media type listed in an index, treat it as a blob
+			errClose := br.Close()
+			if errClose != nil {
+				continue
+			}
 		}
 		// if there are referrers to this manifest
 		if referrer, ok := subjects[d.Digest]; ok {
