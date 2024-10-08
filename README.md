@@ -8,7 +8,8 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/olareg/olareg.svg)](https://pkg.go.dev/github.com/olareg/olareg)
 ![License](https://img.shields.io/github/license/olareg/olareg)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/olareg/olareg/badge)](https://securityscorecards.dev/viewer/?uri=github.com/olareg/olareg)
+[![Go Report Card](https://goreportcard.com/badge/github.com/olareg/olareg)](https://goreportcard.com/report/github.com/olareg/olareg)
+[![GitHub Downloads](https://img.shields.io/github/downloads/olareg/olareg/total?label=GitHub%20downloads)](https://github.com/olareg/olareg/releases)
 
 olareg (pronounced oh-la-reg) is a minimal OCI conformant container registry.
 It is designed around the OCI Layout structure for storing images in a directory.
