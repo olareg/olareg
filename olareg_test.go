@@ -752,6 +752,7 @@ func TestServer(t *testing.T) {
 				}
 				t.Parallel()
 				count := 25
+				bigEntry := 3
 				// push sample image
 				if err := testSampleEntryPush(t, s, *sd["index"], "referrer", "index"); err != nil {
 					return
@@ -799,6 +800,10 @@ func TestServer(t *testing.T) {
 				// in loop, update one annotation, and push
 				for i := 0; i < count; i++ {
 					artMan.Annotations["count"] = fmt.Sprintf("%d", i)
+					if i == bigEntry {
+						// push another jumbo artifact that exceeds the size limit
+						artMan.Annotations["tooBig"] = strings.Repeat("Oh no! ", 512*1024)
+					}
 					artBytes, err := json.Marshal(artMan)
 					if err != nil {
 						t.Fatalf("failed to marshal artifact")
@@ -806,6 +811,9 @@ func TestServer(t *testing.T) {
 					artDig := digest.Canonical.FromBytes(artBytes)
 					if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
 						return
+					}
+					if i == bigEntry {
+						delete(artMan.Annotations, "tooBig")
 					}
 				}
 				// query for referrer, verify link header
@@ -881,13 +889,23 @@ func TestServer(t *testing.T) {
 					}
 				}
 				t.Logf("received %d pages of referrers", pageCount)
-				if len(found) != count {
-					t.Errorf("length of descriptor list, expected %d, received %d", count, len(found))
+				expected := count
+				if count > bigEntry {
+					expected-- // do not expect large entry
+				}
+				if len(found) != expected {
+					t.Errorf("length of descriptor list, expected %d, received %d", expected, len(found))
 				}
 				// verify full list contains all count values (make a slice of bool, set to true as each one is found, verify full list is true)
 				for i := 0; i < count; i++ {
-					if !found[fmt.Sprintf("%d", i)] {
-						t.Errorf("response not found for %d", i)
+					if i == bigEntry {
+						if found[fmt.Sprintf("%d", i)] {
+							t.Errorf("response for big entry found for %d", i)
+						}
+					} else {
+						if !found[fmt.Sprintf("%d", i)] {
+							t.Errorf("response not found for %d", i)
+						}
 					}
 				}
 				if found[fmt.Sprintf("%d", count)] {

@@ -238,7 +238,9 @@ func referrerSplit(inBytes []byte, limit int64) ([][]byte, error) {
 			return nil, err
 		}
 		if int64(len(next)) > limit {
-			result = append(result, last)
+			if len(last) > 0 && int64(len(last)) <= limit {
+				result = append(result, last)
+			}
 			cur.Manifests = []types.Descriptor{d}
 			next, err = json.Marshal(cur)
 			if err != nil {
@@ -247,12 +249,13 @@ func referrerSplit(inBytes []byte, limit int64) ([][]byte, error) {
 			if int64(len(next)) > limit {
 				errs = append(errs, fmt.Errorf("single descriptor greater than limit: %s", d.Digest))
 				cur.Manifests = []types.Descriptor{}
-				last = nil
+				last = []byte{}
+				continue
 			}
 		}
 		last = next
 	}
-	if last != nil {
+	if len(last) > 0 && int64(len(last)) <= limit {
 		result = append(result, last)
 	}
 	if len(errs) > 0 {
