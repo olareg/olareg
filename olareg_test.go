@@ -746,7 +746,7 @@ func TestServer(t *testing.T) {
 					t.Errorf("unexpected digest for referrer entry, expected %s, received %s", referrerDig.String(), refRespIndex.Manifests[0].Digest.String())
 				}
 			})
-			t.Run("Referrers pagination", func(t *testing.T) {
+			t.Run("Referrers", func(t *testing.T) {
 				if tcServer.readOnly {
 					return
 				}
@@ -798,6 +798,7 @@ func TestServer(t *testing.T) {
 					artMan.Annotations["filler"+c] = strings.Repeat(c, 5000)
 				}
 				// in loop, update one annotation, and push
+				artDigList := make([]digest.Digest, 0, count+1)
 				for i := 0; i < count; i++ {
 					artMan.Annotations["count"] = fmt.Sprintf("%d", i)
 					if i == bigEntry {
@@ -812,6 +813,7 @@ func TestServer(t *testing.T) {
 					if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
 						return
 					}
+					artDigList = append(artDigList, artDig)
 					if i == bigEntry {
 						delete(artMan.Annotations, "tooBig")
 					}
@@ -861,6 +863,7 @@ func TestServer(t *testing.T) {
 				if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
 					return
 				}
+				artDigList = append(artDigList, artDig)
 				// get paginated responses using the link header
 				for nextLink != "" {
 					pageCount++
@@ -910,6 +913,24 @@ func TestServer(t *testing.T) {
 				}
 				if found[fmt.Sprintf("%d", count)] {
 					t.Errorf("referrer pushed after first page returned should not have been included")
+				}
+				// delete each referrer manifest
+				for _, artDig := range artDigList {
+					if _, err := testAPIManifestRm(t, s, "referrer", artDig.String()); err != nil {
+						return
+					}
+				}
+				// verify referrer list is empty
+				resp, err = testAPIReferrersList(t, s, "referrer", subDig, "", nil)
+				if err != nil {
+					return
+				}
+				err = json.NewDecoder(resp.Result().Body).Decode(&refIdx)
+				if err != nil {
+					t.Fatalf("failed to decode referrers body: %v", err)
+				}
+				if len(refIdx.Manifests) > 0 {
+					t.Errorf("referrer list was not empty after delete, received %v", refIdx)
 				}
 				// query again to verify cache works
 				_, err = testAPIReferrersList(t, s, "referrer", subDig, "", nil)
@@ -1304,8 +1325,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			// TODO: test tag listing before and after pushing manifest
-			// TODO: test blob chunked upload, and stream upload
-			// TODO: test referrers pagination: push referrer with annotations too large to fit in the referrers response manifest, verify response does not include the referrer
+			// TODO: test blob chunked upload, stream upload, and blob mount
 		})
 	}
 }

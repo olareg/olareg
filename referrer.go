@@ -174,6 +174,9 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 				w.Header().Add("Link", fmt.Sprintf("<%s>; rel=next", next.String()))
 			}
 			out = split[page]
+		} else {
+			// cache the result
+			s.referrerCache.Set(referrerKey{dig: d.Digest, artifactType: filterAT}, [][]byte{out})
 		}
 		w.Header().Add("content-length", fmt.Sprintf("%d", len(out)))
 		w.WriteHeader(http.StatusOK)
