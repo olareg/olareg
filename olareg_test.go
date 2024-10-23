@@ -802,8 +802,8 @@ func TestServer(t *testing.T) {
 				for i := 0; i < count; i++ {
 					artMan.Annotations["count"] = fmt.Sprintf("%d", i)
 					if i == bigEntry {
-						// push another jumbo artifact that exceeds the size limit
-						artMan.Annotations["tooBig"] = strings.Repeat("Oh no! ", 512*1024)
+						// push a jumbo artifact that exceeds the size limit
+						artMan.Annotations["tooBig"] = strings.Repeat("A", 512*1024)
 					}
 					artBytes, err := json.Marshal(artMan)
 					if err != nil {
