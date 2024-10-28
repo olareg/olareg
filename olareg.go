@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"path"
@@ -14,7 +15,7 @@ import (
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/cache"
-	"github.com/olareg/olareg/internal/slog"
+	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/internal/store"
 )
 
@@ -41,7 +42,7 @@ func New(conf config.Config) *Server {
 		})
 	}
 	if s.log == nil {
-		s.log = slog.Null{}
+		s.log = slog.New(sloghandle.Discard)
 	}
 	switch s.conf.Storage.StoreType {
 	case config.StoreMem:
@@ -56,7 +57,7 @@ type Server struct {
 	mu            sync.Mutex
 	conf          config.Config
 	store         store.Store
-	log           slog.Logger
+	log           *slog.Logger
 	httpServer    *http.Server
 	referrerCache *cache.Cache[referrerKey, referrerResponses]
 	rateLimit     *cache.Cache[string, *rateLimitEntry]

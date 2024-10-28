@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -18,7 +19,6 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/olareg/olareg/config"
-	"github.com/olareg/olareg/internal/slog"
 	"github.com/olareg/olareg/types"
 )
 
@@ -132,11 +132,11 @@ type blobMeta struct {
 type Opts func(*storeConf)
 
 type storeConf struct {
-	log slog.Logger
+	log *slog.Logger
 }
 
 // WithLog includes a logger on the directory store.
-func WithLog(log slog.Logger) Opts {
+func WithLog(log *slog.Logger) Opts {
 	return func(sc *storeConf) {
 		sc.log = log
 	}
