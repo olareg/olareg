@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/olareg/olareg/internal/slog"
+	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/internal/template"
 	"github.com/olareg/olareg/internal/version"
 )
@@ -20,7 +22,7 @@ func main() {
 
 type rootOpts struct {
 	format   string // for Go template formatting of various commands
-	log      slog.Logger
+	log      *slog.Logger
 	levelStr string
 	name     string // name of the command, extracted from cobra
 }
@@ -35,8 +37,11 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	opts.name = newCmd.Name()
-	opts.log = slog.Null{}
-	setupLogFlag(newCmd, &opts)
+	opts.log = slog.New(sloghandle.Discard)
+	newCmd.PersistentFlags().StringVarP(&opts.levelStr, "verbosity", "v", "warn", "Log level (trace, debug, info, warn, error)")
+	_ = newCmd.RegisterFlagCompletionFunc("verbosity", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"debug", "info", "warn", "error"}, cobra.ShellCompDirectiveNoFileComp
+	})
 
 	var versionCmd = &cobra.Command{
 		Use:   "version",
@@ -63,10 +68,17 @@ olareg version --format '{{.VCSTag}}'`,
 }
 
 func (opts *rootOpts) preRun(cmd *cobra.Command, args []string) error {
-	err := setupLogger(cmd, opts)
+	var lvl slog.Level
+	err := lvl.UnmarshalText([]byte(opts.levelStr))
 	if err != nil {
-		return err
+		// handle custom levels
+		if opts.levelStr == strings.ToLower("trace") {
+			lvl = slog.LevelDebug - 4
+		} else {
+			return fmt.Errorf("unable to parse verbosity %s: %v", opts.levelStr, err)
+		}
 	}
+	opts.log = slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: lvl}))
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,7 @@ import (
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/cache"
-	"github.com/olareg/olareg/internal/slog"
+	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/types"
 )
 
@@ -30,7 +31,7 @@ type dir struct {
 	wg    sync.WaitGroup
 	root  string
 	repos *cache.Cache[string, *dirRepo]
-	log   slog.Logger
+	log   *slog.Logger
 	conf  config.Config
 	stop  chan struct{}
 }
@@ -46,7 +47,7 @@ type dirRepo struct {
 	exists    bool
 	index     types.Index
 	uploads   *cache.Cache[string, *dirRepoUpload]
-	log       slog.Logger
+	log       *slog.Logger
 	conf      config.Config
 }
 
@@ -95,7 +96,7 @@ func NewDir(conf config.Config, opts ...Opts) Store {
 		stop:  make(chan struct{}),
 	}
 	if d.log == nil {
-		d.log = slog.Null{}
+		d.log = slog.New(sloghandle.Discard)
 	}
 	if !*d.conf.Storage.ReadOnly && d.conf.Storage.GC.Frequency > 0 {
 		d.wg.Add(1)

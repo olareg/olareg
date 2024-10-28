@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,14 +22,14 @@ import (
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/cache"
-	"github.com/olareg/olareg/internal/slog"
+	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/types"
 )
 
 type mem struct {
 	mu    sync.Mutex
 	repos map[string]*memRepo
-	log   slog.Logger
+	log   *slog.Logger
 	conf  config.Config
 	wg    sync.WaitGroup
 	stop  chan struct{}
@@ -42,7 +43,7 @@ type memRepo struct {
 	index   types.Index
 	blobs   map[digest.Digest]*memRepoBlob
 	uploads *cache.Cache[string, *memRepoUpload]
-	log     slog.Logger
+	log     *slog.Logger
 	path    string
 	conf    config.Config
 }
@@ -74,7 +75,9 @@ func NewMem(conf config.Config, opts ...Opts) Store {
 		stop:  make(chan struct{}),
 	}
 	if m.log == nil {
-		m.log = slog.Null{}
+		// TODO: update to automatically discarding logger in future Go release
+		// https://github.com/golang/go/issues/62005
+		m.log = slog.New(sloghandle.Discard)
 	}
 	if !*m.conf.Storage.ReadOnly && m.conf.Storage.GC.Frequency > 0 {
 		m.wg.Add(1)
