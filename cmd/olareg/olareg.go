@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/olareg/olareg"
 	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/internal/template"
 	"github.com/olareg/olareg/internal/version"
@@ -73,7 +74,7 @@ func (opts *rootOpts) preRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		// handle custom levels
 		if opts.levelStr == strings.ToLower("trace") {
-			lvl = slog.LevelDebug - 4
+			lvl = olareg.LogTrace
 		} else {
 			return fmt.Errorf("unable to parse verbosity %s: %v", opts.levelStr, err)
 		}
