@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -34,7 +36,7 @@ func TestServer(t *testing.T) {
 		t.Errorf("failed to generate sample data: %v", err)
 		return
 	}
-	grace := time.Millisecond * 250
+	grace := time.Millisecond * 500
 	freq := time.Millisecond * 100
 	sleep := (freq * 2) + grace + (time.Millisecond * 100)
 	existingRepo := "testrepo"
@@ -59,6 +61,7 @@ func TestServer(t *testing.T) {
 	}
 	boolT := true
 	boolF := false
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ttServer := []struct {
 		name     string
 		conf     config.Config
@@ -91,6 +94,7 @@ func TestServer(t *testing.T) {
 					},
 					Warnings: []string{warningMsg},
 				},
+				Log: logger,
 			},
 			testGC:   true,
 			testWarn: true,
@@ -119,6 +123,7 @@ func TestServer(t *testing.T) {
 						Limit: 512 * 1024,
 					},
 				},
+				Log: logger,
 			},
 			existing: true,
 			testGC:   true,
@@ -147,6 +152,7 @@ func TestServer(t *testing.T) {
 						Limit: 512 * 1024,
 					},
 				},
+				Log: logger,
 			},
 			existing: true,
 			testGC:   true,
@@ -165,6 +171,7 @@ func TestServer(t *testing.T) {
 					},
 					Warnings: []string{warningMsg},
 				},
+				Log: logger,
 			},
 			existing: true,
 			readOnly: true,
@@ -1476,6 +1483,9 @@ func testClientRun(t *testing.T, s http.Handler, method, path string, body []byt
 	}
 	resp, err := tc(req)
 	if err != nil {
+		if resp.Code >= 300 && resp.Body.Len() > 0 {
+			t.Errorf("failing request body: %s", resp.Body.Bytes())
+		}
 		t.Errorf("failed running %s to %s", method, path)
 	}
 	return resp, err
