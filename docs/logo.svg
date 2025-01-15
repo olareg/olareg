@@ -1,0 +1,6 @@
+<svg width="200" height="200" viewBox="-100 -100 200 200" xmlns="http://www.w3.org/2000/svg">
+<title>olareg Logo</title>
+<rect width="200" height="200" x="-100" y="-100" fill="white"/>
+<path stroke="black" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none"
+      d="M -80 -80 L 80 -80 L 80 80 L -80 80 L -80 -80 M -50 -50 L -50 50 L 50 50 M 20 -20 L -20 -20 L -20 20"/>
+</svg>
