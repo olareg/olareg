@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/olareg/olareg"
+	"github.com/olareg/olareg/internal/cobradoc"
 	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/internal/template"
 	"github.com/olareg/olareg/internal/version"
@@ -64,6 +65,7 @@ olareg version --format '{{.VCSTag}}'`,
 	newCmd.AddCommand(
 		versionCmd,
 		newServeCmd(&opts),
+		cobradoc.NewCmd(opts.name, "cli-doc"),
 	)
 	return newCmd
 }
