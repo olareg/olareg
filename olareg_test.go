@@ -76,6 +76,30 @@ func TestServer(t *testing.T) {
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
 					GC: config.ConfigGC{
+						Frequency: -1 * time.Second,
+					},
+				},
+				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
+					Warnings: []string{warningMsg},
+				},
+				Log: logger,
+			},
+			testGC:   false,
+			testWarn: true,
+		},
+		{
+			name: "Mem GC",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
 						Frequency:         freq,
 						GracePeriod:       grace,
 						RepoUploadMax:     10,
@@ -106,12 +130,7 @@ func TestServer(t *testing.T) {
 					StoreType: config.StoreMem,
 					RootDir:   "./testdata",
 					GC: config.ConfigGC{
-						Frequency:         freq,
-						GracePeriod:       grace,
-						RepoUploadMax:     10,
-						Untagged:          &boolT,
-						ReferrersDangling: &boolF,
-						ReferrersWithSubj: &boolT,
+						Frequency: -1 * time.Second,
 					},
 				},
 				API: config.ConfigAPI{
@@ -126,10 +145,34 @@ func TestServer(t *testing.T) {
 				Log: logger,
 			},
 			existing: true,
-			testGC:   true,
+			testGC:   false,
 		},
 		{
 			name: "Dir",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   tempDir,
+					GC: config.ConfigGC{
+						Frequency: -1 * time.Second,
+					},
+				},
+				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
+				},
+				Log: logger,
+			},
+			existing: true,
+			testGC:   false,
+		},
+		{
+			name: "Dir GC",
 			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreDir,
@@ -404,7 +447,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("AMD64", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -414,7 +457,7 @@ func TestServer(t *testing.T) {
 				_ = testSampleEntryPull(t, s, *sd["image-amd64"], "push-amd64", "v1")
 			})
 			t.Run("Index", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -544,7 +587,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("Blob Push Monolithic", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -593,7 +636,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("Blob Push Cancel", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -754,7 +797,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("Referrers", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -946,7 +989,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("digest-512", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -1220,7 +1263,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("digest-algo-unknown", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
