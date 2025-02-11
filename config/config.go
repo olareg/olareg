@@ -3,10 +3,9 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
-
-	"github.com/olareg/olareg/internal/slog"
 )
 
 const (
@@ -30,7 +29,7 @@ type Config struct {
 	HTTP    ConfigHTTP
 	Storage ConfigStorage
 	API     ConfigAPI
-	Log     slog.Logger
+	Log     *slog.Logger
 	// TODO: proxy settings, pull only, or push+pull cache
 	// TODO: auth options (basic, bearer)
 }

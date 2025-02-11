@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -34,7 +36,7 @@ func TestServer(t *testing.T) {
 		t.Errorf("failed to generate sample data: %v", err)
 		return
 	}
-	grace := time.Millisecond * 250
+	grace := time.Millisecond * 500
 	freq := time.Millisecond * 100
 	sleep := (freq * 2) + grace + (time.Millisecond * 100)
 	existingRepo := "testrepo"
@@ -59,6 +61,7 @@ func TestServer(t *testing.T) {
 	}
 	boolT := true
 	boolF := false
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ttServer := []struct {
 		name     string
 		conf     config.Config
@@ -69,6 +72,30 @@ func TestServer(t *testing.T) {
 	}{
 		{
 			name: "Mem",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					GC: config.ConfigGC{
+						Frequency: -1 * time.Second,
+					},
+				},
+				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
+					Warnings: []string{warningMsg},
+				},
+				Log: logger,
+			},
+			testGC:   false,
+			testWarn: true,
+		},
+		{
+			name: "Mem GC",
 			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
@@ -91,6 +118,7 @@ func TestServer(t *testing.T) {
 					},
 					Warnings: []string{warningMsg},
 				},
+				Log: logger,
 			},
 			testGC:   true,
 			testWarn: true,
@@ -102,12 +130,7 @@ func TestServer(t *testing.T) {
 					StoreType: config.StoreMem,
 					RootDir:   "./testdata",
 					GC: config.ConfigGC{
-						Frequency:         freq,
-						GracePeriod:       grace,
-						RepoUploadMax:     10,
-						Untagged:          &boolT,
-						ReferrersDangling: &boolF,
-						ReferrersWithSubj: &boolT,
+						Frequency: -1 * time.Second,
 					},
 				},
 				API: config.ConfigAPI{
@@ -119,12 +142,37 @@ func TestServer(t *testing.T) {
 						Limit: 512 * 1024,
 					},
 				},
+				Log: logger,
 			},
 			existing: true,
-			testGC:   true,
+			testGC:   false,
 		},
 		{
 			name: "Dir",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreDir,
+					RootDir:   tempDir,
+					GC: config.ConfigGC{
+						Frequency: -1 * time.Second,
+					},
+				},
+				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
+				},
+				Log: logger,
+			},
+			existing: true,
+			testGC:   false,
+		},
+		{
+			name: "Dir GC",
 			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreDir,
@@ -147,6 +195,7 @@ func TestServer(t *testing.T) {
 						Limit: 512 * 1024,
 					},
 				},
+				Log: logger,
 			},
 			existing: true,
 			testGC:   true,
@@ -165,6 +214,7 @@ func TestServer(t *testing.T) {
 					},
 					Warnings: []string{warningMsg},
 				},
+				Log: logger,
 			},
 			existing: true,
 			readOnly: true,
@@ -397,7 +447,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("AMD64", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -407,7 +457,7 @@ func TestServer(t *testing.T) {
 				_ = testSampleEntryPull(t, s, *sd["image-amd64"], "push-amd64", "v1")
 			})
 			t.Run("Index", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -537,7 +587,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("Blob Push Monolithic", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -586,7 +636,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("Blob Push Cancel", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -746,12 +796,13 @@ func TestServer(t *testing.T) {
 					t.Errorf("unexpected digest for referrer entry, expected %s, received %s", referrerDig.String(), refRespIndex.Manifests[0].Digest.String())
 				}
 			})
-			t.Run("Referrers pagination", func(t *testing.T) {
-				if tcServer.readOnly {
+			t.Run("Referrers", func(t *testing.T) {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
 				count := 25
+				bigEntry := 3
 				// push sample image
 				if err := testSampleEntryPush(t, s, *sd["index"], "referrer", "index"); err != nil {
 					return
@@ -797,8 +848,13 @@ func TestServer(t *testing.T) {
 					artMan.Annotations["filler"+c] = strings.Repeat(c, 5000)
 				}
 				// in loop, update one annotation, and push
+				artDigList := make([]digest.Digest, 0, count+1)
 				for i := 0; i < count; i++ {
 					artMan.Annotations["count"] = fmt.Sprintf("%d", i)
+					if i == bigEntry {
+						// push a jumbo artifact that exceeds the size limit
+						artMan.Annotations["tooBig"] = strings.Repeat("A", 512*1024)
+					}
 					artBytes, err := json.Marshal(artMan)
 					if err != nil {
 						t.Fatalf("failed to marshal artifact")
@@ -806,6 +862,10 @@ func TestServer(t *testing.T) {
 					artDig := digest.Canonical.FromBytes(artBytes)
 					if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
 						return
+					}
+					artDigList = append(artDigList, artDig)
+					if i == bigEntry {
+						delete(artMan.Annotations, "tooBig")
 					}
 				}
 				// query for referrer, verify link header
@@ -853,6 +913,7 @@ func TestServer(t *testing.T) {
 				if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
 					return
 				}
+				artDigList = append(artDigList, artDig)
 				// get paginated responses using the link header
 				for nextLink != "" {
 					pageCount++
@@ -881,17 +942,45 @@ func TestServer(t *testing.T) {
 					}
 				}
 				t.Logf("received %d pages of referrers", pageCount)
-				if len(found) != count {
-					t.Errorf("length of descriptor list, expected %d, received %d", count, len(found))
+				expected := count
+				if count > bigEntry {
+					expected-- // do not expect large entry
+				}
+				if len(found) != expected {
+					t.Errorf("length of descriptor list, expected %d, received %d", expected, len(found))
 				}
 				// verify full list contains all count values (make a slice of bool, set to true as each one is found, verify full list is true)
 				for i := 0; i < count; i++ {
-					if !found[fmt.Sprintf("%d", i)] {
-						t.Errorf("response not found for %d", i)
+					if i == bigEntry {
+						if found[fmt.Sprintf("%d", i)] {
+							t.Errorf("response for big entry found for %d", i)
+						}
+					} else {
+						if !found[fmt.Sprintf("%d", i)] {
+							t.Errorf("response not found for %d", i)
+						}
 					}
 				}
 				if found[fmt.Sprintf("%d", count)] {
 					t.Errorf("referrer pushed after first page returned should not have been included")
+				}
+				// delete each referrer manifest
+				for _, artDig := range artDigList {
+					if _, err := testAPIManifestRm(t, s, "referrer", artDig.String()); err != nil {
+						return
+					}
+				}
+				// verify referrer list is empty
+				resp, err = testAPIReferrersList(t, s, "referrer", subDig, "", nil)
+				if err != nil {
+					return
+				}
+				err = json.NewDecoder(resp.Result().Body).Decode(&refIdx)
+				if err != nil {
+					t.Fatalf("failed to decode referrers body: %v", err)
+				}
+				if len(refIdx.Manifests) > 0 {
+					t.Errorf("referrer list was not empty after delete, received %v", refIdx)
 				}
 				// query again to verify cache works
 				_, err = testAPIReferrersList(t, s, "referrer", subDig, "", nil)
@@ -900,7 +989,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("digest-512", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -1174,7 +1263,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("digest-algo-unknown", func(t *testing.T) {
-				if tcServer.readOnly {
+				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
 				t.Parallel()
@@ -1286,8 +1375,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			// TODO: test tag listing before and after pushing manifest
-			// TODO: test blob chunked upload, and stream upload
-			// TODO: test referrers pagination: push referrer with annotations too large to fit in the referrers response manifest, verify response does not include the referrer
+			// TODO: test blob chunked upload, stream upload, and blob mount
 		})
 	}
 }
@@ -1438,6 +1526,9 @@ func testClientRun(t *testing.T, s http.Handler, method, path string, body []byt
 	}
 	resp, err := tc(req)
 	if err != nil {
+		if resp.Code >= 300 && resp.Body.Len() > 0 {
+			t.Errorf("failing request body: %s", resp.Body.Bytes())
+		}
 		t.Errorf("failed running %s to %s", method, path)
 	}
 	return resp, err

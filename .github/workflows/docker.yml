@@ -29,11 +29,11 @@ jobs:
 
     env:
       ALPINE_NAME: "alpine:3"
-      ALPINE_DIGEST: "sha256:0a4eaa0eecf5f8c050e5bba433f58c052be7587ee8af3e8b3910ef9ab5fbe9f5" # 3.20.2
+      ALPINE_DIGEST: "sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099" # 3.21.2
 
     steps:
     - name: Check out code
-      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Prepare
       id: prep
@@ -86,7 +86,7 @@ jobs:
         echo "repo_url=${REPO_URL}" >>$GITHUB_OUTPUT
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+      uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
 
     # - name: Login to DockerHub
     #   if: github.repository_owner == 'olareg'
@@ -104,7 +104,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Build
-      uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+      uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991 # v6.13.0
       id: build
       with:
         context: .
@@ -120,20 +120,20 @@ jobs:
 
     - name: Install cosign
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
-      uses: sigstore/cosign-installer@4959ce089c160fddf62f7b42464195ba1a56d382 # v3.6.0
+      uses: sigstore/cosign-installer@c56c2d3e59e4281cc41dea2217323ba5694b171e # v3.8.0
       with:
-        cosign-release: "v2.4.0"
+        cosign-release: "v2.4.2"
     
     - name: Install syft
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
-      uses: anchore/sbom-action/download-syft@d94f46e13c6c62f59525ac9a1e147a99dc0b9bf5 # v0.17.0
+      uses: anchore/sbom-action/download-syft@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0 # v0.18.0
       id: syft
       with:
-        syft-version: "v1.11.0"
+        syft-version: "v1.19.0"
     
     # Use regctl to modify olareg images to improve reproducibility
     - name: Install regctl
-      uses: regclient/actions/regctl-installer@35bc5829dd3d37ace2717971f3151894b43bfabc # main
+      uses: regclient/actions/regctl-installer@ce5fd131e371ffcdd7508b478cb223b3511a9183 # main
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
 
     - name: Mutate

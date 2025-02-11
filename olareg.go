@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"path"
@@ -14,13 +15,15 @@ import (
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/cache"
-	"github.com/olareg/olareg/internal/slog"
+	"github.com/olareg/olareg/internal/httplog"
+	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/internal/store"
 )
 
 var (
 	pathPart = `[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*`
 	rePath   = regexp.MustCompile(`^` + pathPart + `(?:\/` + pathPart + `)*$`)
+	LogTrace = slog.LevelDebug - 4
 )
 
 // New returns a Server.
@@ -41,7 +44,7 @@ func New(conf config.Config) *Server {
 		})
 	}
 	if s.log == nil {
-		s.log = slog.Null{}
+		s.log = slog.New(sloghandle.Discard)
 	}
 	switch s.conf.Storage.StoreType {
 	case config.StoreMem:
@@ -56,7 +59,7 @@ type Server struct {
 	mu            sync.Mutex
 	conf          config.Config
 	store         store.Store
-	log           slog.Logger
+	log           *slog.Logger
 	httpServer    *http.Server
 	referrerCache *cache.Cache[referrerKey, referrerResponses]
 	rateLimit     *cache.Cache[string, *rateLimitEntry]
@@ -89,7 +92,7 @@ func (s *Server) Run(ctx context.Context) error {
 	hs := &http.Server{
 		Addr:              s.conf.HTTP.Addr,
 		ReadHeaderTimeout: 5 * time.Second,
-		Handler:           s,
+		Handler:           httplog.New(s, s.log, LogTrace),
 	}
 	s.httpServer = hs
 	if ctx != nil {
@@ -185,78 +188,61 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	if _, ok := matchV2(pathEl); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle v2 ping
 		s.v2Ping(resp, req)
-		return
 	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok {
 		// handle manifest
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			s.manifestGet(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else if req.Method == http.MethodPut && *s.conf.API.PushEnabled {
 			s.manifestPut(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else if req.Method == http.MethodDelete && *s.conf.API.DeleteEnabled {
 			s.manifestDelete(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else {
 			resp.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "*"); ok {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			// handle blob get
 			s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else if req.Method == http.MethodDelete && *s.conf.API.DeleteEnabled && *s.conf.API.Blob.DeleteEnabled {
 			// handle blob delete
 			s.blobDelete(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else if matches[1] == "uploads" && req.Method == http.MethodPost && *s.conf.API.PushEnabled {
 			// handle blob post
 			s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
-			return
 		} else {
 			// other methods are not allowed (delete is done by GC)
 			resp.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
 	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok && *s.conf.API.Referrer.Enabled {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			// handle referrer get
 			s.referrerGet(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else {
 			// other methods are not allowed
 			resp.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
 	} else if matches, ok := matchV2(pathEl, "...", "tags", "list"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle tag listing
 		s.tagList(matches[0]).ServeHTTP(resp, req)
-		return
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok && *s.conf.API.PushEnabled {
 		// handle blob upload methods
 		if req.Method == http.MethodPatch {
 			s.blobUploadPatch(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else if req.Method == http.MethodPut {
 			s.blobUploadPut(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else if req.Method == http.MethodGet {
 			s.blobUploadGet(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else if req.Method == http.MethodDelete {
 			s.blobUploadDelete(matches[0], matches[1]).ServeHTTP(resp, req)
-			return
 		} else {
 			resp.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
 	} else {
 		resp.WriteHeader(http.StatusNotFound)
 		s.log.Debug("unknown request", "method", req.Method, "path", pathEl)
 	}
 	// TODO: include a status/health endpoint?
-	// TODO: add handler wrappers: auth, rate limit, etc
+	// TODO: add handler wrappers: auth, etc
 }
 
 func matchV2(pathEl []string, params ...string) ([]string, bool) {
