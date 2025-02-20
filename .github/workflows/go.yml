@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        gover: ["1.21", "1.22", "1.23"]
+        gover: ["1.22", "1.23", "1.24"]
 
     env:
-      RELEASE_GO_VER: "1.23"
+      RELEASE_GO_VER: "1.24"
       # do not automatically upgrade go to a different version: https://go.dev/doc/toolchain
       GOTOOLCHAIN: "local"
 
@@ -71,9 +71,9 @@ jobs:
 
     - name: Install cosign
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
-      uses: sigstore/cosign-installer@c56c2d3e59e4281cc41dea2217323ba5694b171e # v3.8.0
+      uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
       with:
-        cosign-release: "v2.4.2"
+        cosign-release: "v2.4.3"
 
     - name: Sign artifacts
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
