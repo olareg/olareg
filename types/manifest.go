@@ -207,7 +207,7 @@ func (i *Index) AddDesc(d Descriptor, opts ...IndexOpt) {
 		}
 	}
 	// remove child entry if found
-	for ci := 0; ci < len(i.childManifests); ci++ {
+	for ci := range i.childManifests {
 		if i.childManifests[ci].Digest == d.Digest {
 			i.childManifests[ci] = i.childManifests[len(i.childManifests)-1]
 			i.childManifests = i.childManifests[:len(i.childManifests)-1]
