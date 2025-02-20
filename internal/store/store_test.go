@@ -777,8 +777,8 @@ func TestGarbageCollect(t *testing.T) {
 	digImageLayer := make([]digest.Digest, imageCount)
 	dataImage := make([][]byte, imageCount)
 	digImage := make([]digest.Digest, imageCount)
-	for i := 0; i < imageCount; i++ {
-		dataImageLayer[i] = []byte(fmt.Sprintf("layer for image %d", i))
+	for i := range imageCount {
+		dataImageLayer[i] = fmt.Appendf(nil, "layer for image %d", i)
 		digImageLayer[i] = digest.Canonical.FromBytes(dataImageLayer[i])
 		dataImageMan := types.Manifest{
 			SchemaVersion: 2,
@@ -923,7 +923,7 @@ func TestGarbageCollect(t *testing.T) {
 		},
 	}
 	for i, subj := range subjReferrer {
-		dataLayer := []byte(fmt.Sprintf("layer for referrer %d", i))
+		dataLayer := fmt.Appendf(nil, "layer for referrer %d", i)
 		digLayer := digest.Canonical.FromBytes(dataLayer)
 		dataMan := types.Manifest{
 			SchemaVersion: 2,
@@ -1840,7 +1840,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 			if tc.limit > 0 {
 				countDel := 5
 				sessions := make([]string, tc.limit+countDel)
-				for i := 0; i < tc.limit+countDel; i++ {
+				for i := range tc.limit + countDel {
 					_, sessionID, err := repo.BlobCreate()
 					if err != nil {
 						t.Fatalf("failed to create blob")
@@ -1849,7 +1849,7 @@ func TestGarbageCollectUpload(t *testing.T) {
 				}
 				// short sleep to give prune a chance to run
 				time.Sleep(freq / 2)
-				for i := 0; i < countDel; i++ {
+				for i := range countDel {
 					_, err = repo.BlobSession(sessions[i])
 					if err == nil {
 						t.Errorf("upload session not deleted: %d", i)

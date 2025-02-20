@@ -24,6 +24,8 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"slices"
+
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/copy"
 	"github.com/olareg/olareg/types"
@@ -519,7 +521,7 @@ func TestServer(t *testing.T) {
 					t.Fatalf("failed to remove manifest: %v", err)
 				}
 				// delay for GC
-				for retry := 0; retry < 10; retry++ {
+				for retry := range 10 {
 					time.Sleep(sleep + (time.Millisecond * 200 * time.Duration(retry)))
 					remaining := false
 					for dig := range sd["image-arm64"].blob {
@@ -849,7 +851,7 @@ func TestServer(t *testing.T) {
 				}
 				// in loop, update one annotation, and push
 				artDigList := make([]digest.Digest, 0, count+1)
-				for i := 0; i < count; i++ {
+				for i := range count {
 					artMan.Annotations["count"] = fmt.Sprintf("%d", i)
 					if i == bigEntry {
 						// push a jumbo artifact that exceeds the size limit
@@ -950,7 +952,7 @@ func TestServer(t *testing.T) {
 					t.Errorf("length of descriptor list, expected %d, received %d", expected, len(found))
 				}
 				// verify full list contains all count values (make a slice of bool, set to true as each one is found, verify full list is true)
-				for i := 0; i < count; i++ {
+				for i := range count {
 					if i == bigEntry {
 						if found[fmt.Sprintf("%d", i)] {
 							t.Errorf("response for big entry found for %d", i)
@@ -1392,7 +1394,7 @@ func TestRateLimit(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = s.Close() })
 	reachedLimit := false
-	for i := 0; i < limit*2; i++ {
+	for range limit * 2 {
 		resp, err := testClientRun(t, s, "GET", "/v2/", nil)
 		if err != nil {
 			return
@@ -1549,14 +1551,7 @@ func testClientRespStatus(codes ...int) testClientGen {
 		return func(req *http.Request) (*httptest.ResponseRecorder, error) {
 			t.Helper()
 			resp, err := next(req)
-			found := false
-			for _, c := range codes {
-				if c == resp.Code {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.Contains(codes, resp.Code) {
 				t.Errorf("unexpected status code: %d, expected %v", resp.Code, codes)
 				err = errValidationFailed
 			}
@@ -1586,14 +1581,7 @@ func testClientRespHeader(k, v string) testClientGen {
 			resp, err := next(req)
 			respV := resp.Header().Values(k)
 			if v != "" {
-				found := false
-				for _, rv := range respV {
-					if rv == v {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !slices.Contains(respV, v) {
 					t.Errorf("header mismatch for %s, expected %s, received %v", k, v, respV)
 					err = errValidationFailed
 				}
@@ -1899,7 +1887,7 @@ func genSampleData(t *testing.T) (sampleData, error) {
 	// setup example image manifests
 	imageCount := len(imagePlatforms)
 	images := make([]*sampleEntry, imageCount)
-	for i := 0; i < imageCount; i++ {
+	for i := range imageCount {
 		entry := sampleEntry{
 			manifest:     map[digest.Digest][]byte{},
 			blob:         map[digest.Digest][]byte{},
@@ -1931,7 +1919,7 @@ func genSampleData(t *testing.T) (sampleData, error) {
 			MediaType:     types.MediaTypeOCI1Manifest,
 			Layers:        make([]types.Descriptor, layerPerImage),
 		}
-		for l := 0; l < layerPerImage; l++ {
+		for l := range layerPerImage {
 			digOrig, digComp, bytesComp, err := genSampleLayer(rng, layerSize)
 			if err != nil {
 				return nil, err
@@ -1974,7 +1962,7 @@ func genSampleData(t *testing.T) (sampleData, error) {
 		Manifests:     make([]types.Descriptor, imageCount),
 		Annotations:   map[string]string{},
 	}
-	for l := 0; l < imageCount; l++ {
+	for l := range imageCount {
 		ind.Manifests[l] = types.Descriptor{
 			MediaType: types.MediaTypeOCI1Manifest,
 			Size:      int64(len(images[l].manifest[images[l].manifestList[0]])),
@@ -1999,7 +1987,7 @@ func genSampleData(t *testing.T) (sampleData, error) {
 		manifestList: []digest.Digest{},
 	}
 	// merge images into index entry
-	for i := 0; i < imageCount; i++ {
+	for i := range imageCount {
 		for k, b := range images[i].blob {
 			indEntry.blob[k] = b
 		}

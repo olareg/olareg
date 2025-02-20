@@ -20,6 +20,8 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"slices"
+
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/cache"
 	"github.com/olareg/olareg/internal/sloghandle"
@@ -839,11 +841,9 @@ func (dru *dirRepoUpload) Verify(expect digest.Digest) error {
 }
 
 func stringsHasAny(list []string, check ...string) bool {
-	for _, l := range list {
-		for _, c := range check {
-			if l == c {
-				return true
-			}
+	for _, c := range check {
+		if slices.Contains(list, c) {
+			return true
 		}
 	}
 	return false
