@@ -15,7 +15,7 @@
 {"name":"gha-uses-commit","key":"https://github.com/actions/upload-artifact.git:v4.6.1","version":"4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1"}
 {"name":"gha-uses-commit","key":"https://github.com/anchore/sbom-action.git:v0.18.0","version":"f325610c9f50a54015d37c8d16cb3b0e2c8f4de0"}
 {"name":"gha-uses-commit","key":"https://github.com/docker/build-push-action.git:v6.15.0","version":"471d1dc4e07e5cdedd4c2171150001c434f0b7a4"}
-{"name":"gha-uses-commit","key":"https://github.com/docker/login-action.git:v3.3.0","version":"9780b0c442fbb1117ed29e0efdff1e18412f7567"}
+{"name":"gha-uses-commit","key":"https://github.com/docker/login-action.git:v3.4.0","version":"74a5d142397b4f367a81961eba4e8cd7edddf772"}
 {"name":"gha-uses-commit","key":"https://github.com/docker/setup-buildx-action.git:v3.10.0","version":"b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2"}
 {"name":"gha-uses-commit","key":"https://github.com/regclient/actions.git:main","version":"ce5fd131e371ffcdd7508b478cb223b3511a9183"}
 {"name":"gha-uses-commit","key":"https://github.com/sigstore/cosign-installer.git:v3.8.1","version":"d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a"}
@@ -26,7 +26,7 @@
 {"name":"gha-uses-semver","key":"https://github.com/actions/upload-artifact.git","version":"v4.6.1"}
 {"name":"gha-uses-semver","key":"https://github.com/anchore/sbom-action.git","version":"v0.18.0"}
 {"name":"gha-uses-semver","key":"https://github.com/docker/build-push-action.git","version":"v6.15.0"}
-{"name":"gha-uses-semver","key":"https://github.com/docker/login-action.git","version":"v3.3.0"}
+{"name":"gha-uses-semver","key":"https://github.com/docker/login-action.git","version":"v3.4.0"}
 {"name":"gha-uses-semver","key":"https://github.com/docker/setup-buildx-action.git","version":"v3.10.0"}
 {"name":"gha-uses-semver","key":"https://github.com/sigstore/cosign-installer.git","version":"v3.8.1"}
 {"name":"gha-uses-semver","key":"https://github.com/softprops/action-gh-release.git","version":"v2.2.1"}
@@ -35,7 +35,7 @@
 {"name":"makefile-gomajor","key":"https://github.com/icholy/gomajor.git","version":"v0.14.0"}
 {"name":"makefile-gosec","key":"https://github.com/securego/gosec.git","version":"v2.22.2"}
 {"name":"makefile-markdown-lint","key":"docker.io/davidanson/markdownlint-cli2","version":"v0.17.2"}
-{"name":"makefile-osv-scanner","key":"https://github.com/google/osv-scanner.git","version":"v1.9.2"}
+{"name":"makefile-osv-scanner","key":"https://github.com/google/osv-scanner.git","version":"v2.0.0"}
 {"name":"makefile-staticcheck","key":"https://github.com/dominikh/go-tools.git","version":"v0.6.1"}
 {"name":"makefile-syft-container-digest","key":"anchore/syft:v1.20.0","version":"sha256:b46e597614ddc78621e560af3fabf9346e35462ea1c886a38b30bcc7ca601a73"}
 {"name":"makefile-syft-container-tag","key":"anchore/syft","version":"v1.20.0"}
