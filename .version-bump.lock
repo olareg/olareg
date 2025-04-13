@@ -5,7 +5,7 @@
 {"name":"gha-alpine-digest","key":"docker.io/library/alpine:3.21.3","version":"sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c"}
 {"name":"gha-alpine-tag-base","key":"docker.io/library/alpine","version":"3"}
 {"name":"gha-alpine-tag-comment","key":"docker.io/library/alpine","version":"3.21.3"}
-{"name":"gha-cosign-version","key":"https://github.com/sigstore/cosign.git","version":"v2.4.3"}
+{"name":"gha-cosign-version","key":"https://github.com/sigstore/cosign.git","version":"v2.5.0"}
 {"name":"gha-golang-matrix","key":"golang-matrix","version":"[\"1.22\", \"1.23\", \"1.24\"]"}
 {"name":"gha-golang-release","key":"golang-latest","version":"1.24"}
 {"name":"gha-syft-version","key":"docker.io/anchore/syft","version":"v1.22.0"}
