@@ -185,64 +185,99 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	var handler http.Handler
+	repo := ""
+	access := config.AuthUnknown
 	if _, ok := matchV2(pathEl); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle v2 ping
-		s.v2Ping(resp, req)
+		handler = s.v2Ping()
 	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok {
 		// handle manifest
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
-			s.manifestGet(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthRead
+			handler = s.manifestGet(matches[0], matches[1])
 		} else if req.Method == http.MethodPut && *s.conf.API.PushEnabled {
-			s.manifestPut(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthWrite
+			handler = s.manifestPut(matches[0], matches[1])
 		} else if req.Method == http.MethodDelete && *s.conf.API.DeleteEnabled {
-			s.manifestDelete(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthDelete
+			handler = s.manifestDelete(matches[0], matches[1])
 		} else {
-			resp.WriteHeader(http.StatusMethodNotAllowed)
+			handler = methodNotAllowed()
 		}
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "*"); ok {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			// handle blob get
-			s.blobGet(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthRead
+			handler = s.blobGet(matches[0], matches[1])
 		} else if req.Method == http.MethodDelete && *s.conf.API.DeleteEnabled && *s.conf.API.Blob.DeleteEnabled {
 			// handle blob delete
-			s.blobDelete(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthDelete
+			handler = s.blobDelete(matches[0], matches[1])
 		} else if matches[1] == "uploads" && req.Method == http.MethodPost && *s.conf.API.PushEnabled {
 			// handle blob post
-			s.blobUploadPost(matches[0]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthWrite
+			handler = s.blobUploadPost(matches[0])
 		} else {
 			// other methods are not allowed (delete is done by GC)
-			resp.WriteHeader(http.StatusMethodNotAllowed)
+			handler = methodNotAllowed()
 		}
 	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok && *s.conf.API.Referrer.Enabled {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			// handle referrer get
-			s.referrerGet(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthRead
+			handler = s.referrerGet(matches[0], matches[1])
 		} else {
 			// other methods are not allowed
-			resp.WriteHeader(http.StatusMethodNotAllowed)
+			handler = methodNotAllowed()
 		}
 	} else if matches, ok := matchV2(pathEl, "...", "tags", "list"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle tag listing
-		s.tagList(matches[0]).ServeHTTP(resp, req)
+		repo = matches[0]
+		access = config.AuthRead
+		handler = s.tagList(matches[0])
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok && *s.conf.API.PushEnabled {
 		// handle blob upload methods
 		if req.Method == http.MethodPatch {
-			s.blobUploadPatch(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthRead
+			handler = s.blobUploadPatch(matches[0], matches[1])
 		} else if req.Method == http.MethodPut {
-			s.blobUploadPut(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthRead
+			handler = s.blobUploadPut(matches[0], matches[1])
 		} else if req.Method == http.MethodGet {
-			s.blobUploadGet(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthRead
+			handler = s.blobUploadGet(matches[0], matches[1])
 		} else if req.Method == http.MethodDelete {
-			s.blobUploadDelete(matches[0], matches[1]).ServeHTTP(resp, req)
+			repo = matches[0]
+			access = config.AuthRead
+			handler = s.blobUploadDelete(matches[0], matches[1])
 		} else {
-			resp.WriteHeader(http.StatusMethodNotAllowed)
+			handler = methodNotAllowed()
 		}
-	} else {
+	}
+	if handler == nil {
 		resp.WriteHeader(http.StatusNotFound)
 		s.log.Debug("unknown request", "method", req.Method, "path", pathEl)
+		return
+	}
+	// wrap with auth handler if defined
+	if s.conf.Auth.Handler != nil {
+		handler = s.conf.Auth.Handler(repo, access, handler)
 	}
 	// TODO: include a status/health endpoint?
-	// TODO: add handler wrappers: auth, etc
+	// TODO: add /token endpoint
+	// TODO: add handler wrappers: rate limit, logging, etc
+	handler.ServeHTTP(resp, req)
 }
 
 func matchV2(pathEl []string, params ...string) ([]string, bool) {
@@ -279,11 +314,19 @@ func matchV2(pathEl []string, params ...string) ([]string, bool) {
 	return matches, true
 }
 
-func (s *Server) v2Ping(resp http.ResponseWriter, req *http.Request) {
-	resp.Header().Add("Content-Type", "application/json")
-	resp.Header().Add("Content-Length", "2")
-	resp.WriteHeader(200)
-	if req.Method != http.MethodHead {
-		_, _ = resp.Write([]byte("{}"))
+func methodNotAllowed() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) v2Ping() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Content-Type", "application/json")
+		w.Header().Add("Content-Length", "2")
+		w.WriteHeader(200)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write([]byte("{}"))
+		}
 	}
 }

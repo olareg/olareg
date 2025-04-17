@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -30,8 +31,8 @@ type Config struct {
 	Storage ConfigStorage
 	API     ConfigAPI
 	Log     *slog.Logger
+	Auth    ConfigAuth
 	// TODO: proxy settings, pull only, or push+pull cache
-	// TODO: auth options (basic, bearer)
 }
 
 type ConfigHTTP struct {
@@ -80,6 +81,11 @@ type ConfigAPIReferrer struct {
 	PageCacheExpire time.Duration // time to save pages for a paged response
 	PageCacheLimit  int           // max number of paged responses to keep in memory
 	Limit           int64         // max size of a referrers response (OCI recommends 4MiB)
+}
+
+type ConfigAuth struct {
+	Handler AuthHandler  // Handler is used to create a new [http.Handler] to authenticate request
+	Token   http.Handler // Token is a [http.Handler] that receives requests to the /token route
 }
 
 func (c *Config) SetDefaults() {

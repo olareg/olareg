@@ -3,6 +3,7 @@ package olareg
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1382,7 +1383,155 @@ func TestServer(t *testing.T) {
 	}
 }
 
+func TestAuth(t *testing.T) {
+	t.Parallel()
+	boolT := true
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	// repoNew := "newrepo" // only this repo is allowed for limited access
+	repoCur := "testrepo"
+	goodUser := "user"
+	goodPass := "pass123"
+	badUser := "hacker"
+	badPass := "foobar"
+	ttServer := []struct {
+		name        string
+		conf        config.Config
+		allowAnon   bool
+		allowRead   bool
+		allowWrite  bool
+		allowDelete bool
+		authBasic   bool
+		limitRepo   bool
+	}{
+		{
+			name: "Basic Static",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					RootDir:   "./testdata",
+					GC: config.ConfigGC{
+						Frequency: -1 * time.Second,
+					},
+				},
+				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
+				},
+				Log: logger,
+				Auth: config.ConfigAuth{
+					Handler: config.NewAuthBasicStatic(map[string]string{goodUser: goodPass}, false),
+				},
+			},
+			allowAnon:   false,
+			allowRead:   true,
+			allowWrite:  true,
+			allowDelete: true,
+			authBasic:   true,
+			limitRepo:   false,
+		},
+		{
+			name: "Basic Static with Anon",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					RootDir:   "./testdata",
+					GC: config.ConfigGC{
+						Frequency: -1 * time.Second,
+					},
+				},
+				API: config.ConfigAPI{
+					DeleteEnabled: &boolT,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolT,
+					},
+					Referrer: config.ConfigAPIReferrer{
+						Limit: 512 * 1024,
+					},
+				},
+				Log: logger,
+				Auth: config.ConfigAuth{
+					Handler: config.NewAuthBasicStatic(map[string]string{goodUser: goodPass}, true),
+				},
+			},
+			allowAnon:   true,
+			allowRead:   true,
+			allowWrite:  true,
+			allowDelete: true,
+			authBasic:   true,
+			limitRepo:   false,
+		},
+		// TODO: with more auth types, add more tests that also check repo access, writes, and deletes
+	}
+	for _, tcServer := range ttServer {
+		t.Run(tcServer.name, func(t *testing.T) {
+			t.Parallel()
+			// new server
+			s := New(tcServer.conf)
+			t.Cleanup(func() { _ = s.Close() })
+			t.Run("unauth read", func(t *testing.T) {
+				tcgList := []testClientGen{
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+				}
+				// if allow anon, expect 200, else 401/403
+				if tcServer.allowAnon {
+					tcgList = append(tcgList, testClientRespStatus(http.StatusOK))
+				} else {
+					tcgList = append(tcgList, testClientRespStatus(http.StatusUnauthorized, http.StatusForbidden))
+				}
+				// request v1 manifest
+				_, err := testClientRun(t, s, "GET", "/v2/"+repoCur+"/manifests/v1", nil, tcgList...)
+				if err != nil {
+					t.Errorf("unexpected response to anonymous read: %v", err)
+				}
+			})
+			t.Run("basic auth read existing", func(t *testing.T) {
+				if tcServer.limitRepo || tcServer.allowAnon || !tcServer.authBasic {
+					return
+				}
+				// request v1 manifest
+				_, err := testClientRun(t, s, "GET", "/v2/"+repoCur+"/manifests/v1", nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientReqHeader("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(goodUser+":"+goodPass))),
+					testClientRespStatus(http.StatusOK),
+				)
+				if err != nil {
+					t.Errorf("unexpected response to authenticated read: %v", err)
+				}
+			})
+			t.Run("basic auth invalid user", func(t *testing.T) {
+				if tcServer.limitRepo || tcServer.allowAnon || !tcServer.authBasic {
+					return
+				}
+				// request v1 manifest
+				_, err := testClientRun(t, s, "GET", "/v2/"+repoCur+"/manifests/v1", nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientReqHeader("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(badUser+":"+badPass))),
+					testClientRespStatus(http.StatusUnauthorized, http.StatusForbidden),
+				)
+				if err != nil {
+					t.Errorf("unexpected response to invalid login: %v", err)
+				}
+			})
+		})
+	}
+}
+
 func TestRateLimit(t *testing.T) {
+	t.Parallel()
 	limit := 10
 	s := New(config.Config{
 		Storage: config.ConfigStorage{
@@ -1420,6 +1569,7 @@ func TestRateLimit(t *testing.T) {
 }
 
 func TestMatchV2(t *testing.T) {
+	t.Parallel()
 	tt := []struct {
 		name        string
 		pathEl      []string
