@@ -17,9 +17,9 @@
 {"name":"gha-uses-commit","key":"https://github.com/docker/build-push-action.git:v6.15.0","version":"471d1dc4e07e5cdedd4c2171150001c434f0b7a4"}
 {"name":"gha-uses-commit","key":"https://github.com/docker/login-action.git:v3.4.0","version":"74a5d142397b4f367a81961eba4e8cd7edddf772"}
 {"name":"gha-uses-commit","key":"https://github.com/docker/setup-buildx-action.git:v3.10.0","version":"b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2"}
-{"name":"gha-uses-commit","key":"https://github.com/regclient/actions.git:main","version":"ce5fd131e371ffcdd7508b478cb223b3511a9183"}
+{"name":"gha-uses-commit","key":"https://github.com/regclient/actions.git:main","version":"ed3ac54990fbd1b78be04a978e4a928fbc7b2dea"}
 {"name":"gha-uses-commit","key":"https://github.com/sigstore/cosign-installer.git:v3.8.1","version":"d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a"}
-{"name":"gha-uses-commit","key":"https://github.com/softprops/action-gh-release.git:v2.2.1","version":"c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda"}
+{"name":"gha-uses-commit","key":"https://github.com/softprops/action-gh-release.git:v2.2.2","version":"da05d552573ad5aba039eaac05058a918a7bf631"}
 {"name":"gha-uses-semver","key":"https://github.com/actions/checkout.git","version":"v4.2.2"}
 {"name":"gha-uses-semver","key":"https://github.com/actions/setup-go.git","version":"v5.4.0"}
 {"name":"gha-uses-semver","key":"https://github.com/actions/stale.git","version":"v9.1.0"}
@@ -29,7 +29,7 @@
 {"name":"gha-uses-semver","key":"https://github.com/docker/login-action.git","version":"v3.4.0"}
 {"name":"gha-uses-semver","key":"https://github.com/docker/setup-buildx-action.git","version":"v3.10.0"}
 {"name":"gha-uses-semver","key":"https://github.com/sigstore/cosign-installer.git","version":"v3.8.1"}
-{"name":"gha-uses-semver","key":"https://github.com/softprops/action-gh-release.git","version":"v2.2.1"}
+{"name":"gha-uses-semver","key":"https://github.com/softprops/action-gh-release.git","version":"v2.2.2"}
 {"name":"go-mod-golang-release","key":"golang-oldest","version":"1.22"}
 {"name":"makefile-go-vulncheck","key":"https://go.googlesource.com/vuln.git","version":"v1.1.4"}
 {"name":"makefile-gomajor","key":"https://github.com/icholy/gomajor.git","version":"v0.14.0"}
