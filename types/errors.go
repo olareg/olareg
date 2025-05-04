@@ -11,6 +11,8 @@ var (
 	ErrBlobExists = errors.New("blob exists")
 	// ErrNotFound is returned when a resource is not found.
 	ErrNotFound = errors.New("not found")
+	// ErrParsingFailed is used to indicate the input not be parsed.
+	ErrParsingFailed = errors.New("parsing failed")
 	// ErrReadOnly is returned when the storage system does not permit write access.
 	ErrReadOnly = errors.New("read only storage")
 	// ErrRepoNotAllowed is used when a repository name is not permitted.

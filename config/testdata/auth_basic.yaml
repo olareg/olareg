@@ -1,0 +1,27 @@
+users:
+  alice:
+    cred: "$2a$10$AeIxYk02nNYLrmkEIQRSse4DsFH0M9exGec0FbSDSY0fPSZ9chPoa" # password1
+  bob:
+    cred: "$2a$10$4iTFUSDqPMFRdG0ukcoNzePmjmblKtVCQF2Q50aoRymIat5TM/mXy" # password2
+
+groups:
+  admin:
+    members: ["alice"]
+  guest:
+    members: ["bob"]
+  all:
+    members: ["admin", "guest"]
+
+acls:
+  - repo: "*" # full access for admin
+    members: ["admin"]
+    access: ["read", "write", "delete"]
+  - repo: "" # v2 ping requests
+    members: ["all"]
+    access: ["read"]
+  - repo: "guest/*"
+    members: ["guest"]
+    access: ["read"]
+  - repo: "public/*"
+    anonymous: true
+    access: ["read"]

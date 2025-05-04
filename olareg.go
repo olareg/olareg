@@ -190,6 +190,7 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	access := config.AuthUnknown
 	if _, ok := matchV2(pathEl); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 		// handle v2 ping
+		access = config.AuthRead
 		handler = s.v2Ping()
 	} else if matches, ok := matchV2(pathEl, "...", "manifests", "*"); ok {
 		// handle manifest
