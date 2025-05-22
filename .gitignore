@@ -2,3 +2,4 @@ artifacts/
 bin/
 output/
 vendor/
+go.work

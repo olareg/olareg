@@ -3,8 +3,8 @@ module github.com/olareg/olareg
 go 1.22
 
 require (
-	github.com/opencontainers/go-digest v1.0.0
 	github.com/spf13/cobra v1.9.1
+	github.com/sudo-bmitch/oci-digest v0.1.2
 )
 
 require (

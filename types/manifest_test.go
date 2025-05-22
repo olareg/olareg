@@ -2,17 +2,19 @@ package types
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 )
 
 func TestIndex(t *testing.T) {
 	t.Parallel()
 	// setup some sample index structs, empty, one entry, three entries, tags, annotations, children
 	tagA, tagB, tagC, tagD, tagIndex := "A", "B", "C", "D", "index"
-	digA := digest.FromString("A")
+	digA, err := digest.FromString("A")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descA := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digA,
@@ -24,7 +26,10 @@ func TestIndex(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotRefName: tagA},
 	}
-	digB := digest.FromString("B")
+	digB, err := digest.FromString("B")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descB := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digB,
@@ -36,7 +41,10 @@ func TestIndex(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotRefName: tagB},
 	}
-	digC := digest.FromString("C")
+	digC, err := digest.FromString("C")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descC := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digC,
@@ -54,7 +62,10 @@ func TestIndex(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotReferrerSubject: digA.String()},
 	}
-	digD := digest.FromString("D")
+	digD, err := digest.FromString("D")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descD := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digD,
@@ -72,7 +83,10 @@ func TestIndex(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotReferrerSubject: digB.String()},
 	}
-	digIndex := digest.FromString("index")
+	digIndex, err := digest.FromString("index")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descIndex := Descriptor{
 		MediaType: MediaTypeOCI1ManifestList,
 		Digest:    digIndex,
@@ -175,7 +189,7 @@ func TestIndex(t *testing.T) {
 				i:          iOne,
 				arg:        "sha256:asdf",
 				expectDesc: Descriptor{},
-				expectErr:  fmt.Errorf("invalid checksum digest length"),
+				expectErr:  digest.ErrEncodingInvalid,
 			},
 			{
 				name:       "One A digest found",
@@ -484,8 +498,14 @@ func TestAddDesc(t *testing.T) {
 	t.Parallel()
 	// setup some sample index structs, empty, one entry, three entries, tags, annotations, children
 	tagA, tagB, tagC, tagD, tagIndex := "A", "B", "C", "D", "index"
-	digA := digest.FromString("A")
-	digA2 := digest.FromString("A2")
+	digA, err := digest.FromString("A")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
+	digA2, err := digest.FromString("A2")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descA := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digA,
@@ -497,7 +517,10 @@ func TestAddDesc(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotRefName: tagA},
 	}
-	digB := digest.FromString("B")
+	digB, err := digest.FromString("B")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descB := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digB,
@@ -509,7 +532,10 @@ func TestAddDesc(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotRefName: tagB},
 	}
-	digC := digest.FromString("C")
+	digC, err := digest.FromString("C")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descC := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digC,
@@ -527,7 +553,10 @@ func TestAddDesc(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotReferrerSubject: digA.String()},
 	}
-	digD := digest.FromString("D")
+	digD, err := digest.FromString("D")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descD := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digD,
@@ -545,7 +574,10 @@ func TestAddDesc(t *testing.T) {
 	// 	Size:        1,
 	// 	Annotations: map[string]string{AnnotReferrerSubject: digB.String()},
 	// }
-	digIndex := digest.FromString("index")
+	digIndex, err := digest.FromString("index")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	// descIndex := Descriptor{
 	// 	MediaType: MediaTypeOCI1ManifestList,
 	// 	Digest:    digIndex,
@@ -708,8 +740,14 @@ func TestRmDesc(t *testing.T) {
 	// setup some sample index structs, empty, one entry, three entries, tags, annotations, children
 	tagA, tagB, tagC, tagD, tagIndex := "A", "B", "C", "D", "index"
 	_, _ = tagD, tagIndex
-	digA := digest.FromString("A")
-	// digA2 := digest.FromString("A2")
+	digA, err := digest.FromString("A")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
+	// digA2, err := digest.FromString("A2")
+	// if err != nil {
+	// 	t.Fatalf("failed to generate digest: %v", err)
+	// }
 	descA := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digA,
@@ -727,7 +765,10 @@ func TestRmDesc(t *testing.T) {
 	// 	Size:        2,
 	// 	Annotations: map[string]string{AnnotRefName: tagA},
 	// }
-	digB := digest.FromString("B")
+	digB, err := digest.FromString("B")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descB := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digB,
@@ -739,7 +780,10 @@ func TestRmDesc(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotRefName: tagB},
 	}
-	digC := digest.FromString("C")
+	digC, err := digest.FromString("C")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	descC := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digC,
@@ -757,7 +801,10 @@ func TestRmDesc(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotReferrerSubject: digA.String()},
 	}
-	digD := digest.FromString("D")
+	digD, err := digest.FromString("D")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	// descD := Descriptor{
 	// 	MediaType: MediaTypeOCI1Manifest,
 	// 	Digest:    digD,
@@ -775,7 +822,10 @@ func TestRmDesc(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotReferrerSubject: digB.String()},
 	}
-	digIndex := digest.FromString("index")
+	digIndex, err := digest.FromString("index")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	// descIndex := Descriptor{
 	// 	MediaType: MediaTypeOCI1ManifestList,
 	// 	Digest:    digIndex,

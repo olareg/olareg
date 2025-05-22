@@ -11,11 +11,7 @@ import (
 	"strings"
 	"time"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/internal/store"
 	"github.com/olareg/olareg/types"
@@ -261,11 +257,16 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 		}
 		// verify / set digest
 		dAlgo := digest.Canonical
-		if dExpect != "" {
+		if !dExpect.IsZero() {
 			dAlgo = dExpect.Algorithm()
 		}
-		d := dAlgo.FromBytes(mRaw)
-		if dExpect != "" && d != dExpect {
+		d, err := dAlgo.FromBytes(mRaw)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Debug("failed to generate digest", "repo", repoStr, "arg", arg)
+			return
+		}
+		if !dExpect.IsZero() && !d.Equal(dExpect) {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest mismatch, expected "+d.String()))
 			s.log.Debug("content digest did not match request", "repo", repoStr, "arg", arg, "expect", d.String())
@@ -296,7 +297,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				s.log.Debug("manifest blobs missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
 				return
 			}
-			if m.Subject != nil && m.Subject.Digest != "" && *s.conf.API.Referrer.Enabled {
+			if m.Subject != nil && !m.Subject.Digest.IsZero() && *s.conf.API.Referrer.Enabled {
 				subject = m.Subject.Digest
 				referrer = &types.Descriptor{
 					MediaType:    mt,
@@ -327,7 +328,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				s.log.Debug("child manifests missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
 				return
 			}
-			if m.Subject != nil && m.Subject.Digest != "" && *s.conf.API.Referrer.Enabled {
+			if m.Subject != nil && !m.Subject.Digest.IsZero() && *s.conf.API.Referrer.Enabled {
 				subject = m.Subject.Digest
 				referrer = &types.Descriptor{
 					MediaType:    mt,
@@ -382,7 +383,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		// push/update referrer if detected
-		if subject != "" {
+		if !subject.IsZero() {
 			err = s.referrerAdd(repo, subject, *referrer)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)

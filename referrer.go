@@ -8,11 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/internal/store"
 	"github.com/olareg/olareg/types"
@@ -298,7 +294,10 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 	if err != nil {
 		return err
 	}
-	dig := digest.Canonical.FromBytes(iRaw)
+	dig, err := digest.Canonical.FromBytes(iRaw)
+	if err != nil {
+		return err
+	}
 	bc, _, err := repo.BlobCreate(store.BlobWithDigest(dig))
 	if err != nil && !errors.Is(err, types.ErrBlobExists) {
 		return err
@@ -368,7 +367,10 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 	if err != nil {
 		return err
 	}
-	dig := digest.Canonical.FromBytes(refRespRaw)
+	dig, err := digest.Canonical.FromBytes(refRespRaw)
+	if err != nil {
+		return err
+	}
 	bc, _, err := repo.BlobCreate(store.BlobWithDigest(dig))
 	if err != nil && !errors.Is(err, types.ErrBlobExists) {
 		return err

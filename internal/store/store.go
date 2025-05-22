@@ -12,11 +12,7 @@ import (
 	"regexp"
 	"time"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/types"
@@ -88,9 +84,6 @@ type blobConfig struct {
 
 func BlobWithAlgorithm(a digest.Algorithm) BlobOpt {
 	return func(bc *blobConfig) error {
-		if !a.Available() {
-			return fmt.Errorf("digest algorithm is unavailable: %s", string(a))
-		}
 		bc.algo = a
 		return nil
 	}
@@ -98,8 +91,8 @@ func BlobWithAlgorithm(a digest.Algorithm) BlobOpt {
 
 func BlobWithDigest(d digest.Digest) BlobOpt {
 	return func(bc *blobConfig) error {
-		if err := d.Validate(); err != nil {
-			return fmt.Errorf("invalid digest: %s: %w", d.String(), err)
+		if d.IsZero() {
+			return fmt.Errorf("invalid digest: %s", d.String())
 		}
 		bc.expect = d
 		bc.algo = d.Algorithm()
@@ -204,7 +197,7 @@ func indexIngest(repo Repo, index *types.Index, conf config.Config, locked bool)
 			valid, refSubj, refResp := indexValidReferrer(repo, curResp, locked)
 			// check for a different response already in the index
 			if valid {
-				if resp, ok := referrerResponse[refSubj.String()]; ok && resp.Digest != desc.Digest {
+				if resp, ok := referrerResponse[refSubj.String()]; ok && !resp.Digest.Equal(desc.Digest) {
 					valid = false
 				}
 			}
@@ -243,7 +236,10 @@ func indexIngest(repo Repo, index *types.Index, conf config.Config, locked bool)
 			if err != nil {
 				return mod, fmt.Errorf("failed to marshal referrers response: %w", err)
 			}
-			dig := digest.Canonical.FromBytes(respRaw)
+			dig, err := digest.Canonical.FromBytes(respRaw)
+			if err != nil {
+				return mod, fmt.Errorf("failed to compute digest for referrers response: %w", err)
+			}
 			bc, _, err := repo.BlobCreate(BlobWithDigest(dig))
 			if err != nil {
 				return mod, err
@@ -331,9 +327,9 @@ func indexValidReferrer(repo Repo, index types.Index, locked bool) (bool, digest
 			continue
 		}
 		// ensure all referrers point to the same subject
-		if subject == "" {
+		if subject.IsZero() {
 			subject = refSubj.Digest
-		} else if subject != refSubj.Digest {
+		} else if !subject.Equal(refSubj.Digest) {
 			valid = false
 		}
 		// ensure all descriptors match expected contents
@@ -352,7 +348,7 @@ func indexValidReferrer(repo Repo, index types.Index, locked bool) (bool, digest
 		responses[refSubj.Digest] = append(responses[refSubj.Digest], refDesc)
 	}
 	if !valid {
-		subject = ""
+		subject = digest.Digest{}
 	}
 	return valid, subject, responses
 }
@@ -416,7 +412,7 @@ func repoGarbageCollect(repo Repo, conf config.Config, index types.Index, locked
 		// referrers responses
 		if d.Annotations != nil && d.Annotations[types.AnnotReferrerSubject] != "" {
 			dig, _ := digest.Parse(d.Annotations[types.AnnotReferrerSubject])
-			subjExists := (dig != "")
+			subjExists := (!dig.IsZero())
 			if _, err := repo.blobMeta(dig, locked); subjExists && err != nil {
 				subjExists = false
 			}

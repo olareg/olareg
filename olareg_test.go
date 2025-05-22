@@ -19,13 +19,9 @@ import (
 	"testing"
 	"time"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
-
 	"slices"
+
+	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/copy"
@@ -529,7 +525,7 @@ func TestServer(t *testing.T) {
 						if _, ok := sd["image-amd64"].blob[dig]; ok {
 							continue // skip dup blobs
 						}
-						resp, err := testClientRun(t, s, "HEAD", "/v2/gc/blobs/"+string(dig), nil)
+						resp, err := testClientRun(t, s, "HEAD", "/v2/gc/blobs/"+dig.String(), nil)
 						if err != nil {
 							t.Errorf("failed to run head request: %v", err)
 						}
@@ -597,7 +593,10 @@ func TestServer(t *testing.T) {
 				repo := "monolithic"
 				// send good blob
 				exBlob := []byte(`example monolithic content`)
-				exDigGood := digest.Canonical.FromBytes(exBlob)
+				exDigGood, err := digest.Canonical.FromBytes(exBlob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				u, err := url.Parse("/v2/" + repo + "/blobs/uploads/")
 				if err != nil {
 					t.Fatalf("failed to parse blob post url: %v", err)
@@ -624,7 +623,10 @@ func TestServer(t *testing.T) {
 					return
 				}
 				// send a bad blob
-				exDigBad := digest.Canonical.FromString("bad blob digest")
+				exDigBad, err := digest.Canonical.FromString("bad blob digest")
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				q.Set("digest", exDigBad.String())
 				u.RawQuery = q.Encode()
 				_, err = testClientRun(t, s, "POST", u.String(), exBlob,
@@ -746,7 +748,10 @@ func TestServer(t *testing.T) {
 				}
 				// push a referrer to the corrupt repo with the v2 subject
 				emptyBlobBytes := []byte("{}")
-				emptyBlobDig := digest.Canonical.FromBytes(emptyBlobBytes)
+				emptyBlobDig, err := digest.Canonical.FromBytes(emptyBlobBytes)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				_, err = testAPIBlobPostPut(t, s, corruptRepo, emptyBlobDig, emptyBlobBytes)
 				if err != nil {
 					t.Fatalf("failed to push empty blob: %v", err)
@@ -777,7 +782,10 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to marshal referrer: %v", err)
 				}
-				referrerDig := digest.Canonical.FromBytes(referrerBytes)
+				referrerDig, err := digest.Canonical.FromBytes(referrerBytes)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				_, err = testAPIManifestPut(t, s, corruptRepo, referrerDig.String(), referrerBytes)
 				if err != nil {
 					t.Fatalf("failed to push referrer: %v", err)
@@ -812,12 +820,18 @@ func TestServer(t *testing.T) {
 				}
 				// generate referrer manifest with annotations, push blob
 				emptyBlob := []byte(`{}`)
-				emptyDig := digest.Canonical.FromBytes(emptyBlob)
+				emptyDig, err := digest.Canonical.FromBytes(emptyBlob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				if _, err := testAPIBlobPostPut(t, s, "referrer", emptyDig, emptyBlob); err != nil {
 					return
 				}
 				exBlob := []byte(`example artifact content`)
-				exDig := digest.Canonical.FromBytes(exBlob)
+				exDig, err := digest.Canonical.FromBytes(exBlob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				if _, err := testAPIBlobPostPut(t, s, "referrer", exDig, exBlob); err != nil {
 					return
 				}
@@ -862,7 +876,10 @@ func TestServer(t *testing.T) {
 					if err != nil {
 						t.Fatalf("failed to marshal artifact")
 					}
-					artDig := digest.Canonical.FromBytes(artBytes)
+					artDig, err := digest.Canonical.FromBytes(artBytes)
+					if err != nil {
+						t.Fatalf("failed to generate digest: %v", err)
+					}
 					if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
 						return
 					}
@@ -912,7 +929,10 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to marshal artifact")
 				}
-				artDig := digest.Canonical.FromBytes(artBytes)
+				artDig, err := digest.Canonical.FromBytes(artBytes)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				if _, err := testAPIManifestPut(t, s, "referrer", artDig.String(), artBytes); err != nil {
 					return
 				}
@@ -1000,11 +1020,20 @@ func TestServer(t *testing.T) {
 				tag := "sha512"
 				// setup image content with one layer sha256, and rest of the content sha512
 				layer1Blob := []byte("hello layer1")
-				layer1Dig := digest.SHA512.FromBytes(layer1Blob)
+				layer1Dig, err := digest.SHA512.FromBytes(layer1Blob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				layer2Blob := []byte("hello layer2")
-				layer2Dig := digest.SHA512.FromBytes(layer2Blob)
+				layer2Dig, err := digest.SHA512.FromBytes(layer2Blob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				layer3Blob := []byte("hello layer3")
-				layer3Dig := digest.SHA512.FromBytes(layer3Blob)
+				layer3Dig, err := digest.SHA512.FromBytes(layer3Blob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				configJSON := sampleImage{
 					Platform: types.Platform{
 						OS:           "linux",
@@ -1024,7 +1053,10 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to marshal config: %v", err)
 				}
-				configDig := digest.SHA512.FromBytes(configBlob)
+				configDig, err := digest.SHA512.FromBytes(configBlob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				man := types.Manifest{
 					SchemaVersion: 2,
 					MediaType:     types.MediaTypeOCI1Manifest,
@@ -1055,7 +1087,10 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to marshal manifest: %v", err)
 				}
-				manDig := digest.SHA512.FromBytes(manBlob)
+				manDig, err := digest.SHA512.FromBytes(manBlob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				ind := types.Index{
 					SchemaVersion: 2,
 					MediaType:     types.MediaTypeOCI1ManifestList,
@@ -1071,7 +1106,10 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to marshal index: %v", err)
 				}
-				indDig := digest.SHA512.FromBytes(indBlob)
+				indDig, err := digest.SHA512.FromBytes(indBlob)
+				if err != nil {
+					t.Fatalf("failed to generate digest: %v", err)
+				}
 				// push content
 				// first blob is a standard post/put, depends on backend store able to change digest algorithm
 				_, err = testAPIBlobPostPut(t, s, repo, layer1Dig, layer1Blob)
@@ -1276,9 +1314,9 @@ func TestServer(t *testing.T) {
 					t.Fatalf("failed to generate sample data")
 				}
 				// create a digest with an unknown algorithm
-				badDig := digest.Digest("unknown:12345")
+				badDig := "unknown:12345"
 				// attempt to get/head blob
-				u, err := url.Parse("/v2/" + repo + "/blobs/" + badDig.String())
+				u, err := url.Parse("/v2/" + repo + "/blobs/" + badDig)
 				if err != nil {
 					t.Fatalf("failed to parse URL: %v", err)
 				}
@@ -1299,7 +1337,7 @@ func TestServer(t *testing.T) {
 					t.Errorf("failed to send delete request: %v", err)
 				}
 				// attempt to push blob
-				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/?digest=" + url.QueryEscape(badDig.String()))
+				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/?digest=" + url.QueryEscape(badDig))
 				if err != nil {
 					t.Fatalf("failed to parse URL: %v", err)
 				}
@@ -1318,7 +1356,7 @@ func TestServer(t *testing.T) {
 					t.Errorf("failed to send blob post with algorithm: %v", err)
 				}
 				// attempt to get/head manifest
-				u, err = url.Parse("/v2/" + repo + "/manifests/" + badDig.String())
+				u, err = url.Parse("/v2/" + repo + "/manifests/" + badDig)
 				if err != nil {
 					t.Fatalf("failed to parse URL: %v", err)
 				}
@@ -1347,7 +1385,7 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to send manifest put: %v", err)
 				}
-				u, err = url.Parse("/v2/" + repo + "/manifests/bad?digest=" + url.QueryEscape(badDig.String()))
+				u, err = url.Parse("/v2/" + repo + "/manifests/bad?digest=" + url.QueryEscape(badDig))
 				if err != nil {
 					t.Fatalf("failed to parse URL: %v", err)
 				}
@@ -2086,7 +2124,10 @@ func genSampleData(t *testing.T) (sampleData, error) {
 		if err != nil {
 			return nil, err
 		}
-		confDig := digest.Canonical.FromBytes(confJSON)
+		confDig, err := digest.Canonical.FromBytes(confJSON)
+		if err != nil {
+			t.Fatalf("failed to generate digest: %v", err)
+		}
 		entry.blob[confDig] = confJSON
 		man.Config = types.Descriptor{
 			MediaType: types.MediaTypeOCI1ImageConfig,
@@ -2097,7 +2138,10 @@ func genSampleData(t *testing.T) (sampleData, error) {
 		if err != nil {
 			return nil, err
 		}
-		manDig := digest.Canonical.FromBytes(manJSON)
+		manDig, err := digest.Canonical.FromBytes(manJSON)
+		if err != nil {
+			t.Fatalf("failed to generate digest: %v", err)
+		}
 		entry.manifest[manDig] = manJSON
 		entry.manifestList = append(entry.manifestList, manDig)
 		images[i] = &entry
@@ -2128,7 +2172,10 @@ func genSampleData(t *testing.T) (sampleData, error) {
 	if err != nil {
 		return nil, err
 	}
-	indDig := digest.Canonical.FromBytes(indJSON)
+	indDig, err := digest.Canonical.FromBytes(indJSON)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	indEntry := sampleEntry{
 		blob: map[digest.Digest][]byte{},
 		manifest: map[digest.Digest][]byte{
@@ -2157,19 +2204,25 @@ func genSampleData(t *testing.T) (sampleData, error) {
 func genSampleLayer(rng *rand.Rand, size int) (digest.Digest, digest.Digest, []byte, error) {
 	layerOrigBytes := make([]byte, size)
 	if _, err := rng.Read(layerOrigBytes); err != nil {
-		return "", "", []byte{}, err
+		return digest.Digest{}, digest.Digest{}, []byte{}, err
 	}
 	var layerCompBuf bytes.Buffer
 	gzW := gzip.NewWriter(&layerCompBuf)
 	if _, err := gzW.Write(layerOrigBytes); err != nil {
-		return "", "", []byte{}, err
+		return digest.Digest{}, digest.Digest{}, []byte{}, err
 	}
 	if err := gzW.Close(); err != nil {
-		return "", "", []byte{}, err
+		return digest.Digest{}, digest.Digest{}, []byte{}, err
 	}
 	layerCompBytes := layerCompBuf.Bytes()
-	digOrig := digest.Canonical.FromBytes(layerOrigBytes)
-	digComp := digest.Canonical.FromBytes(layerCompBytes)
+	digOrig, err := digest.Canonical.FromBytes(layerOrigBytes)
+	if err != nil {
+		return digest.Digest{}, digest.Digest{}, []byte{}, err
+	}
+	digComp, err := digest.Canonical.FromBytes(layerCompBytes)
+	if err != nil {
+		return digest.Digest{}, digest.Digest{}, []byte{}, err
+	}
 	return digOrig, digComp, layerCompBytes, nil
 }
 

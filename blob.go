@@ -12,11 +12,7 @@ import (
 	"strings"
 	"time"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/internal/store"
 	"github.com/olareg/olareg/types"
@@ -199,8 +195,8 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 		// TODO(bmitch): the digest-algorithm field is EXPERIMENTAL and needs to be adopted by OCI
 		algoStr := r.URL.Query().Get("digest-algorithm")
 		if algoStr != "" {
-			algo := digest.Algorithm(algoStr)
-			if !algo.Available() {
+			algo, err := digest.AlgorithmLookup(algoStr)
+			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("unsupported digest algorithm"))
 				s.log.Error("invalid digest algorithm", "algo", algoStr, "repo", repoStr)
@@ -485,7 +481,7 @@ func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Error("invalid or missing digest", "err", err, "repo", repoStr, "sessionID", sessionID, "digest", r.URL.Query().Get("digest"))
 			return
 		}
-		if bc.Size() == 0 && d.Algorithm() != bc.Digest().Algorithm() {
+		if bc.Size() == 0 && !d.Algorithm().Equal(bc.Digest().Algorithm()) {
 			err = bc.ChangeAlgorithm(d.Algorithm())
 			if err != nil {
 				// non-fatal error, there's a second chance to handle this with bc.Verify

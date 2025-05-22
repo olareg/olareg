@@ -3,11 +3,7 @@ package types
 import (
 	"encoding/json"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 )
 
 // Index references manifests for various platforms.
@@ -259,7 +255,7 @@ func (i *Index) RmDesc(d Descriptor) {
 			referrer = d.Annotations[AnnotReferrerSubject]
 		}
 	}
-	if tag == "" && d.Digest != "" {
+	if tag == "" && !d.Digest.IsZero() {
 		for mi := len(i.childManifests) - 1; mi >= 0; mi-- {
 			if i.childManifests[mi].Digest == d.Digest {
 				i.childManifests[mi] = i.childManifests[len(i.childManifests)-1]
@@ -269,7 +265,7 @@ func (i *Index) RmDesc(d Descriptor) {
 	}
 	found := false
 	for mi := len(i.Manifests) - 1; mi >= 0; mi-- {
-		if d.Digest != "" && i.Manifests[mi].Digest == d.Digest {
+		if !d.Digest.IsZero() && i.Manifests[mi].Digest.Equal(d.Digest) {
 			if tag != "" {
 				// deleting a tag leaves one untagged manifest entry
 				if found && (i.Manifests[mi].Annotations == nil || i.Manifests[mi].Annotations[AnnotRefName] == tag) {
@@ -283,7 +279,7 @@ func (i *Index) RmDesc(d Descriptor) {
 				i.Manifests[mi] = i.Manifests[len(i.Manifests)-1]
 				i.Manifests = i.Manifests[:len(i.Manifests)-1]
 			}
-		} else if d.Digest == "" && i.Manifests[mi].Annotations != nil &&
+		} else if d.Digest.IsZero() && i.Manifests[mi].Annotations != nil &&
 			((tag != "" && i.Manifests[mi].Annotations[AnnotRefName] == tag) ||
 				(referrer != "" && i.Manifests[mi].Annotations[AnnotReferrerSubject] == referrer)) {
 			// delete all entries pointing to a tag or referrer when digest isn't defined
@@ -312,7 +308,7 @@ func ManifestReferrerDescriptor(raw []byte, d Descriptor) (Descriptor, Descripto
 	if err != nil {
 		return subject, rd, err
 	}
-	if referrer.Subject == nil || referrer.Subject.Digest == "" {
+	if referrer.Subject == nil || referrer.Subject.Digest.IsZero() {
 		return subject, rd, ErrNotFound
 	}
 	subject = *referrer.Subject
@@ -320,8 +316,11 @@ func ManifestReferrerDescriptor(raw []byte, d Descriptor) (Descriptor, Descripto
 	if referrer.MediaType != "" {
 		rd.MediaType = referrer.MediaType
 	}
-	if rd.Digest == "" {
-		rd.Digest = digest.Canonical.FromBytes(raw)
+	if rd.Digest.IsZero() {
+		rd.Digest, err = digest.Canonical.FromBytes(raw)
+		if err != nil {
+			return subject, rd, err
+		}
 	}
 	rd.Size = int64(len(raw))
 	if referrer.ArtifactType != "" {

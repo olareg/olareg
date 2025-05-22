@@ -1,11 +1,7 @@
 package types
 
 import (
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 )
 
 // Descriptor is used in manifests to refer to content by media type, size, and digest.
