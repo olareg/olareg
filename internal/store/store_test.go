@@ -12,11 +12,7 @@ import (
 	"testing"
 	"time"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/copy"
@@ -43,9 +39,15 @@ func TestStore(t *testing.T) {
 	existingTag := "v1"
 	newRepo := "new-repo"
 	newBlobRaw := []byte("{}")
-	newBlobDigest := digest.SHA256.FromBytes(newBlobRaw)
-	newBlobDigest512 := digest.SHA512.FromBytes(newBlobRaw)
-	invalidBlobDigest := digest.Digest("invalid:digest")
+	newBlobDigest, err := digest.SHA256.FromBytes(newBlobRaw)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
+	newBlobDigest512, err := digest.SHA512.FromBytes(newBlobRaw)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
+	invalidBlobDigest := digest.Digest{}
 	newManifest := types.Manifest{
 		SchemaVersion: 2,
 		MediaType:     types.MediaTypeOCI1Manifest,
@@ -71,7 +73,10 @@ func TestStore(t *testing.T) {
 		t.Errorf("failed to marshal manifest: %v", err)
 		return
 	}
-	newManifestDigest := digest.Canonical.FromBytes(newManifestRaw)
+	newManifestDigest, err := digest.Canonical.FromBytes(newManifestRaw)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	newTag := "artifact"
 	tempDir := t.TempDir()
 	err = copy.Copy(tempDir+"/"+existingRepo, "../../testdata/"+existingRepo)
@@ -311,7 +316,7 @@ func TestStore(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to create new blob: %v", err)
 				}
-				err = bc.ChangeAlgorithm(digest.Algorithm("bad-algo"))
+				err = bc.ChangeAlgorithm(digest.Algorithm{})
 				if err == nil {
 					t.Errorf("change to invalid algorithm did not fail")
 				}
@@ -756,15 +761,24 @@ func TestGarbageCollect(t *testing.T) {
 	childList := []types.Descriptor{}
 	// - dangling blob
 	dataBlob := []byte("dangling blob")
-	digDataBlob := digest.Canonical.FromBytes(dataBlob)
+	digDataBlob, err := digest.Canonical.FromBytes(dataBlob)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	blobList = append(blobList, dataBlob)
 	// - blob in index
 	indexBlob := []byte("index blob")
-	digIndexBlob := digest.Canonical.FromBytes(indexBlob)
+	digIndexBlob, err := digest.Canonical.FromBytes(indexBlob)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	blobList = append(blobList, indexBlob)
 	// - images
 	dataImageConf := []byte(`{}`)
-	digImageConf := digest.Canonical.FromBytes(dataImageConf)
+	digImageConf, err := digest.Canonical.FromBytes(dataImageConf)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	blobList = append(blobList, dataImageConf)
 	imageCount := 4 // 2 index entries, tagged, and untagged
 	const (
@@ -779,7 +793,10 @@ func TestGarbageCollect(t *testing.T) {
 	digImage := make([]digest.Digest, imageCount)
 	for i := range imageCount {
 		dataImageLayer[i] = fmt.Appendf(nil, "layer for image %d", i)
-		digImageLayer[i] = digest.Canonical.FromBytes(dataImageLayer[i])
+		digImageLayer[i], err = digest.Canonical.FromBytes(dataImageLayer[i])
+		if err != nil {
+			t.Fatalf("failed to generate digest: %v", err)
+		}
 		dataImageMan := types.Manifest{
 			SchemaVersion: 2,
 			MediaType:     types.MediaTypeOCI1Manifest,
@@ -800,7 +817,10 @@ func TestGarbageCollect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to marshal image manifest: %v", err)
 		}
-		digImage[i] = digest.Canonical.FromBytes(dataImage[i])
+		digImage[i], err = digest.Canonical.FromBytes(dataImage[i])
+		if err != nil {
+			t.Fatalf("failed to generate digest: %v", err)
+		}
 	}
 	blobList = append(blobList, dataImageLayer...)
 	blobList = append(blobList, dataImage...)
@@ -857,7 +877,10 @@ func TestGarbageCollect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal index manifest: %v", err)
 	}
-	digIndex := digest.Canonical.FromBytes(dataIndex)
+	digIndex, err := digest.Canonical.FromBytes(dataIndex)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	blobList = append(blobList, dataIndex)
 	descList = append(descList,
 		types.Descriptor{
@@ -870,7 +893,10 @@ func TestGarbageCollect(t *testing.T) {
 		},
 	)
 	// - referrers to various digests
-	digUnknown := digest.Canonical.FromString("unknown manifest digest")
+	digUnknown, err := digest.Canonical.FromString("unknown manifest digest")
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	artifactType := "application/vnd.example.test"
 	subjectList := map[digest.Digest][]types.Descriptor{}
 	referrerCount := 7
@@ -924,7 +950,10 @@ func TestGarbageCollect(t *testing.T) {
 	}
 	for i, subj := range subjReferrer {
 		dataLayer := fmt.Appendf(nil, "layer for referrer %d", i)
-		digLayer := digest.Canonical.FromBytes(dataLayer)
+		digLayer, err := digest.Canonical.FromBytes(dataLayer)
+		if err != nil {
+			t.Fatalf("failed to generate digest: %v", err)
+		}
 		dataMan := types.Manifest{
 			SchemaVersion: 2,
 			MediaType:     types.MediaTypeOCI1Manifest,
@@ -947,7 +976,10 @@ func TestGarbageCollect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to marshal referrer: %v", err)
 		}
-		dig := digest.Canonical.FromBytes(data)
+		dig, err := digest.Canonical.FromBytes(data)
+		if err != nil {
+			t.Fatalf("failed to generate digest: %v", err)
+		}
 		digReferrerLayer[i] = digLayer
 		digReferrer[i] = dig
 		blobList = append(blobList, dataLayer, data)
@@ -985,7 +1017,10 @@ func TestGarbageCollect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal index manifest: %v", err)
 	}
-	digCircular := digest.Canonical.FromBytes(dataCircular)
+	digCircular, err := digest.Canonical.FromBytes(dataCircular)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
 	blobList = append(blobList, dataCircular)
 	childList = append(childList, types.Descriptor{
 		MediaType: types.MediaTypeOCI1ManifestList,
@@ -1009,7 +1044,10 @@ func TestGarbageCollect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to marshal referrer response: %v", err)
 		}
-		dig := digest.Canonical.FromBytes(resp)
+		dig, err := digest.Canonical.FromBytes(resp)
+		if err != nil {
+			t.Fatalf("failed to generate digest: %v", err)
+		}
 		blobList = append(blobList, resp)
 		descList = append(descList, types.Descriptor{
 			MediaType: types.MediaTypeOCI1ManifestList,

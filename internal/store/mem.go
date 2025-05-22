@@ -14,11 +14,7 @@ import (
 	"sync"
 	"time"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
+	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/cache"
@@ -56,8 +52,8 @@ type memRepoBlob struct {
 type memRepoUpload struct {
 	mu        sync.Mutex
 	buffer    *bytes.Buffer
-	w         io.Writer
-	d         digest.Digester
+	alg       digest.Algorithm
+	w         digest.Writer
 	expect    digest.Digest
 	mr        *memRepo
 	sessionID string
@@ -281,8 +277,8 @@ func (mr *memRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
 }
 
 func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error) {
-	if err := d.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	if d.IsZero() {
+		return nil, fmt.Errorf("invalid digest: %s", d.String())
 	}
 	if !locked {
 		mr.mu.Lock()
@@ -314,8 +310,8 @@ func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 // blobMeta returns metadata on a blob.
 func (mr *memRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
 	m := blobMeta{}
-	if err := d.Validate(); err != nil {
-		return m, fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	if d.IsZero() {
+		return m, fmt.Errorf("invalid digest: %s", d.String())
 	}
 	if !locked {
 		mr.mu.Lock()
@@ -362,7 +358,7 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
 	// if blob exists, return the appropriate error
-	if conf.expect != "" {
+	if !conf.expect.IsZero() {
 		b, ok := mr.blobs[conf.expect]
 		if b == nil {
 			ok = false
@@ -380,12 +376,11 @@ func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 		return nil, "", fmt.Errorf("session ID collision")
 	}
 	buffer := &bytes.Buffer{}
-	d := conf.algo.Digester()
-	w := io.MultiWriter(buffer, d.Hash())
+	w := digest.NewWriter(buffer, conf.algo)
 	bc := &memRepoUpload{
 		buffer:    buffer,
+		alg:       conf.algo,
 		w:         w,
-		d:         d,
 		expect:    conf.expect,
 		mr:        mr,
 		sessionID: sessionID,
@@ -405,8 +400,8 @@ func (mr *memRepo) blobDelete(d digest.Digest, locked bool) error {
 	if *mr.conf.Storage.ReadOnly {
 		return types.ErrReadOnly
 	}
-	if err := d.Validate(); err != nil {
-		return fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	if d.IsZero() {
+		return fmt.Errorf("invalid digest: %s", d.String())
 	}
 	if !locked {
 		mr.mu.Lock()
@@ -558,20 +553,25 @@ func (mru *memRepoUpload) Write(p []byte) (int, error) {
 func (mru *memRepoUpload) Close() error {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
-	if mru.expect != "" && mru.d.Digest() != mru.expect {
-		return fmt.Errorf("digest mismatch, expected %s, received %s", mru.expect, mru.d.Digest())
+	if !mru.expect.IsZero() && !mru.w.Verify(mru.expect) {
+		d, _ := mru.w.Digest()
+		return fmt.Errorf("digest mismatch, expected %s, received %s", mru.expect.String(), d.String())
 	}
 	// relocate []byte to in memory blob store
 	mru.mr.mu.Lock()
 	mru.mr.timeMod = time.Now()
-	mru.mr.blobs[mru.d.Digest()] = &memRepoBlob{
+	d, err := mru.w.Digest()
+	if err != nil {
+		return fmt.Errorf("failed to compute digest: %v", err)
+	}
+	mru.mr.blobs[d] = &memRepoBlob{
 		b: mru.buffer.Bytes(),
 		m: blobMeta{
 			mod: time.Now(),
 		},
 	}
 	mru.mr.mu.Unlock()
-	mru.mr.log.Debug("blob created", "repo", mru.mr.path, "digest", mru.d.Digest().String())
+	mru.mr.log.Debug("blob created", "repo", mru.mr.path, "digest", d.String())
 	return mru.mr.uploads.Delete(mru.sessionID)
 }
 
@@ -591,19 +591,19 @@ func (mru *memRepoUpload) Size() int64 {
 
 // ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
 func (mru *memRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
-	if !algo.Available() {
-		return fmt.Errorf("algorithm not available: %s", string(algo))
+	if algo.IsZero() {
+		return fmt.Errorf("algorithm not available: %s", algo.String())
 	}
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
-	if algo == mru.d.Digest().Algorithm() {
+	if algo.Equal(mru.alg) {
 		return nil
 	}
 	if mru.buffer.Len() > 0 {
 		return fmt.Errorf("unable to change algorithm after first write")
 	}
-	mru.d = algo.Digester()
-	mru.w = io.MultiWriter(mru.buffer, mru.d.Hash())
+	mru.alg = algo
+	mru.w = digest.NewWriter(mru.buffer, algo)
 	return nil
 }
 
@@ -611,30 +611,36 @@ func (mru *memRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
 func (mru *memRepoUpload) Digest() digest.Digest {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
-	return mru.d.Digest()
+	// any errors results in a zero value digest
+	d, _ := mru.w.Digest()
+	return d
 }
 
 // Verify ensures a digest matches the content.
 func (mru *memRepoUpload) Verify(expect digest.Digest) error {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
-	if mru.d.Digest() == expect {
+	if mru.w.Verify(expect) {
 		return nil
 	}
-	if err := expect.Validate(); err != nil {
-		return fmt.Errorf("invalid digest: %w", err)
+	if expect.IsZero() {
+		return fmt.Errorf("invalid digest")
 	}
-	if mru.d.Digest().Algorithm() != expect.Algorithm() {
+	if !mru.alg.Equal(expect.Algorithm()) {
 		// rescan content on algorithm change
-		mru.d = expect.Algorithm().Digester()
-		mru.w = io.MultiWriter(mru.buffer, mru.d.Hash())
-		_, err := mru.d.Hash().Write(mru.buffer.Bytes())
+		mru.alg = expect.Algorithm()
+		mru.w = digest.NewWriter(mru.buffer, mru.alg)
+		_, err := mru.w.Hash().Write(mru.buffer.Bytes())
 		if err != nil {
 			return err
 		}
-		if mru.d.Digest() == expect {
+		if mru.w.Verify(expect) {
 			return nil
 		}
 	}
-	return fmt.Errorf("digest mismatch, expected %s, received %s", expect, mru.d.Digest())
+	d, err := mru.w.Digest()
+	if err != nil {
+		return fmt.Errorf("failed to compute digest: %w", err)
+	}
+	return fmt.Errorf("digest mismatch, expected %s, received %s", expect.String(), d.String())
 }

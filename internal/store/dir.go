@@ -10,17 +10,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	// imports required for go-digest
-	_ "crypto/sha256"
-	_ "crypto/sha512"
-
-	"github.com/opencontainers/go-digest"
-
-	"slices"
+	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/config"
 	"github.com/olareg/olareg/internal/cache"
@@ -56,9 +51,9 @@ type dirRepo struct {
 type dirRepoUpload struct {
 	mu        sync.Mutex
 	fh        *os.File
-	w         io.Writer
+	alg       digest.Algorithm
+	w         digest.Writer
 	size      int64
-	d         digest.Digester
 	expect    digest.Digest
 	path      string
 	filename  string
@@ -309,8 +304,8 @@ func (dr *dirRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, err
 	if !dr.exists {
 		return nil, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
-	if err := d.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	if d.IsZero() {
+		return nil, fmt.Errorf("invalid digest: %s", d.String())
 	}
 	fh, err := os.Open(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
 	if err != nil {
@@ -329,8 +324,8 @@ func (dr *dirRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
 		return m, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
 
-	if err := d.Validate(); err != nil {
-		return m, fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	if d.IsZero() {
+		return m, fmt.Errorf("invalid digest: %s", d.String())
 	}
 	fi, err := os.Stat(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
 	if err != nil {
@@ -364,10 +359,7 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 		}
 	}
 	// if blob exists, return the appropriate error
-	if conf.expect != "" {
-		if err := conf.expect.Validate(); err != nil {
-			return nil, "", fmt.Errorf("invalid digest: %s: %w", string(conf.expect), err)
-		}
+	if !conf.expect.IsZero() {
 		_, err := os.Stat(filepath.Join(dr.path, blobsDir, conf.expect.Algorithm().String(), conf.expect.Encoded()))
 		if err == nil {
 			return nil, "", types.ErrBlobExists
@@ -401,12 +393,11 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 	}
 	filename := tf.Name()
 	// start a new digester with the appropriate algo
-	d := conf.algo.Digester()
-	w := io.MultiWriter(tf, d.Hash())
+	w := digest.NewWriter(tf, conf.algo)
 	bc := &dirRepoUpload{
 		fh:        tf,
+		alg:       conf.algo,
 		w:         w,
-		d:         d,
 		expect:    conf.expect,
 		path:      dr.path,
 		filename:  filename,
@@ -430,8 +421,8 @@ func (dr *dirRepo) blobDelete(d digest.Digest, locked bool) error {
 	if !dr.exists {
 		return fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
-	if err := d.Validate(); err != nil {
-		return fmt.Errorf("invalid digest: %s: %w", string(d), err)
+	if d.IsZero() {
+		return fmt.Errorf("invalid digest: %s", d.String())
 	}
 	filename := filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded())
 	fi, err := os.Stat(filename)
@@ -708,7 +699,7 @@ func (dr *dirRepo) gc() error {
 func (dru *dirRepoUpload) Write(p []byte) (int, error) {
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
-	if dru.w == nil {
+	if dru.fh == nil {
 		return 0, fmt.Errorf("writer is closed")
 	}
 	// verify session still exists and update last write time
@@ -725,15 +716,21 @@ func (dru *dirRepoUpload) Close() error {
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
 	err := dru.fh.Close()
+	dru.fh = nil
 	if err != nil {
 		return errors.Join(err, os.Remove(dru.filename))
 	}
-	if dru.expect != "" && dru.d.Digest() != dru.expect {
-		return errors.Join(fmt.Errorf("digest mismatch, expected %s, received %s", dru.expect, dru.d.Digest()),
+	dig, err := dru.w.Digest()
+	if err != nil {
+		return errors.Join(fmt.Errorf("failed to compute the digest: %w", err),
+			os.Remove(dru.filename))
+	}
+	if !dru.expect.IsZero() && !dig.Equal(dru.expect) {
+		return errors.Join(fmt.Errorf("digest mismatch, expected %s, received %s", dru.expect.String(), dig.String()),
 			os.Remove(dru.filename))
 	}
 	// move temp file to blob store
-	tgtDir := filepath.Join(dru.path, blobsDir, dru.d.Digest().Algorithm().String())
+	tgtDir := filepath.Join(dru.path, blobsDir, dig.Algorithm().String())
 	fi, err := os.Stat(tgtDir)
 	if err == nil && !fi.IsDir() {
 		return errors.Join(fmt.Errorf("failed to move file to blob storage, %s is not a directory", tgtDir),
@@ -747,9 +744,9 @@ func (dru *dirRepoUpload) Close() error {
 				os.Remove(dru.filename))
 		}
 	}
-	blobName := filepath.Join(tgtDir, dru.d.Digest().Encoded())
+	blobName := filepath.Join(tgtDir, dig.Encoded())
 	err = errors.Join(os.Rename(dru.filename, blobName), dru.dr.uploads.Delete(dru.sessionID))
-	dru.dr.log.Debug("blob created", "repo", dru.dr.name, "digest", dru.d.Digest().String(), "err", err)
+	dru.dr.log.Debug("blob created", "repo", dru.dr.name, "digest", dig.String(), "err", err)
 	return err
 }
 
@@ -761,7 +758,6 @@ func (dru *dirRepoUpload) Cancel() error {
 }
 
 func (dru *dirRepoUpload) delete() error {
-	dru.w = nil
 	if dru.fh != nil {
 		_ = dru.fh.Close()
 		dru.fh = nil
@@ -788,19 +784,19 @@ func (dru *dirRepoUpload) Size() int64 {
 
 // ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
 func (dru *dirRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
-	if !algo.Available() {
-		return fmt.Errorf("algorithm not available: %s", string(algo))
+	if algo.IsZero() {
+		return fmt.Errorf("algorithm not available: %s", algo.String())
 	}
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
-	if algo == dru.d.Digest().Algorithm() {
+	if algo.Equal(dru.alg) {
 		return nil
 	}
 	if dru.size > 0 {
 		return fmt.Errorf("unable to change algorithm after first write")
 	}
-	dru.d = algo.Digester()
-	dru.w = io.MultiWriter(dru.fh, dru.d.Hash())
+	dru.alg = algo
+	dru.w = digest.NewWriter(dru.fh, algo)
 	return nil
 }
 
@@ -808,36 +804,42 @@ func (dru *dirRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
 func (dru *dirRepoUpload) Digest() digest.Digest {
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
-	return dru.d.Digest()
+	// any errors results in a zero value digest
+	d, _ := dru.w.Digest()
+	return d
 }
 
 // Verify ensures a digest matches the content.
 func (dru *dirRepoUpload) Verify(expect digest.Digest) error {
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
-	if dru.d.Digest() == expect {
+	if dru.w.Verify(expect) {
 		return nil
 	}
-	if err := expect.Validate(); err != nil {
-		return fmt.Errorf("invalid digest: %w", err)
+	if expect.IsZero() {
+		return fmt.Errorf("invalid digest")
 	}
-	if dru.d.Digest().Algorithm() != expect.Algorithm() {
+	if !dru.alg.Equal(expect.Algorithm()) {
 		// rescan content on algorithm change
-		dru.d = expect.Algorithm().Digester()
-		dru.w = io.MultiWriter(dru.fh, dru.d.Hash())
+		dru.alg = expect.Algorithm()
+		dru.w = digest.NewWriter(dru.fh, dru.alg)
 		_, err := dru.fh.Seek(0, io.SeekStart)
 		if err != nil {
 			return fmt.Errorf("seek failed, required to recompute digest: %w", err)
 		}
-		_, err = io.Copy(dru.d.Hash(), dru.fh)
+		_, err = io.Copy(dru.w.Hash(), dru.fh)
 		if err != nil {
 			return fmt.Errorf("failed to scan the file to recompute the digest: %w", err)
 		}
-		if dru.d.Digest() == expect {
+		if dru.w.Verify(expect) {
 			return nil
 		}
 	}
-	return fmt.Errorf("digest mismatch, expected %s, received %s", expect, dru.d.Digest())
+	d, err := dru.w.Digest()
+	if err != nil {
+		return fmt.Errorf("failed to compute digest: %w", err)
+	}
+	return fmt.Errorf("digest mismatch, expected %s, received %s", expect.String(), d.String())
 }
 
 func stringsHasAny(list []string, check ...string) bool {
