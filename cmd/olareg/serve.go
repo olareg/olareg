@@ -30,6 +30,7 @@ type serveOpts struct {
 	apiBlobDel       bool
 	apiReferrer      bool
 	apiRateLimit     int
+	authBasicFile    string
 	authStaticLogin  []string
 	authStaticAnon   bool
 	gcFreq           time.Duration
@@ -78,6 +79,7 @@ olareg serve --tls-cert host.pem --tls-key host.key --port 443
 	newCmd.Flags().BoolVar(&opts.apiBlobDel, "api-blob-delete", false, "enable blob delete API")
 	newCmd.Flags().BoolVar(&opts.apiReferrer, "api-referrer", true, "enable referrer API")
 	newCmd.Flags().IntVar(&opts.apiRateLimit, "rate-limit", 0, "limit requests per second per source IP")
+	newCmd.Flags().StringVar(&opts.authBasicFile, "auth-basic", "", "config file for basic auth")
 	newCmd.Flags().StringArrayVar(&opts.authStaticLogin, "auth-static-login", nil, "static auth: login (user:pass) in plain text (insecure)")
 	_ = newCmd.Flags().MarkHidden("auth-static-login") // unsupported option
 	newCmd.Flags().BoolVar(&opts.authStaticAnon, "auth-static-anon", false, "static auth: allow anonymous read access")
@@ -125,7 +127,9 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 			Warnings:      opts.warnings,
 		},
 	}
-	if len(opts.authStaticLogin) > 0 {
+	if opts.authBasicFile != "" {
+		conf.Auth = config.NewAuthBasicFile(opts.authBasicFile, config.WithAuthSlog(opts.root.log))
+	} else if len(opts.authStaticLogin) > 0 {
 		logins := map[string]string{}
 		for _, userPass := range opts.authStaticLogin {
 			userPassSplit := strings.SplitN(userPass, ":", 2)
@@ -133,7 +137,10 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 				logins[userPassSplit[0]] = userPassSplit[1]
 			}
 		}
-		conf.Auth.Handler = config.NewAuthBasicStatic(logins, opts.authStaticAnon)
+		conf.Auth, err = config.NewAuthBasicStatic(logins, opts.authStaticAnon, config.WithAuthSlog(opts.root.log))
+		if err != nil {
+			return fmt.Errorf("failed to setup static auth: %w", err)
+		}
 	}
 	s := olareg.New(conf)
 	// include signal handler to gracefully shutdown

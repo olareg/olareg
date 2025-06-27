@@ -65,6 +65,7 @@ olareg version --format '{{.VCSTag}}'`,
 	newCmd.AddCommand(
 		versionCmd,
 		newServeCmd(&opts),
+		newHashCmd(&opts),
 		cobradoc.NewCmd(opts.name, "cli-doc"),
 	)
 	return newCmd

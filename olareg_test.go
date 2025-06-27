@@ -1431,6 +1431,14 @@ func TestAuth(t *testing.T) {
 	goodPass := "pass123"
 	badUser := "hacker"
 	badPass := "foobar"
+	authGood, err := config.NewAuthBasicStatic(map[string]string{goodUser: goodPass}, false)
+	if err != nil {
+		t.Fatalf("failed to setup good auth: %v", err)
+	}
+	authAnon, err := config.NewAuthBasicStatic(map[string]string{goodUser: goodPass}, true)
+	if err != nil {
+		t.Fatalf("failed to setup anon auth: %v", err)
+	}
 	ttServer := []struct {
 		name        string
 		conf        config.Config
@@ -1460,10 +1468,8 @@ func TestAuth(t *testing.T) {
 						Limit: 512 * 1024,
 					},
 				},
-				Log: logger,
-				Auth: config.ConfigAuth{
-					Handler: config.NewAuthBasicStatic(map[string]string{goodUser: goodPass}, false),
-				},
+				Log:  logger,
+				Auth: authGood,
 			},
 			allowAnon:   false,
 			allowRead:   true,
@@ -1491,10 +1497,8 @@ func TestAuth(t *testing.T) {
 						Limit: 512 * 1024,
 					},
 				},
-				Log: logger,
-				Auth: config.ConfigAuth{
-					Handler: config.NewAuthBasicStatic(map[string]string{goodUser: goodPass}, true),
-				},
+				Log:  logger,
+				Auth: authAnon,
 			},
 			allowAnon:   true,
 			allowRead:   true,

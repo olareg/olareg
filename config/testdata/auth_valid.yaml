@@ -1,0 +1,18 @@
+users:
+  alice:
+    cred: "$2a$10$AeIxYk02nNYLrmkEIQRSse4DsFH0M9exGec0FbSDSY0fPSZ9chPoa" # password1
+  bob:
+    cred: "$2a$10$4iTFUSDqPMFRdG0ukcoNzePmjmblKtVCQF2Q50aoRymIat5TM/mXy" # password2
+
+groups:
+  direct:
+    members: ["alice", "bob"]
+  empty:
+  loop:
+    members: ["root"]
+  root:
+    members: ["direct", "empty", "loop"]
+  unknown:
+    members: ["bar"]
+
+acls:

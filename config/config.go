@@ -15,6 +15,7 @@ const (
 	referrerCacheLimitDefault  = 1000
 	referrersLimitDefault      = 1024 * 1024 * 4
 	repoUploadMaxDefault       = 1000
+	realmDefault               = "olareg registry"
 )
 
 type Store int
