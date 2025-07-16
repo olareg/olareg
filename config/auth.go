@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +31,10 @@ const (
 	AuthDelete
 )
 
-const pollFreq = time.Second * 5
+const (
+	pollFreq    = time.Second * 5
+	tokenExpire = time.Minute * 5
+)
 
 // MarshalText converts AuthAccess to a string.
 func (t AuthAccess) MarshalText() ([]byte, error) {
@@ -69,12 +75,15 @@ func (t *AuthAccess) UnmarshalText(b []byte) error {
 type AuthHandler func(repo string, access AuthAccess, next http.Handler) http.Handler
 
 type authController struct {
-	filename  string
-	mod, poll time.Time
-	mu        sync.RWMutex
-	conf      *authConf
-	realm     string
-	slog      *slog.Logger
+	filename   string
+	mod, poll  time.Time
+	mu         sync.RWMutex
+	conf       *authConf
+	realm      string
+	service    string
+	slog       *slog.Logger
+	opaque     map[string]authTokenOpaque
+	cleanupJob chan struct{}
 }
 
 type authConf struct {
@@ -99,11 +108,28 @@ type authACL struct {
 	Anonymous bool         `yaml:"anonymous"`
 }
 
+type authTokenOpaque struct {
+	user    string
+	expires time.Time
+}
+
+type authTokenResponse struct {
+	Token     string    `json:"token"`
+	ExpiresIn int       `json:"expires_in"`
+	IssuedAt  time.Time `json:"issued_at"`
+}
+
 type AuthOpt func(*authController)
 
 func WithAuthRealm(realm string) AuthOpt {
 	return func(af *authController) {
 		af.realm = realm
+	}
+}
+
+func WithAuthService(service string) AuthOpt {
+	return func(af *authController) {
+		af.service = service
 	}
 }
 
@@ -117,10 +143,11 @@ func WithAuthSlog(logger *slog.Logger) AuthOpt {
 func newAuthController(filename string) (*authController, error) {
 	conf := newAuthConf()
 	ac := authController{
-		filename: filename,
-		conf:     &conf,
-		realm:    realmDefault,
-		slog:     slog.New(sloghandle.Discard),
+		filename:   filename,
+		conf:       &conf,
+		slog:       slog.New(sloghandle.Discard),
+		opaque:     map[string]authTokenOpaque{},
+		cleanupJob: make(chan struct{}, 1),
 	}
 	// validate filename if provided
 	if filename != "" {
@@ -202,7 +229,7 @@ func (ac *authController) basicHandler(repo string, access AuthAccess, next http
 		}
 		user, passwd, ok := r.BasicAuth()
 		if !ok {
-			user, passwd = "", ""
+			user = ""
 		}
 		if ok && !conf.checkCreds(user, passwd) {
 			err := unauthorized(w, "Basic", ac.realm, "", "", "invalid username or password")
@@ -224,6 +251,176 @@ func (ac *authController) basicHandler(repo string, access AuthAccess, next http
 			next.ServeHTTP(w, r)
 		}
 	})
+}
+
+func (ac *authController) tokenOpaqueHandler(repo string, access AuthAccess, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ac == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			ac.slog.Error("auth file is nil", "filename", ac.filename)
+			return
+		}
+		conf, err := ac.getConf()
+		if err != nil {
+			ac.slog.Warn("failed to refresh auth file", "filename", ac.filename, "err", err.Error())
+		}
+		if conf == nil {
+			ac.slog.Error("auth conf is nil", "filename", ac.filename)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		realmURL, err := r.URL.Parse(ac.realm)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			ac.slog.Error("auth realm cannot be parsed into a url", "realm", ac.realm, "err", err.Error())
+			return
+		}
+		scope := "repository:" + repo
+		if repo == "" {
+			scope = "registry:"
+		}
+		switch access {
+		case AuthRead:
+			scope += ":pull"
+		case AuthWrite:
+			scope += ":push"
+		case AuthDelete:
+			scope += ":delete"
+		}
+		authHeader := r.Header.Get("Authorization")
+		token, ok := strings.CutPrefix(authHeader, "Bearer ")
+		if !ok {
+			err := unauthorized(w, "Bearer", realmURL.String(), ac.service, scope, "unauthorized")
+			if err != nil {
+				ac.slog.Error("failed to generate unauthorized header", "err", err.Error())
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			return
+		}
+		user := ""
+		ac.mu.RLock()
+		if ato, ok := ac.opaque[token]; ok && time.Since(ato.expires) <= 0 {
+			user = ato.user
+		}
+		ac.mu.RUnlock()
+		if !conf.checkAccess(repo, access, user) {
+			err := unauthorized(w, "Bearer", realmURL.String(), ac.service, scope, "unauthorized")
+			if err != nil {
+				ac.slog.Error("failed to generate unauthorized header", "err", err.Error())
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			return
+		}
+		if next != nil {
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+func (ac *authController) tokenOpaqueGenerate() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if ac == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			ac.slog.Error("auth file is nil", "filename", ac.filename)
+			return
+		}
+		conf, err := ac.getConf()
+		if err != nil {
+			ac.slog.Warn("failed to refresh auth file", "filename", ac.filename, "err", err.Error())
+		}
+		if conf == nil {
+			ac.slog.Error("auth conf is nil", "filename", ac.filename)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		// verify request
+		query := r.URL.Query()
+		service := query.Get("service")
+		if service != ac.service {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		// note that scope is not used for opaque tokens
+		// check user/pass
+		user, passwd, ok := r.BasicAuth()
+		if !ok {
+			user = ""
+		}
+		if ok && !conf.checkCreds(user, passwd) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		// generate/save/return opaque token
+		sb := make([]byte, 128)
+		_, err = rand.Read(sb)
+		if err != nil {
+			ac.slog.Warn("failed to generate random token", "err", err.Error())
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		token := base64.RawURLEncoding.EncodeToString(sb)
+		issued := time.Now().UTC()
+		expires := issued.Add(tokenExpire)
+		ac.mu.Lock()
+		ac.opaque[token] = authTokenOpaque{
+			user:    user,
+			expires: expires,
+		}
+		ac.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		response := authTokenResponse{
+			Token:     token,
+			ExpiresIn: int(tokenExpire),
+			IssuedAt:  issued,
+		}
+		err = json.NewEncoder(w).Encode(response)
+		if err != nil {
+			ac.slog.Debug("failed to send token", "err", err.Error())
+		}
+		// launch a background cleanup job for the token list
+		ac.tokenOpaqueCleanup()
+	})
+}
+
+func (ac *authController) tokenOpaqueCleanup() {
+	// attempt to lock the cleanup job
+	select {
+	case ac.cleanupJob <- struct{}{}:
+	default:
+		return
+	}
+	// run the cleanup job in a background goroutine
+	go func() {
+		for {
+			delList := []string{}
+			ac.mu.RLock()
+			for token, ato := range ac.opaque {
+				if time.Since(ato.expires) > 0 {
+					delList = append(delList, token)
+				}
+			}
+			ac.mu.RUnlock()
+			if len(delList) > 0 {
+				ac.mu.Lock()
+				for _, token := range delList {
+					delete(ac.opaque, token)
+				}
+				if len(ac.opaque) == 0 {
+					// no more tokens to cleanup, unlock the job and stop the goroutine
+					<-ac.cleanupJob
+					ac.mu.Unlock()
+					return
+				}
+				ac.mu.Unlock()
+			}
+			time.Sleep(tokenExpire)
+		}
+	}()
 }
 
 // Checks if user/pass match the config.
@@ -298,6 +495,7 @@ func (ac *authConf) groupMap(name string, parents ...string) {
 // NewAuthBasicFile controls access using a config file.
 func NewAuthBasicFile(filename string, opts ...AuthOpt) ConfigAuth {
 	ac, err := newAuthController(filename)
+	ac.realm = authDescription
 	for _, opt := range opts {
 		opt(ac)
 	}
@@ -310,6 +508,7 @@ func NewAuthBasicFile(filename string, opts ...AuthOpt) ConfigAuth {
 // NewAuthBasicStatic uses a list of static plain text logins to control access to the registry.
 func NewAuthBasicStatic(logins map[string]string, allowAnonymousRead bool, opts ...AuthOpt) (ConfigAuth, error) {
 	ac, err := newAuthController("")
+	ac.realm = authDescription
 	for _, opt := range opts {
 		opt(ac)
 	}
@@ -345,6 +544,21 @@ func NewAuthBasicStatic(logins map[string]string, allowAnonymousRead bool, opts 
 		})
 	}
 	return ConfigAuth{Handler: ac.basicHandler}, nil
+}
+
+// NewAuthTokenOpaque controls access using a config file and a local opaque token server.
+// Many clients will require [WithAuthRealm] set to an externally resolvable URL to the /token API (e.g. https://registry.example.org/token).
+func NewAuthTokenOpaque(filename string, opts ...AuthOpt) ConfigAuth {
+	ac, err := newAuthController(filename)
+	ac.realm = "/token"
+	ac.service = authDescription
+	for _, opt := range opts {
+		opt(ac)
+	}
+	if err != nil {
+		ac.slog.Error("failed to load auth file", "filename", filename, "err", err.Error())
+	}
+	return ConfigAuth{Handler: ac.tokenOpaqueHandler, Token: ac.tokenOpaqueGenerate()}
 }
 
 func unauthorized(w http.ResponseWriter, authType, realm, service, scope, errMsg string) error {

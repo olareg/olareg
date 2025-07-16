@@ -265,6 +265,10 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		} else {
 			handler = methodNotAllowed()
 		}
+	} else if len(pathEl) == 1 && pathEl[0] == "token" && s.conf.Auth.Token != nil {
+		// internal token server
+		s.conf.Auth.Token.ServeHTTP(resp, req)
+		return
 	}
 	if handler == nil {
 		resp.WriteHeader(http.StatusNotFound)
@@ -276,7 +280,6 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		handler = s.conf.Auth.Handler(repo, access, handler)
 	}
 	// TODO: include a status/health endpoint?
-	// TODO: add /token endpoint
 	// TODO: add handler wrappers: rate limit, logging, etc
 	handler.ServeHTTP(resp, req)
 }

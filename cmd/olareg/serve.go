@@ -33,6 +33,8 @@ type serveOpts struct {
 	authBasicFile    string
 	authStaticLogin  []string
 	authStaticAnon   bool
+	authTokenOpaque  string
+	externalURL      string
 	gcFreq           time.Duration
 	gcGracePeriod    time.Duration
 	gcUntagged       bool
@@ -84,6 +86,8 @@ olareg serve --tls-cert host.pem --tls-key host.key --port 443
 	_ = newCmd.Flags().MarkHidden("auth-static-login") // unsupported option
 	newCmd.Flags().BoolVar(&opts.authStaticAnon, "auth-static-anon", false, "static auth: allow anonymous read access")
 	_ = newCmd.Flags().MarkHidden("auth-static-anon") // unsupported option
+	newCmd.Flags().StringVar(&opts.authTokenOpaque, "auth-token-opaque", "", "config file for opaque token auth, external-url recommended")
+	newCmd.Flags().StringVar(&opts.externalURL, "external-url", "", "externally accessible URL for the server (https://registry.example.org)")
 	newCmd.Flags().DurationVar(&opts.gcFreq, "gc-frequency", time.Minute*15, "garbage collection frequency")
 	newCmd.Flags().DurationVar(&opts.gcGracePeriod, "gc-grace-period", time.Hour, "garbage collection grace period")
 	newCmd.Flags().BoolVar(&opts.gcUntagged, "gc-untagged", false, "garbage collect untagged manifests")
@@ -127,7 +131,9 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 			Warnings:      opts.warnings,
 		},
 	}
-	if opts.authBasicFile != "" {
+	if opts.authTokenOpaque != "" {
+		conf.Auth = config.NewAuthTokenOpaque(opts.authTokenOpaque, config.WithAuthSlog(opts.root.log), config.WithAuthRealm(opts.externalURL+"/token"))
+	} else if opts.authBasicFile != "" {
 		conf.Auth = config.NewAuthBasicFile(opts.authBasicFile, config.WithAuthSlog(opts.root.log))
 	} else if len(opts.authStaticLogin) > 0 {
 		logins := map[string]string{}
