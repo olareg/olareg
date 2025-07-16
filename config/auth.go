@@ -115,7 +115,7 @@ type authTokenOpaque struct {
 
 type authTokenResponse struct {
 	Token     string    `json:"token"`
-	ExpiresIn int       `json:"expires_in"`
+	ExpiresIn int64     `json:"expires_in"`
 	IssuedAt  time.Time `json:"issued_at"`
 }
 
@@ -375,7 +375,7 @@ func (ac *authController) tokenOpaqueGenerate() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		response := authTokenResponse{
 			Token:     token,
-			ExpiresIn: int(tokenExpire),
+			ExpiresIn: int64(tokenExpire),
 			IssuedAt:  issued,
 		}
 		err = json.NewEncoder(w).Encode(response)
