@@ -5,7 +5,7 @@ go 1.23.0
 require (
 	github.com/spf13/cobra v1.9.1
 	github.com/sudo-bmitch/oci-digest v0.1.2
-	golang.org/x/crypto v0.39.0
+	golang.org/x/crypto v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
