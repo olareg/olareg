@@ -18,6 +18,7 @@ import (
 	"github.com/olareg/olareg/internal/httplog"
 	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/internal/store"
+	"github.com/olareg/olareg/types"
 )
 
 var (
@@ -198,15 +199,24 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			repo = matches[0]
 			access = config.AuthRead
 			handler = s.manifestGet(matches[0], matches[1])
-		} else if req.Method == http.MethodPut && *s.conf.API.PushEnabled {
+		} else if req.Method == http.MethodPut {
 			repo = matches[0]
 			access = config.AuthWrite
-			handler = s.manifestPut(matches[0], matches[1])
-		} else if req.Method == http.MethodDelete && *s.conf.API.DeleteEnabled {
+			if *s.conf.API.PushEnabled {
+				handler = s.manifestPut(matches[0], matches[1])
+			} else {
+				handler = methodNotAllowed()
+			}
+		} else if req.Method == http.MethodDelete {
 			repo = matches[0]
 			access = config.AuthDelete
-			handler = s.manifestDelete(matches[0], matches[1])
+			if *s.conf.API.DeleteEnabled {
+				handler = s.manifestDelete(matches[0], matches[1])
+			} else {
+				handler = methodNotAllowed()
+			}
 		} else {
+			repo = matches[0]
 			handler = methodNotAllowed()
 		}
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "*"); ok {
@@ -215,28 +225,42 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			repo = matches[0]
 			access = config.AuthRead
 			handler = s.blobGet(matches[0], matches[1])
-		} else if req.Method == http.MethodDelete && *s.conf.API.DeleteEnabled && *s.conf.API.Blob.DeleteEnabled {
+		} else if req.Method == http.MethodDelete {
 			// handle blob delete
 			repo = matches[0]
 			access = config.AuthDelete
-			handler = s.blobDelete(matches[0], matches[1])
-		} else if matches[1] == "uploads" && req.Method == http.MethodPost && *s.conf.API.PushEnabled {
+			if *s.conf.API.DeleteEnabled && *s.conf.API.Blob.DeleteEnabled {
+				handler = s.blobDelete(matches[0], matches[1])
+			} else {
+				handler = methodNotAllowed()
+			}
+		} else if matches[1] == "uploads" && req.Method == http.MethodPost {
 			// handle blob post
 			repo = matches[0]
 			access = config.AuthWrite
-			handler = s.blobUploadPost(matches[0])
+			if *s.conf.API.PushEnabled {
+				handler = s.blobUploadPost(matches[0])
+			} else {
+				handler = methodNotAllowed()
+			}
 		} else {
 			// other methods are not allowed (delete is done by GC)
+			repo = matches[0]
 			handler = methodNotAllowed()
 		}
-	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok && *s.conf.API.Referrer.Enabled {
+	} else if matches, ok := matchV2(pathEl, "...", "referrers", "*"); ok {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			// handle referrer get
 			repo = matches[0]
 			access = config.AuthRead
-			handler = s.referrerGet(matches[0], matches[1])
+			if *s.conf.API.Referrer.Enabled {
+				handler = s.referrerGet(matches[0], matches[1])
+			} else {
+				handler = methodNotAllowed()
+			}
 		} else {
 			// other methods are not allowed
+			repo = matches[0]
 			handler = methodNotAllowed()
 		}
 	} else if matches, ok := matchV2(pathEl, "...", "tags", "list"); ok && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
@@ -244,23 +268,19 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		repo = matches[0]
 		access = config.AuthRead
 		handler = s.tagList(matches[0])
-	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok && *s.conf.API.PushEnabled {
+	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok {
+		repo = matches[0]
+		access = config.AuthWrite
 		// handle blob upload methods
-		if req.Method == http.MethodPatch {
-			repo = matches[0]
-			access = config.AuthRead
+		if !*s.conf.API.PushEnabled {
+			handler = methodNotAllowed()
+		} else if req.Method == http.MethodPatch {
 			handler = s.blobUploadPatch(matches[0], matches[1])
 		} else if req.Method == http.MethodPut {
-			repo = matches[0]
-			access = config.AuthRead
 			handler = s.blobUploadPut(matches[0], matches[1])
 		} else if req.Method == http.MethodGet {
-			repo = matches[0]
-			access = config.AuthRead
 			handler = s.blobUploadGet(matches[0], matches[1])
 		} else if req.Method == http.MethodDelete {
-			repo = matches[0]
-			access = config.AuthRead
 			handler = s.blobUploadDelete(matches[0], matches[1])
 		} else {
 			handler = methodNotAllowed()
@@ -321,6 +341,7 @@ func matchV2(pathEl []string, params ...string) ([]string, bool) {
 func methodNotAllowed() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = types.ErrRespJSON(w, types.ErrInfoUnsupported("method not allowed"))
 	}
 }
 

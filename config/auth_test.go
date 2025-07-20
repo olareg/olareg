@@ -61,12 +61,13 @@ func TestAuthBasicFile(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	tt := []struct {
-		name       string
-		file       string
-		repo       string
-		access     AuthAccess
-		user, pass string
-		status     int
+		name        string
+		file        string
+		repo        string
+		access      AuthAccess
+		user, pass  string
+		emptyHeader bool
+		status      int
 	}{
 		{
 			name:   "invalid file",
@@ -105,6 +106,30 @@ func TestAuthBasicFile(t *testing.T) {
 			pass:   "password2",
 			access: AuthRead,
 			status: http.StatusOK,
+		},
+		{
+			name:   "any bob",
+			file:   "./testdata/auth_good.yaml",
+			repo:   "any/project-a",
+			user:   "bob",
+			pass:   "password2",
+			access: AuthWrite,
+			status: http.StatusOK,
+		},
+		{
+			name:   "public",
+			file:   "./testdata/auth_good.yaml",
+			access: AuthRead,
+			repo:   "public/project-a",
+			status: http.StatusOK,
+		},
+		{
+			name:        "public empty header",
+			file:        "./testdata/auth_good.yaml",
+			access:      AuthRead,
+			repo:        "public/project-a",
+			emptyHeader: true,
+			status:      http.StatusOK,
 		},
 	}
 	for _, tc := range tt {
@@ -206,12 +231,13 @@ func TestTokenOpaque(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	tt := []struct {
-		name       string
-		file       string
-		repo       string
-		access     AuthAccess
-		user, pass string
-		status     int
+		name        string
+		file        string
+		repo        string
+		access      AuthAccess
+		user, pass  string
+		emptyHeader bool
+		status      int
 	}{
 		{
 			name:   "invalid file",
@@ -250,6 +276,30 @@ func TestTokenOpaque(t *testing.T) {
 			pass:   "password2",
 			access: AuthRead,
 			status: http.StatusOK,
+		},
+		{
+			name:   "any bob",
+			file:   "./testdata/auth_good.yaml",
+			repo:   "any/project-a",
+			user:   "bob",
+			pass:   "password2",
+			access: AuthWrite,
+			status: http.StatusOK,
+		},
+		{
+			name:   "public",
+			file:   "./testdata/auth_good.yaml",
+			access: AuthRead,
+			repo:   "public/project-a",
+			status: http.StatusOK,
+		},
+		{
+			name:        "public empty header",
+			file:        "./testdata/auth_good.yaml",
+			access:      AuthRead,
+			repo:        "public/project-a",
+			emptyHeader: true,
+			status:      http.StatusOK,
 		},
 	}
 	for _, tc := range tt {

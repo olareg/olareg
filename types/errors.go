@@ -3,7 +3,7 @@ package types
 import (
 	"encoding/json"
 	"errors"
-	"io"
+	"net/http"
 )
 
 var (
@@ -25,10 +25,11 @@ type ErrorResp struct {
 }
 
 // ErrRespJSON encodes a list of errors to json and outputs them to the writer.
-func ErrRespJSON(w io.Writer, errList ...ErrorInfo) error {
+func ErrRespJSON(w http.ResponseWriter, errList ...ErrorInfo) error {
 	resp := ErrorResp{
 		Errors: errList,
 	}
+	w.Header().Add("content-type", "application/json")
 	return json.NewEncoder(w).Encode(resp)
 }
 

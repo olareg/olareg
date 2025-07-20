@@ -29,6 +29,7 @@ const (
 	AuthRead
 	AuthWrite
 	AuthDelete
+	AuthAll // wildcard match
 )
 
 const (
@@ -48,6 +49,8 @@ func (t AuthAccess) MarshalText() ([]byte, error) {
 		s = "write"
 	case AuthDelete:
 		s = "delete"
+	case AuthAll:
+		s = "*"
 	}
 	return []byte(s), nil
 }
@@ -65,6 +68,8 @@ func (t *AuthAccess) UnmarshalText(b []byte) error {
 		*t = AuthWrite
 	case "delete":
 		*t = AuthDelete
+	case "*":
+		*t = AuthAll
 	}
 	return nil
 }
@@ -227,12 +232,24 @@ func (ac *authController) basicHandler(repo string, access AuthAccess, next http
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		scope := "repository:" + repo
+		if repo == "" {
+			scope = "registry:"
+		}
+		switch access {
+		case AuthRead:
+			scope += ":pull"
+		case AuthWrite:
+			scope += ":push"
+		case AuthDelete:
+			scope += ":delete"
+		}
 		user, passwd, ok := r.BasicAuth()
 		if !ok {
 			user = ""
 		}
-		if ok && !conf.checkCreds(user, passwd) {
-			err := unauthorized(w, "Basic", ac.realm, "", "", "invalid username or password")
+		if ok && (user != "" || passwd != "") && !conf.checkCreds(user, passwd) {
+			err := unauthorized(w, "Basic", ac.realm, "", scope, "invalid username or password")
 			if err != nil {
 				ac.slog.Error("failed to generate unauthorized header", "err", err.Error())
 				w.WriteHeader(http.StatusInternalServerError)
@@ -240,7 +257,7 @@ func (ac *authController) basicHandler(repo string, access AuthAccess, next http
 			return
 		}
 		if !conf.checkAccess(repo, access, user) {
-			err := unauthorized(w, "Basic", ac.realm, "", "", "unauthorized")
+			err := unauthorized(w, "Basic", ac.realm, "", scope, "unauthorized")
 			if err != nil {
 				ac.slog.Error("failed to generate unauthorized header", "err", err.Error())
 				w.WriteHeader(http.StatusInternalServerError)
@@ -350,7 +367,7 @@ func (ac *authController) tokenOpaqueGenerate() http.Handler {
 		if !ok {
 			user = ""
 		}
-		if ok && !conf.checkCreds(user, passwd) {
+		if ok && (user != "" || passwd != "") && !conf.checkCreds(user, passwd) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -461,7 +478,7 @@ func (ac *authConf) checkAccess(repo string, access AuthAccess, user string) boo
 		}
 		// found an acl (or better matching acl) for the user and repo, save resulting access
 		bestRepo = acl.Repo
-		result = slices.Contains(acl.Access, access)
+		result = slices.Contains(acl.Access, access) || slices.Contains(acl.Access, AuthAll)
 	}
 	return result
 }
@@ -577,6 +594,7 @@ func unauthorized(w http.ResponseWriter, authType, realm, service, scope, errMsg
 	}
 	w.Header().Add("WWW-Authenticate", h)
 	w.WriteHeader(http.StatusUnauthorized)
+	_ = types.ErrRespJSON(w, types.ErrInfoUnauthorized("scope = "+scope))
 	return nil
 }
 
