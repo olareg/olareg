@@ -25,3 +25,6 @@ acls:
   - repo: "public/*"
     anonymous: true
     access: ["read"]
+  - repo: "any/*"
+    members: ["all"]
+    access: ["*"]

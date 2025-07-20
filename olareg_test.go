@@ -62,12 +62,14 @@ func TestServer(t *testing.T) {
 	boolF := false
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ttServer := []struct {
-		name     string
-		conf     config.Config
-		existing bool
-		readOnly bool
-		testGC   bool
-		testWarn bool
+		name             string
+		conf             config.Config
+		existing         bool
+		readOnly         bool
+		deleteDisabled   bool
+		referrerDisabled bool
+		testGC           bool
+		testWarn         bool
 	}{
 		{
 			name: "Mem",
@@ -145,6 +147,34 @@ func TestServer(t *testing.T) {
 			},
 			existing: true,
 			testGC:   false,
+		},
+		{
+			name: "Mem with Dir Limited",
+			conf: config.Config{
+				Storage: config.ConfigStorage{
+					StoreType: config.StoreMem,
+					RootDir:   "./testdata",
+					GC: config.ConfigGC{
+						Frequency: -1 * time.Second,
+					},
+				},
+				API: config.ConfigAPI{
+					DeleteEnabled: &boolF,
+					Blob: config.ConfigAPIBlob{
+						DeleteEnabled: &boolF,
+					},
+					Referrer: config.ConfigAPIReferrer{
+						Enabled: &boolF,
+					},
+					Warnings: []string{warningMsg},
+				},
+				Log: logger,
+			},
+			existing:         true,
+			deleteDisabled:   true,
+			referrerDisabled: true,
+			testGC:           false,
+			testWarn:         true,
 		},
 		{
 			name: "Dir",
@@ -319,7 +349,7 @@ func TestServer(t *testing.T) {
 			})
 
 			t.Run("Pull Existing Image and Referrers", func(t *testing.T) {
-				if !tcServer.existing {
+				if !tcServer.existing || tcServer.referrerDisabled {
 					return
 				}
 				t.Parallel()
@@ -428,6 +458,140 @@ func TestServer(t *testing.T) {
 				}
 				if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) != 0 {
 					t.Errorf("referrers response should be an index, schema 2, with %d manifests: %v", 0, rr)
+				}
+			})
+			t.Run("Pull Existing Image and with Referrers disabled", func(t *testing.T) {
+				if !tcServer.existing || !tcServer.referrerDisabled {
+					return
+				}
+				t.Parallel()
+				// fetch index
+				resp, err := testAPIManifestGet(t, s, existingRepo, existingTag, nil)
+				if err != nil {
+					return
+				}
+				digI, err := digest.Parse(resp.Header().Get(types.HeaderDockerDigest))
+				if err != nil {
+					t.Errorf("unable to parse index digest, %s: %v", resp.Header().Get(types.HeaderDockerDigest), err)
+					return
+				}
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				i := types.Index{}
+				err = json.Unmarshal(b, &i)
+				if err != nil {
+					t.Errorf("failed to unmarshal index: %v", err)
+					return
+				}
+				if len(i.Manifests) < 1 {
+					t.Errorf("failed to find any manifests in index: %v", i)
+					return
+				}
+				// fetch platform specific manifest
+				descM := i.Manifests[0]
+				resp, err = testAPIManifestGet(t, s, existingRepo, descM.Digest.String(), nil)
+				if err != nil {
+					return
+				}
+				b, err = io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				m := types.Manifest{}
+				err = json.Unmarshal(b, &m)
+				if err != nil {
+					t.Errorf("failed to unmarshal manifest: %v", err)
+					return
+				}
+				// fetch config blob
+				descC := m.Config
+				_, err = testAPIBlobGet(t, s, existingRepo, descC.Digest, nil)
+				if err != nil {
+					return
+				}
+				// referrers should be disabled
+				_, err = testClientRun(t, s, "GET", "/v2/"+existingRepo+"/referrers/"+digI.String(), nil,
+					testClientRespStatus(http.StatusMethodNotAllowed),
+				)
+				if err != nil {
+					return
+				}
+			})
+			t.Run("Pull Existing Image and with Delete disabled", func(t *testing.T) {
+				if !tcServer.existing || !tcServer.deleteDisabled {
+					return
+				}
+				t.Parallel()
+				// fetch index
+				resp, err := testAPIManifestGet(t, s, existingRepo, existingTag, nil)
+				if err != nil {
+					return
+				}
+				digI, err := digest.Parse(resp.Header().Get(types.HeaderDockerDigest))
+				if err != nil {
+					t.Errorf("unable to parse index digest, %s: %v", resp.Header().Get(types.HeaderDockerDigest), err)
+					return
+				}
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				i := types.Index{}
+				err = json.Unmarshal(b, &i)
+				if err != nil {
+					t.Errorf("failed to unmarshal index: %v", err)
+					return
+				}
+				if len(i.Manifests) < 1 {
+					t.Errorf("failed to find any manifests in index: %v", i)
+					return
+				}
+				// fetch platform specific manifest
+				descM := i.Manifests[0]
+				resp, err = testAPIManifestGet(t, s, existingRepo, descM.Digest.String(), nil)
+				if err != nil {
+					return
+				}
+				b, err = io.ReadAll(resp.Body)
+				if err != nil {
+					t.Errorf("failed to read body: %v", err)
+					return
+				}
+				m := types.Manifest{}
+				err = json.Unmarshal(b, &m)
+				if err != nil {
+					t.Errorf("failed to unmarshal manifest: %v", err)
+					return
+				}
+				// fetch config blob
+				descC := m.Config
+				_, err = testAPIBlobGet(t, s, existingRepo, descC.Digest, nil)
+				if err != nil {
+					return
+				}
+				// deletes should be disabled
+				_, err = testClientRun(t, s, "DELETE", "/v2/"+existingRepo+"/manifests/"+existingTag, nil,
+					testClientRespStatus(http.StatusMethodNotAllowed),
+				)
+				if err != nil {
+					return
+				}
+				_, err = testClientRun(t, s, "DELETE", "/v2/"+existingRepo+"/manifests/"+digI.String(), nil,
+					testClientRespStatus(http.StatusMethodNotAllowed),
+				)
+				if err != nil {
+					return
+				}
+				_, err = testClientRun(t, s, "DELETE", "/v2/"+existingRepo+"/blobs/"+descC.Digest.String(), nil,
+					testClientRespStatus(http.StatusMethodNotAllowed),
+				)
+				if err != nil {
+					return
 				}
 			})
 			t.Run("Pull with comma separated header", func(t *testing.T) {
@@ -699,7 +863,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("Corrupt Repo", func(t *testing.T) {
-				if !tcServer.existing {
+				if !tcServer.existing || tcServer.referrerDisabled {
 					return
 				}
 				t.Parallel()
@@ -808,7 +972,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("Referrers", func(t *testing.T) {
-				if tcServer.readOnly || tcServer.testGC {
+				if tcServer.readOnly || tcServer.testGC || tcServer.referrerDisabled || tcServer.deleteDisabled {
 					return
 				}
 				t.Parallel()
@@ -1012,7 +1176,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("digest-512", func(t *testing.T) {
-				if tcServer.readOnly || tcServer.testGC {
+				if tcServer.readOnly || tcServer.testGC || tcServer.deleteDisabled {
 					return
 				}
 				t.Parallel()
@@ -1304,7 +1468,7 @@ func TestServer(t *testing.T) {
 				}
 			})
 			t.Run("digest-algo-unknown", func(t *testing.T) {
-				if tcServer.readOnly || tcServer.testGC {
+				if tcServer.readOnly || tcServer.testGC || tcServer.deleteDisabled {
 					return
 				}
 				t.Parallel()
@@ -1424,6 +1588,7 @@ func TestServer(t *testing.T) {
 func TestAuth(t *testing.T) {
 	t.Parallel()
 	boolT := true
+	boolF := false
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	// repoNew := "newrepo" // only this repo is allowed for limited access
 	repoCur := "testrepo"
@@ -1462,7 +1627,7 @@ func TestAuth(t *testing.T) {
 				API: config.ConfigAPI{
 					DeleteEnabled: &boolT,
 					Blob: config.ConfigAPIBlob{
-						DeleteEnabled: &boolT,
+						DeleteEnabled: &boolF,
 					},
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
@@ -1491,7 +1656,7 @@ func TestAuth(t *testing.T) {
 				API: config.ConfigAPI{
 					DeleteEnabled: &boolT,
 					Blob: config.ConfigAPIBlob{
-						DeleteEnabled: &boolT,
+						DeleteEnabled: &boolF,
 					},
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
@@ -1507,7 +1672,6 @@ func TestAuth(t *testing.T) {
 			authBasic:   true,
 			limitRepo:   false,
 		},
-		// TODO: with more auth types, add more tests that also check repo access, writes, and deletes
 	}
 	for _, tcServer := range ttServer {
 		t.Run(tcServer.name, func(t *testing.T) {
@@ -1568,6 +1732,26 @@ func TestAuth(t *testing.T) {
 					t.Errorf("unexpected response to invalid login: %v", err)
 				}
 			})
+			// test blob delete returns method not allowed
+			t.Run("basic auth delete blob", func(t *testing.T) {
+				if tcServer.limitRepo || tcServer.allowAnon || !tcServer.authBasic {
+					return
+				}
+				dig, err := digest.Canonical.FromString("test")
+				if err != nil {
+					t.Fatalf("failed to setup digest: %v", err)
+				}
+				// request v1 manifest
+				_, err = testClientRun(t, s, "DELETE", "/v2/"+repoCur+"/blobs/"+dig.String(), nil,
+					testClientReqHeader("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(goodUser+":"+goodPass))),
+					testClientRespStatus(http.StatusMethodNotAllowed),
+				)
+				if err != nil {
+					t.Errorf("unexpected response to delete blob: %v", err)
+				}
+			})
+			// TODO: add more tests that also check repo access, writes, and deletes
+			// TODO: test token auth
 		})
 	}
 }
