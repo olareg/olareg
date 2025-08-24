@@ -17,7 +17,7 @@
 {"name":"gha-uses-commit","key":"https://github.com/docker/build-push-action.git:v6.18.0","version":"263435318d21b8e681c14492fe198d362a7d2c83"}
 {"name":"gha-uses-commit","key":"https://github.com/docker/login-action.git:v3.5.0","version":"184bdaa0721073962dff0199f1fb9940f07167d1"}
 {"name":"gha-uses-commit","key":"https://github.com/docker/setup-buildx-action.git:v3.11.1","version":"e468171a9de216ec08956ac3ada2f0791b6bd435"}
-{"name":"gha-uses-commit","key":"https://github.com/regclient/actions.git:main","version":"91a43cffe6e8c0c49ff25e11ede826a3c6f45dbd"}
+{"name":"gha-uses-commit","key":"https://github.com/regclient/actions.git:main","version":"03ca0eeb8348921b9447b7d5d6b6d350550ddb3b"}
 {"name":"gha-uses-commit","key":"https://github.com/sigstore/cosign-installer.git:v3.9.2","version":"d58896d6a1865668819e1d91763c7751a165e159"}
 {"name":"gha-uses-commit","key":"https://github.com/softprops/action-gh-release.git:v2.3.2","version":"72f2c25fcb47643c292f7107632f7a47c1df5cd8"}
 {"name":"gha-uses-semver","key":"https://github.com/actions/checkout.git","version":"v5.0.0"}
