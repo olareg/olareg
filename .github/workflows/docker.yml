@@ -133,7 +133,7 @@ jobs:
     
     # Use regctl to modify olareg images to improve reproducibility
     - name: Install regctl
-      uses: regclient/actions/regctl-installer@03ca0eeb8348921b9447b7d5d6b6d350550ddb3b # main
+      uses: regclient/actions/regctl-installer@2a0bc4dd4f92bcc807db726c33ea1c88be3d435d # main
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
 
     - name: Mutate
