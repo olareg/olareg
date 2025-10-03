@@ -744,7 +744,6 @@ func TestStore(t *testing.T) {
 					_ = bc.Cancel()
 				}
 			})
-
 		})
 	}
 	// TODO: add concurrency tests, multiple uploads, multiple gets
@@ -1615,7 +1614,6 @@ func TestGarbageCollectContext(t *testing.T) {
 		name string
 		conf config.Config
 	}{
-
 		{
 			name: "Mem No GC",
 			conf: config.Config{

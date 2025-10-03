@@ -26,9 +26,7 @@ const (
 	uploadDir  = "_uploads"
 )
 
-var (
-	referrerTagRe = regexp.MustCompile(`^(sha256|sha512)-([0-9a-f]{64})$`)
-)
+var referrerTagRe = regexp.MustCompile(`^(sha256|sha512)-([0-9a-f]{64})$`)
 
 // Store interface is used to abstract access to a backend storage system for repositories.
 type Store interface {

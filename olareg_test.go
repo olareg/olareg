@@ -15,11 +15,10 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	"slices"
 
 	digest "github.com/sudo-bmitch/oci-digest"
 
@@ -1878,8 +1877,10 @@ func TestMatchV2(t *testing.T) {
 	}
 }
 
-type testClient func(req *http.Request) (*httptest.ResponseRecorder, error)
-type testClientGen func(t *testing.T, next testClient) testClient
+type (
+	testClient    func(req *http.Request) (*httptest.ResponseRecorder, error)
+	testClientGen func(t *testing.T, next testClient) testClient
+)
 
 var errValidationFailed = fmt.Errorf("validation failed")
 
@@ -2235,12 +2236,14 @@ func testAPIReferrersList(t *testing.T, s *Server, repo string, dig digest.Diges
 	return resp, nil
 }
 
-type sampleData map[string]*sampleEntry
-type sampleEntry struct {
-	manifest     map[digest.Digest][]byte
-	blob         map[digest.Digest][]byte
-	manifestList []digest.Digest
-}
+type (
+	sampleData  map[string]*sampleEntry
+	sampleEntry struct {
+		manifest     map[digest.Digest][]byte
+		blob         map[digest.Digest][]byte
+		manifestList []digest.Digest
+	}
+)
 
 const (
 	layerPerImage      = 2
@@ -2250,9 +2253,7 @@ const (
 	sampleArtifactType = "application/vnd.example.artifact+json"
 )
 
-var (
-	imagePlatforms = []string{"amd64", "arm64"}
-)
+var imagePlatforms = []string{"amd64", "arm64"}
 
 func genSampleData(t *testing.T) (sampleData, error) {
 	now := time.Now()
