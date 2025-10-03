@@ -382,7 +382,7 @@ func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
-		err = os.MkdirAll(tmpDir, 0755)
+		err = os.MkdirAll(tmpDir, 0o755)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to create upload directory %s: %w", tmpDir, err)
 		}
@@ -501,7 +501,7 @@ func (dr *dirRepo) repoInit(locked bool) error {
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
-		err = os.MkdirAll(dr.path, 0755)
+		err = os.MkdirAll(dr.path, 0o755)
 		if err != nil {
 			return fmt.Errorf("failed to create repo directory %s: %w", dr.path, err)
 		}
@@ -516,7 +516,7 @@ func (dr *dirRepo) repoInit(locked bool) error {
 			return err
 		}
 		//#nosec G306 file permissions are intentionally world readable.
-		err = os.WriteFile(layoutName, lJSON, 0644)
+		err = os.WriteFile(layoutName, lJSON, 0o644)
 		if err != nil {
 			return err
 		}
@@ -738,7 +738,7 @@ func (dru *dirRepoUpload) Close() error {
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
-		err = os.MkdirAll(tgtDir, 0755)
+		err = os.MkdirAll(tgtDir, 0o755)
 		if err != nil {
 			return errors.Join(fmt.Errorf("unable to create blob storage directory %s: %w", tgtDir, err),
 				os.Remove(dru.filename))

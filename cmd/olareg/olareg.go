@@ -45,7 +45,7 @@ func newRootCmd() *cobra.Command {
 		return []string{"debug", "info", "warn", "error"}, cobra.ShellCompDirectiveNoFileComp
 	})
 
-	var versionCmd = &cobra.Command{
+	versionCmd := &cobra.Command{
 		Use:   "version",
 		Short: "Show the version",
 		Long:  fmt.Sprintf(`Show the version of %s`, opts.name),
