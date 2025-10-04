@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/olareg/olareg/types"
@@ -227,6 +230,7 @@ func TestAuthBasicStatic(t *testing.T) {
 }
 
 func TestTokenOpaque(t *testing.T) {
+	authRe := regexp.MustCompile(`^(\w+)\s+(?:realm=([^,]+))(?:,service=([^,]+))?(?:,scope=([^,]+))?(?:,error=([^,]+))?$`)
 	handleOK := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -313,22 +317,57 @@ func TestTokenOpaque(t *testing.T) {
 			if tc.user == "" && tc.status == http.StatusOK && resp.Code == http.StatusOK {
 				return
 			}
-			// send the token request
-			// TODO: parse auth header for service, scope, and token url
-			param := url.Values{}
-			param.Add("service", authDescription)
-			param.Add("client_id", "test")
-			scope := tc.repo
-			switch tc.access {
-			case AuthRead:
-				scope += ":pull"
-			case AuthWrite:
-				scope += ":push"
-			case AuthDelete:
-				scope += ":delete"
+			// parse auth header for service, scope, and token url
+			// this is a simplified regexp parser taking advantage of knowing the order and quoting of the header fields
+			header := resp.Header().Get("WWW-Authenticate")
+			match := authRe.FindStringSubmatch(header)
+			if len(match) != 6 {
+				t.Fatalf("failed to parse WWW-Authenticate header: %q, match: %v", header, match)
 			}
+			var bearer, realm, service, scope, errMsg string
+			bearer = match[1]
+			if strings.ToLower(bearer) != "bearer" {
+				t.Errorf("unexpected bearer type: %s", bearer)
+			}
+			_, err := fmt.Sscanf(match[2], "%q", &realm)
+			if err != nil {
+				t.Fatalf("failed to parse realm field: %s: %v", match[2], err)
+			}
+			if len(match[3]) > 0 {
+				_, err = fmt.Sscanf(match[3], "%q", &service)
+				if err != nil {
+					t.Fatalf("failed to parse service field: %s: %v", match[3], err)
+				}
+			}
+			if len(match[4]) > 0 {
+				_, err = fmt.Sscanf(match[4], "%q", &scope)
+				if err != nil {
+					t.Fatalf("failed to parse scope field: %s: %v", match[4], err)
+				}
+			}
+			if len(match[5]) > 0 {
+				_, err = fmt.Sscanf(match[5], "%q", &errMsg)
+				if err != nil {
+					t.Fatalf("failed to parse errMsg field: %s: %v", match[5], err)
+				}
+			}
+			if errMsg != "unauthorized" {
+				t.Errorf("unexpected error message, expected unauthorized, received %s", errMsg)
+			}
+			// send the token request
+			u, err := req.URL.Parse(realm)
+			if err != nil {
+				t.Fatalf("failed to parse realm URL: %s, %v", realm, err)
+			}
+			param, err := url.ParseQuery(u.RawQuery)
+			if err != nil {
+				t.Errorf("failed to parse query params: %s, %v", u.RawQuery, err)
+			}
+			param.Add("service", service)
+			param.Add("client_id", "test")
 			param.Add("scope", scope)
-			req = httptest.NewRequest("GET", "/token?"+param.Encode(), bytes.NewBuffer([]byte{}))
+			u.RawQuery = param.Encode()
+			req = httptest.NewRequest("GET", u.String(), bytes.NewBuffer([]byte{}))
 			resp = httptest.NewRecorder()
 			if tc.user != "" {
 				req.SetBasicAuth(tc.user, tc.pass)
@@ -341,7 +380,7 @@ func TestTokenOpaque(t *testing.T) {
 				return
 			}
 			tokenBody := authTokenResponse{}
-			err := json.NewDecoder(resp.Body).Decode(&tokenBody)
+			err = json.NewDecoder(resp.Body).Decode(&tokenBody)
 			if err != nil {
 				t.Fatalf("failed to decode response body, err = %v, body = %s", err, resp.Body.String())
 			}
