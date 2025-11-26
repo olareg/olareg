@@ -628,6 +628,16 @@ func TestServer(t *testing.T) {
 				}
 				_ = testSampleEntryPull(t, s, *sd["index"], "index", "index")
 			})
+			t.Run("Foreign layers", func(t *testing.T) {
+				if tcServer.readOnly || tcServer.testGC {
+					return
+				}
+				t.Parallel()
+				if err := testSampleEntryPush(t, s, *sd["image-foreign"], "image-foreign", "image-foreign"); err != nil {
+					return
+				}
+				_ = testSampleEntryPull(t, s, *sd["image-foreign"], "image-foreign", "image-foreign")
+			})
 			t.Run("Read Only Push", func(t *testing.T) {
 				if !tcServer.readOnly {
 					return
@@ -2336,7 +2346,98 @@ func genSampleData(t *testing.T) (sampleData, error) {
 		images[i] = &entry
 		sd[fmt.Sprintf("image-%s", imagePlatforms[i])] = &entry
 	}
-	// TODO: setup an image with a foreign layer
+
+	// setup an image with foreign layers
+	entry := sampleEntry{
+		manifest:     map[digest.Digest][]byte{},
+		blob:         map[digest.Digest][]byte{},
+		manifestList: []digest.Digest{},
+	}
+	conf := sampleImage{
+		Create: &now,
+		Platform: types.Platform{
+			OS:           "linux",
+			Architecture: "amd64",
+		},
+		Config: sampleConfig{
+			User:       "root",
+			Env:        []string{"PATH=/"},
+			Entrypoint: []string{"/entrypoint.sh"},
+			Cmd:        []string{"hello", "world"},
+			WorkingDir: "/",
+			Labels: map[string]string{
+				"config-type": "test",
+			},
+		},
+		RootFS: sampleRootFS{
+			Type:    "layers",
+			DiffIDs: make([]digest.Digest, 3),
+		},
+	}
+	man := types.Manifest{
+		SchemaVersion: 2,
+		MediaType:     types.MediaTypeOCI1Manifest,
+		Layers:        make([]types.Descriptor, 3),
+	}
+	// create the image with 3 layers, foreign compressed, foreign uncompressed, foreign docker
+	digOrig, digComp, bytesComp, err := genSampleLayer(rng, layerSize)
+	if err != nil {
+		return nil, err
+	}
+	conf.RootFS.DiffIDs[0] = digOrig
+	man.Layers[0] = types.Descriptor{
+		MediaType: types.MediaTypeOCI1ForeignLayerGzip,
+		Size:      int64(len(bytesComp)),
+		Digest:    digComp,
+		URLs:      []string{"https://store.example.com/blobs/sha256/" + digComp.Encoded()},
+	}
+	digOrig, _, _, err = genSampleLayer(rng, layerSize)
+	if err != nil {
+		return nil, err
+	}
+	conf.RootFS.DiffIDs[1] = digOrig
+	man.Layers[1] = types.Descriptor{
+		MediaType: types.MediaTypeOCI1ForeignLayer,
+		Size:      int64(layerSize),
+		Digest:    digOrig,
+		URLs:      []string{"https://store.example.com/blobs/sha256/" + digOrig.Encoded()},
+	}
+	digOrig, digComp, bytesComp, err = genSampleLayer(rng, layerSize)
+	if err != nil {
+		return nil, err
+	}
+	conf.RootFS.DiffIDs[2] = digOrig
+	man.Layers[2] = types.Descriptor{
+		MediaType: types.MediaTypeDocker2ForeignLayer,
+		Size:      int64(len(bytesComp)),
+		Digest:    digComp,
+		URLs:      []string{"https://store.example.com/blobs/sha256/" + digComp.Encoded()},
+	}
+	confJSON, err := json.Marshal(conf)
+	if err != nil {
+		return nil, err
+	}
+	confDig, err := digest.Canonical.FromBytes(confJSON)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
+	entry.blob[confDig] = confJSON
+	man.Config = types.Descriptor{
+		MediaType: types.MediaTypeOCI1ImageConfig,
+		Size:      int64(len(confJSON)),
+		Digest:    confDig,
+	}
+	manJSON, err := json.Marshal(man)
+	if err != nil {
+		return nil, err
+	}
+	manDig, err := digest.Canonical.FromBytes(manJSON)
+	if err != nil {
+		t.Fatalf("failed to generate digest: %v", err)
+	}
+	entry.manifest[manDig] = manJSON
+	entry.manifestList = append(entry.manifestList, manDig)
+	sd["image-foreign"] = &entry
 
 	// setup example index
 	ind := types.Index{
