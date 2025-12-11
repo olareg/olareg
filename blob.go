@@ -246,6 +246,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 					return
 				}
 				w.Header().Set("location", loc)
+				w.Header().Add(types.HeaderDockerDigest, d.String())
 				w.WriteHeader(http.StatusCreated)
 				return
 			}
@@ -282,7 +283,9 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 				return
 			}
 			w.Header().Set("location", loc)
+			w.Header().Add(types.HeaderDockerDigest, d.String())
 			w.WriteHeader(http.StatusCreated)
+			return
 		}
 		// generate the response
 		stateJSON, err := json.Marshal(blobUploadState{Offset: 0})
@@ -330,6 +333,7 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 				return err
 			}
 			w.Header().Set("location", loc)
+			w.Header().Add(types.HeaderDockerDigest, dig.String())
 			w.WriteHeader(http.StatusCreated)
 			return nil
 		}
@@ -359,6 +363,7 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 		return err
 	}
 	w.Header().Set("location", loc)
+	w.Header().Add(types.HeaderDockerDigest, dig.String())
 	w.WriteHeader(http.StatusCreated)
 	return nil
 }
@@ -542,6 +547,7 @@ func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("location", loc)
+		w.Header().Add(types.HeaderDockerDigest, d.String())
 		w.WriteHeader(http.StatusCreated)
 	}
 }

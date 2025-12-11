@@ -781,6 +781,7 @@ func TestServer(t *testing.T) {
 					testClientReqHeader("Content-Type", "application/octet-stream"),
 					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(exBlob))),
 					testClientRespStatus(http.StatusCreated),
+					testClientRespHeader(types.HeaderDockerDigest, exDigGood.String()),
 					testClientRespHeader("Location", ""))
 				if err != nil {
 					if !errors.Is(err, errValidationFailed) {
@@ -1335,6 +1336,7 @@ func TestServer(t *testing.T) {
 				u.RawQuery = q.Encode()
 				_, err = testClientRun(t, s, "PUT", u.String(), nil,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespHeader(types.HeaderDockerDigest, layer2Dig.String()),
 					testClientRespStatus(http.StatusCreated),
 				)
 				if err != nil {
@@ -1383,6 +1385,7 @@ func TestServer(t *testing.T) {
 				u.RawQuery = q.Encode()
 				_, err = testClientRun(t, s, "PUT", u.String(), nil,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
+					testClientRespHeader(types.HeaderDockerDigest, layer3Dig.String()),
 					testClientRespStatus(http.StatusCreated),
 				)
 				if err != nil {
@@ -1399,6 +1402,7 @@ func TestServer(t *testing.T) {
 				_, err = testClientRun(t, s, "POST", u.String(), configBlob,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
 					testClientRespStatus(http.StatusCreated),
+					testClientRespHeader(types.HeaderDockerDigest, configDig.String()),
 					testClientRespHeader("Location", ""))
 				if err != nil {
 					t.Fatalf("failed to run monolithic upload: %v", err)
@@ -1419,6 +1423,7 @@ func TestServer(t *testing.T) {
 				_, err = testClientRun(t, s, "PUT", u.String(), indBlob,
 					testClientReqHeader("Content-Type", types.MediaTypeOCI1ManifestList),
 					testClientRespStatus(http.StatusCreated),
+					testClientRespHeader(types.HeaderDockerDigest, indDig.String()),
 					testClientRespHeader("Location", ""),
 				)
 				if err != nil {
@@ -2108,6 +2113,11 @@ func testAPIManifestPut(t *testing.T, s *Server, repo string, digOrTag string, m
 		testClientRespStatus(http.StatusCreated),
 		testClientRespHeader("Location", ""),
 	}
+	if strings.Contains(digOrTag, ":") {
+		tcgList = append(tcgList,
+			testClientRespHeader(types.HeaderDockerDigest, digOrTag),
+		)
+	}
 	if mt := detectMediaType(manifest); mt != "" {
 		tcgList = append(tcgList, testClientReqHeader("Content-Type", mt))
 	}
@@ -2154,7 +2164,10 @@ func testAPIBlobGet(t *testing.T, s *Server, repo string, dig digest.Digest, bod
 
 func testAPIBlobHead(t *testing.T, s *Server, repo string, dig digest.Digest) (*httptest.ResponseRecorder, error) {
 	t.Helper()
-	tcgList := []testClientGen{testClientRespStatus(http.StatusOK)}
+	tcgList := []testClientGen{
+		testClientRespStatus(http.StatusOK),
+		testClientRespHeader(types.HeaderDockerDigest, dig.String()),
+	}
 	resp, err := testClientRun(t, s, "HEAD", "/v2/"+repo+"/blobs/"+dig.String(), nil, tcgList...)
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
@@ -2199,6 +2212,7 @@ func testAPIBlobPostPut(t *testing.T, s *Server, repo string, dig digest.Digest,
 	resp, err = testClientRun(t, s, "PUT", u.String(), blob,
 		testClientReqHeader("Content-Type", "application/octet-stream"),
 		testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(blob))),
+		testClientRespHeader(types.HeaderDockerDigest, dig.String()),
 		testClientRespStatus(http.StatusCreated))
 	if err != nil {
 		if !errors.Is(err, errValidationFailed) {
