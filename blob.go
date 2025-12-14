@@ -130,7 +130,7 @@ func (s *Server) blobUploadDelete(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Info("failed to cancel upload", "err", err, "repo", repoStr, "sessionID", sessionID)
 			return
 		}
-		w.WriteHeader(http.StatusAccepted)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

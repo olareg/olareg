@@ -864,7 +864,7 @@ func TestServer(t *testing.T) {
 				}
 				u = u.ResolveReference(uLoc)
 				_, err = testClientRun(t, s, "DELETE", u.String(), nil,
-					testClientRespStatus(http.StatusAccepted))
+					testClientRespStatus(http.StatusNoContent))
 				if err != nil {
 					if !errors.Is(err, errValidationFailed) {
 						t.Errorf("failed to send blob delete: %v", err)
