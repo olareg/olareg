@@ -415,8 +415,8 @@ func (s *Server) manifestVerifyImage(repo store.Repo, m types.Manifest) []types.
 		_ = r.Close()
 	}
 	for _, d := range m.Layers {
-		// foreign media types may not have the blob stored locally
-		if types.MediaTypeForeign(d.MediaType) {
+		// foreign layers and non-distributable media types may not have the blob stored locally
+		if types.MediaTypeForeign(d.MediaType) || len(d.URLs) > 0 {
 			continue
 		}
 		r, err := repo.BlobGet(d.Digest)
