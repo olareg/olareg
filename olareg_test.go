@@ -2385,15 +2385,15 @@ func genSampleData(t *testing.T) (sampleData, error) {
 		},
 		RootFS: sampleRootFS{
 			Type:    "layers",
-			DiffIDs: make([]digest.Digest, 3),
+			DiffIDs: make([]digest.Digest, 4),
 		},
 	}
 	man := types.Manifest{
 		SchemaVersion: 2,
 		MediaType:     types.MediaTypeOCI1Manifest,
-		Layers:        make([]types.Descriptor, 3),
+		Layers:        make([]types.Descriptor, 4),
 	}
-	// create the image with 3 layers, foreign compressed, foreign uncompressed, foreign docker
+	// create the image with 4 layers, foreign compressed, foreign uncompressed, foreign docker, and layer with a URL
 	digOrig, digComp, bytesComp, err := genSampleLayer(rng, layerSize)
 	if err != nil {
 		return nil, err
@@ -2414,7 +2414,6 @@ func genSampleData(t *testing.T) (sampleData, error) {
 		MediaType: types.MediaTypeOCI1ForeignLayer,
 		Size:      int64(layerSize),
 		Digest:    digOrig,
-		URLs:      []string{"https://store.example.com/blobs/sha256/" + digOrig.Encoded()},
 	}
 	digOrig, digComp, bytesComp, err = genSampleLayer(rng, layerSize)
 	if err != nil {
@@ -2423,6 +2422,17 @@ func genSampleData(t *testing.T) (sampleData, error) {
 	conf.RootFS.DiffIDs[2] = digOrig
 	man.Layers[2] = types.Descriptor{
 		MediaType: types.MediaTypeDocker2ForeignLayer,
+		Size:      int64(len(bytesComp)),
+		Digest:    digComp,
+		URLs:      []string{"https://store.example.com/blobs/sha256/" + digComp.Encoded()},
+	}
+	digOrig, digComp, bytesComp, err = genSampleLayer(rng, layerSize)
+	if err != nil {
+		return nil, err
+	}
+	conf.RootFS.DiffIDs[3] = digOrig
+	man.Layers[3] = types.Descriptor{
+		MediaType: types.MediaTypeOCI1LayerGzip,
 		Size:      int64(len(bytesComp)),
 		Digest:    digComp,
 		URLs:      []string{"https://store.example.com/blobs/sha256/" + digComp.Encoded()},
