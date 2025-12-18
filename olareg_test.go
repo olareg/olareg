@@ -68,6 +68,7 @@ func TestServer(t *testing.T) {
 		deleteDisabled   bool
 		referrerDisabled bool
 		testGC           bool
+		testSparse       bool
 		testWarn         bool
 	}{
 		{
@@ -148,7 +149,7 @@ func TestServer(t *testing.T) {
 			testGC:   false,
 		},
 		{
-			name: "Mem with Dir Limited",
+			name: "Mem with Dir Tweaked",
 			conf: config.Config{
 				Storage: config.ConfigStorage{
 					StoreType: config.StoreMem,
@@ -159,6 +160,10 @@ func TestServer(t *testing.T) {
 				},
 				API: config.ConfigAPI{
 					DeleteEnabled: &boolF,
+					Manifest: config.ConfigAPIManifest{
+						SparseImage: &boolT,
+						SparseIndex: &boolT,
+					},
 					Blob: config.ConfigAPIBlob{
 						DeleteEnabled: &boolF,
 					},
@@ -173,6 +178,7 @@ func TestServer(t *testing.T) {
 			deleteDisabled:   true,
 			referrerDisabled: true,
 			testGC:           false,
+			testSparse:       true,
 			testWarn:         true,
 		},
 		{
@@ -637,6 +643,39 @@ func TestServer(t *testing.T) {
 					return
 				}
 				_ = testSampleEntryPull(t, s, *sd["image-foreign"], "image-foreign", "image-foreign")
+			})
+			t.Run("Sparse Image and Index", func(t *testing.T) {
+				if tcServer.readOnly || tcServer.testGC {
+					return
+				}
+				t.Parallel()
+				repo := "sparse"
+				for _, name := range []string{"index", "image-amd64"} {
+					dig := sd[name].manifestList[len(sd[name].manifestList)-1]
+					body := sd[name].manifest[dig]
+					var tcgList []testClientGen
+					// push of only the manifest should succeed to a sparse configured registry, otherwise fail
+					if tcServer.testSparse {
+						tcgList = append(tcgList,
+							testClientRespStatus(http.StatusCreated),
+							testClientRespHeader("Location", ""),
+							testClientRespHeader(types.HeaderDockerDigest, dig.String()),
+						)
+					} else {
+						tcgList = append(tcgList,
+							testClientRespStatus(http.StatusBadRequest),
+						)
+					}
+					if mt := detectMediaType(body); mt != "" {
+						tcgList = append(tcgList, testClientReqHeader("Content-Type", mt))
+					}
+					_, err := testClientRun(t, s, "PUT", "/v2/"+repo+"/manifests/"+dig.String(), body, tcgList...)
+					if err != nil {
+						if !errors.Is(err, errValidationFailed) {
+							t.Errorf("sparse manifest put: %v", err)
+						}
+					}
+				}
 			})
 			t.Run("Read Only Push", func(t *testing.T) {
 				if !tcServer.readOnly {
