@@ -30,6 +30,8 @@ type serveOpts struct {
 	apiBlobDel       bool
 	apiReferrer      bool
 	apiRateLimit     int
+	apiSparseImage   bool
+	apiSparseIndex   bool
 	authBasicFile    string
 	authStaticLogin  []string
 	authStaticAnon   bool
@@ -80,6 +82,8 @@ olareg serve --tls-cert host.pem --tls-key host.key --port 443
 	newCmd.Flags().BoolVar(&opts.apiDelete, "api-delete", false, "enable delete APIs")
 	newCmd.Flags().BoolVar(&opts.apiBlobDel, "api-blob-delete", false, "enable blob delete API")
 	newCmd.Flags().BoolVar(&opts.apiReferrer, "api-referrer", true, "enable referrer API")
+	newCmd.Flags().BoolVar(&opts.apiSparseImage, "api-sparse-image", false, "allow sparse image (missing layers)")
+	newCmd.Flags().BoolVar(&opts.apiSparseIndex, "api-sparse-index", false, "allow sparse index (missing platforms)")
 	newCmd.Flags().IntVar(&opts.apiRateLimit, "rate-limit", 0, "limit requests per second per source IP")
 	newCmd.Flags().StringVar(&opts.authBasicFile, "auth-basic", "", "config file for basic auth")
 	newCmd.Flags().StringArrayVar(&opts.authStaticLogin, "auth-static-login", nil, "static auth: login (user:pass) in plain text (insecure)")
@@ -125,10 +129,18 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 		API: config.ConfigAPI{
 			PushEnabled:   &opts.apiPush,
 			DeleteEnabled: &opts.apiDelete,
-			Blob:          config.ConfigAPIBlob{DeleteEnabled: &opts.apiBlobDel},
-			Referrer:      config.ConfigAPIReferrer{Enabled: &opts.apiReferrer},
-			RateLimit:     opts.apiRateLimit,
-			Warnings:      opts.warnings,
+			Manifest: config.ConfigAPIManifest{
+				SparseImage: &opts.apiSparseImage,
+				SparseIndex: &opts.apiSparseIndex,
+			},
+			Blob: config.ConfigAPIBlob{
+				DeleteEnabled: &opts.apiBlobDel,
+			},
+			Referrer: config.ConfigAPIReferrer{
+				Enabled: &opts.apiReferrer,
+			},
+			RateLimit: opts.apiRateLimit,
+			Warnings:  opts.warnings,
 		},
 	}
 	if opts.authTokenOpaque != "" {

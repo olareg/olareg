@@ -406,13 +406,17 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 }
 
 func (s *Server) manifestVerifyImage(repo store.Repo, m types.Manifest) []types.ErrorInfo {
-	// TODO: allow validation to be disabled
 	es := []types.ErrorInfo{}
-	r, err := repo.BlobGet(m.Config.Digest)
-	if err != nil {
-		es = append(es, types.ErrInfoManifestBlobUnknown("config not found: "+m.Config.Digest.String()))
-	} else {
-		_ = r.Close()
+	if *s.conf.API.Manifest.SparseImage {
+		return nil
+	}
+	if len(m.Config.URLs) == 0 {
+		r, err := repo.BlobGet(m.Config.Digest)
+		if err != nil {
+			es = append(es, types.ErrInfoManifestBlobUnknown("config not found: "+m.Config.Digest.String()))
+		} else {
+			_ = r.Close()
+		}
 	}
 	for _, d := range m.Layers {
 		// foreign layers and non-distributable media types may not have the blob stored locally
@@ -433,10 +437,11 @@ func (s *Server) manifestVerifyImage(repo store.Repo, m types.Manifest) []types.
 }
 
 func (s *Server) manifestVerifyIndex(repo store.Repo, m types.Index) []types.ErrorInfo {
-	// TODO: allow validation to be disabled
 	es := []types.ErrorInfo{}
+	if *s.conf.API.Manifest.SparseIndex {
+		return nil
+	}
 	for _, d := range m.Manifests {
-		// TODO: allow sparse manifests
 		r, err := repo.BlobGet(d.Digest)
 		if err != nil {
 			es = append(es, types.ErrInfoManifestBlobUnknown("manifest not found: "+d.Digest.String()))

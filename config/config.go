@@ -70,7 +70,9 @@ type ConfigAPI struct {
 }
 
 type ConfigAPIManifest struct {
-	Limit int64 // max size of a manifest, default is 8MB (manifestLimitDefault)
+	Limit       int64 // max size of a manifest, default is 8MB (manifestLimitDefault)
+	SparseImage *bool // allow sparse images (missing layers/config)
+	SparseIndex *bool // allow spare index (missing platforms)
 }
 
 type ConfigAPIBlob struct {
@@ -97,6 +99,8 @@ func (c *Config) SetDefaults() {
 	if c.API.Manifest.Limit <= 0 {
 		c.API.Manifest.Limit = manifestLimitDefault
 	}
+	c.API.Manifest.SparseImage = boolDefault(c.API.Manifest.SparseImage, false)
+	c.API.Manifest.SparseIndex = boolDefault(c.API.Manifest.SparseIndex, false)
 	if c.API.Referrer.PageCacheExpire == 0 {
 		c.API.Referrer.PageCacheExpire = referrerCacheExpireDefault
 	}
