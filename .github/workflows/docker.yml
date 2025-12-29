@@ -126,14 +126,14 @@ jobs:
     
     - name: Install syft
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
-      uses: anchore/sbom-action/download-syft@43a17d6e7add2b5535efe4dcae9952337c479a93 # v0.20.11
+      uses: anchore/sbom-action/download-syft@a930d0ac434e3182448fe678398ba5713717112a # v0.21.0
       id: syft
       with:
-        syft-version: "v1.38.2"
+        syft-version: "v1.39.0"
     
     # Use regctl to modify olareg images to improve reproducibility
     - name: Install regctl
-      uses: regclient/actions/regctl-installer@3bf69189e904cf474978b10d944611b9d23a1ccc # main
+      uses: regclient/actions/regctl-installer@73d0a55cd4885dc9ce30ce2772a9c01b5753ffef # main
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
 
     - name: Mutate
