@@ -41,6 +41,7 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 		i := types.Index{
 			SchemaVersion: 2,
 			MediaType:     types.MediaTypeOCI1ManifestList,
+			Manifests:     []types.Descriptor{},
 		}
 		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
