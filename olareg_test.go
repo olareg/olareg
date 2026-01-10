@@ -461,7 +461,7 @@ func TestServer(t *testing.T) {
 					t.Errorf("failed to unmarshal referrers response: %v", err)
 					return
 				}
-				if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || len(rr.Manifests) != 0 {
+				if rr.MediaType != types.MediaTypeOCI1ManifestList || rr.SchemaVersion != 2 || rr.Manifests == nil || len(rr.Manifests) != 0 {
 					t.Errorf("referrers response should be an index, schema 2, with %d manifests: %v", 0, rr)
 				}
 			})
@@ -1027,9 +1027,24 @@ func TestServer(t *testing.T) {
 				t.Parallel()
 				count := 25
 				bigEntry := 3
+				refIdx := types.Index{}
 				// push sample image
 				if err := testSampleEntryPush(t, s, *sd["index"], "referrer", "index"); err != nil {
 					return
+				}
+				subDig := sd["index"].manifestList[len(sd["index"].manifestList)-1]
+				subLen := int64(len(sd["index"].manifest[subDig]))
+				// verify referrers response is empty before pushing any artifacts
+				resp, err := testAPIReferrersList(t, s, "referrer", subDig, "", nil)
+				if err != nil {
+					return
+				}
+				err = json.NewDecoder(resp.Result().Body).Decode(&refIdx)
+				if err != nil {
+					t.Fatalf("failed to decode referrers body: %v", err)
+				}
+				if refIdx.SchemaVersion != 2 || refIdx.MediaType != types.MediaTypeOCI1ManifestList || refIdx.Manifests == nil || len(refIdx.Manifests) > 0 {
+					t.Errorf("empty referrer list is not a valid index, received %v", refIdx)
 				}
 				// generate referrer manifest with annotations, push blob
 				emptyBlob := []byte(`{}`)
@@ -1048,8 +1063,6 @@ func TestServer(t *testing.T) {
 				if _, err := testAPIBlobPostPut(t, s, "referrer", exDig, exBlob); err != nil {
 					return
 				}
-				subDig := sd["index"].manifestList[len(sd["index"].manifestList)-1]
-				subLen := int64(len(sd["index"].manifest[subDig]))
 				artMan := types.Manifest{
 					SchemaVersion: 2,
 					MediaType:     types.MediaTypeOCI1Manifest,
@@ -1102,7 +1115,6 @@ func TestServer(t *testing.T) {
 					}
 				}
 				// query for referrer, verify link header
-				refIdx := types.Index{}
 				found := map[string]bool{}
 				pageCount := 1
 				tcgList := []testClientGen{
@@ -1110,7 +1122,7 @@ func TestServer(t *testing.T) {
 					testClientRespHeader("Content-Type", types.MediaTypeOCI1ManifestList),
 				}
 				path := "/v2/referrer/referrers/" + subDig.String()
-				resp, err := testClientRun(t, s, "GET", path, nil, tcgList...)
+				resp, err = testClientRun(t, s, "GET", path, nil, tcgList...)
 				if err != nil {
 					if !errors.Is(err, errValidationFailed) {
 						t.Errorf("failed to send referrers list: %v", err)
@@ -1214,6 +1226,9 @@ func TestServer(t *testing.T) {
 				err = json.NewDecoder(resp.Result().Body).Decode(&refIdx)
 				if err != nil {
 					t.Fatalf("failed to decode referrers body: %v", err)
+				}
+				if refIdx.SchemaVersion != 2 || refIdx.MediaType != types.MediaTypeOCI1ManifestList || refIdx.Manifests == nil {
+					t.Errorf("referrers response is not a valid index")
 				}
 				if len(refIdx.Manifests) > 0 {
 					t.Errorf("referrer list was not empty after delete, received %v", refIdx)
