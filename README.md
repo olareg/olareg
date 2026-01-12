@@ -91,15 +91,35 @@ cosign verify \
 For binaries:
 
 ```shell
-curl -L https://github.com/olareg/olareg/releases/latest/download/olareg-linux-amd64 >olareg
+cmd=olareg
+arch=linux-amd64
+curl -L https://github.com/olareg/olareg/releases/latest/download/${cmd}-${arch} >${cmd}
 chmod 755 olareg
-curl -L https://github.com/olareg/olareg/releases/latest/download/olareg-linux-amd64.pem >olareg-linux-amd64.pem
-curl -L https://github.com/olareg/olareg/releases/latest/download/olareg-linux-amd64.sig >olareg-linux-amd64.sig
+curl -L https://github.com/olareg/olareg/releases/latest/download/${cmd}-${arch}.pem >${cmd}-${arch}.pem
+curl -L https://github.com/olareg/olareg/releases/latest/download/${cmd}-${arch}.sig >${cmd}-${arch}.sig
 cosign verify-blob \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp https://github.com/olareg/olareg/.github/workflows/ \
-  --certificate olareg-linux-amd64.pem \
-  --signature olareg-linux-amd64.sig \
+  --certificate ${cmd}-${arch}.pem \
+  --signature ${cmd}-${arch}.sig \
   olareg
-rm olareg-linux-amd64.pem olareg-linux-amd64.sig
+rm ${cmd}-${arch}.pem ${cmd}-${arch}.sig
+```
+
+Starting in olareg v0.1.3, signatures are also provided using sigstore bundles.
+To facilitate the migration to bundles, the previous signatures will still be distributed for several releases and a deprecation notice will be provided in the release notes.
+To verify signatures using the sigstore bundles, use the following commands:
+
+```shell
+cmd=olareg
+arch=linux-amd64
+curl -L https://github.com/olareg/olareg/releases/latest/download/${cmd}-${arch} >${cmd}
+chmod 755 ${cmd}
+curl -L https://github.com/olareg/olareg/releases/latest/download/${cmd}-${arch}.sigstore.json >${cmd}-${arch}.sigstore.json
+cosign verify-blob \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp https://github.com/olareg/olareg/.github/workflows/ \
+  --bundle ${cmd}-${arch}.sigstore.json \
+  ${cmd}
+rm ${cmd}-${arch}.sigstore.json
 ```
