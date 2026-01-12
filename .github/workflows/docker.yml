@@ -61,17 +61,18 @@ jobs:
         VERSION="$(echo "${VERSION}" | sed -r 's#/+#-#g')"
         TAGS="${GHCR_IMAGE}:${VERSION}${EXT}"
         # TAGS="${TAGS},${HUB_IMAGE}:${VERSION}${EXT}"
+        TAG_COPIES=""
         if [[ $VERSION =~ ^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
           MINOR="${VERSION%.*}"
           MAJOR="${MINOR%.*}"
-          # TAGS="${TAGS},${HUB_IMAGE}:${MINOR}${EXT},${HUB_IMAGE}:${MAJOR}${EXT}"
-          TAGS="${TAGS},${GHCR_IMAGE}:${MINOR}${EXT},${GHCR_IMAGE}:${MAJOR}${EXT}"
+          # TAGS_COPIES="${TAGS_COPIES},${HUB_IMAGE}:${MINOR}${EXT},${HUB_IMAGE}:${MAJOR}${EXT}"
+          TAGS_COPIES="${TAGS_COPIES},${GHCR_IMAGE}:${MINOR}${EXT},${GHCR_IMAGE}:${MAJOR}${EXT}"
           if [ "${{ matrix.type }}" == "scratch" ]; then
-            # TAGS="${TAGS},${HUB_IMAGE}:latest"
-            TAGS="${TAGS},${GHCR_IMAGE}:latest"
+            # TAGS_COPIES="${TAGS_COPIES},${HUB_IMAGE}:latest"
+            TAGS_COPIES="${TAGS_COPIES},${GHCR_IMAGE}:latest"
           else
-            # TAGS="${TAGS},${HUB_IMAGE}:${{ matrix.type }}"
-            TAGS="${TAGS},${GHCR_IMAGE}:${{ matrix.type }}"
+            # TAGS_COPIES="${TAGS_COPIES},${HUB_IMAGE}:${{ matrix.type }}"
+            TAGS_COPIES="${TAGS_COPIES},${GHCR_IMAGE}:${{ matrix.type }}"
           fi
         fi
         VCS_SEC="$(git log -1 --format=%ct)"
@@ -81,6 +82,7 @@ jobs:
         echo "image_hub=${HUB_IMAGE}" >>$GITHUB_OUTPUT
         echo "image_ghcr=${GHCR_IMAGE}" >>$GITHUB_OUTPUT
         echo "tags=${TAGS}" >>$GITHUB_OUTPUT
+        echo "tag_copies=${TAG_COPIES}" >>$GITHUB_OUTPUT
         echo "vcs_sec=${VCS_SEC}" >>$GITHUB_OUTPUT
         echo "created=${VCS_DATE}" >>$GITHUB_OUTPUT
         echo "repo_url=${REPO_URL}" >>$GITHUB_OUTPUT
@@ -122,7 +124,7 @@ jobs:
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
       uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
       with:
-        cosign-release: "v2.6.2"
+        cosign-release: "v3.0.4"
     
     - name: Install syft
       if: github.event_name != 'pull_request' && github.repository_owner == 'olareg'
@@ -177,14 +179,14 @@ jobs:
           echo "Attaching SBOMs for ${{matrix.image}}@${digest}"
           regctl image copy ocidir://output/${{matrix.image}}@${digest} ocidir://output/${{matrix.image}}-sbom -v warn >/dev/null
           ${{steps.syft.outputs.cmd}} scan -q "oci-dir:output/${{matrix.image}}-sbom" \
-              --source-name "docker:docker.io/olareg/${{matrix.image}}@${digest}" -o cyclonedx-json \
+              --source-name "docker:ghcr.io/olareg/${{matrix.image}}@${digest}" -o cyclonedx-json \
             | regctl artifact put --subject "ocidir://output/${{matrix.image}}@${digest}" \
                 --artifact-type application/vnd.cyclonedx+json \
                 -m application/vnd.cyclonedx+json \
                 --annotation "org.opencontainers.image.created=${now_date}" \
                 --annotation "org.opencontainers.image.description=CycloneDX JSON SBOM"
           ${{steps.syft.outputs.cmd}} scan -q "oci-dir:output/${{matrix.image}}-sbom" \
-              --source-name "docker:docker.io/olareg/${{matrix.image}}@${digest}" -o spdx-json \
+              --source-name "docker:ghcr.io/olareg/${{matrix.image}}@${digest}" -o spdx-json \
             | regctl artifact put --subject "ocidir://output/${{matrix.image}}@${digest}" \
                 --artifact-type application/spdx+json \
                 -m application/spdx+json \
@@ -205,8 +207,15 @@ jobs:
             # image already pushed, don't add referrers to reproducible builds
             echo "Skipping ${tag}"
           else
-            echo "Pushing ${tag}"
+            echo "Pushing image to ${tag}"
             regctl image copy --referrers "ocidir://output/${{matrix.image}}:${{matrix.type}}@${digest}" "${tag}"
-            cosign sign -y -r "${tag}@${digest}"
+            # sign both with and without the bundle to support older clients
+            cosign sign -y -r --new-bundle-format=false --use-signing-config=false "${tag}@${digest}"
+            cosign sign -y -r --new-bundle-format=true  --use-signing-config=true  "${tag}@${digest}"
           fi
+        done
+        # after the first tag is pushed to each registry, remaining tags can skip referrers and cosign
+        for tag in $(echo ${{ steps.prep.outputs.tag_copies }} | tr , ' '); do
+            echo "Pushing tag to ${tag}"
+            regctl image copy "ocidir://output/${{matrix.image}}:${{matrix.type}}@${digest}" "${tag}"
         done

@@ -73,7 +73,7 @@ jobs:
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
       uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
       with:
-        cosign-release: "v2.6.2"
+        cosign-release: "v3.0.4"
 
     - name: Sign artifacts
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
@@ -88,7 +88,9 @@ jobs:
             olareg-linux-s390x \
             olareg-windows-amd64.exe \
           ; do
-          cosign sign-blob -y --output-signature "${artifact%.exe}.sig" --output-certificate "${artifact%.exe}.pem" "${artifact}"
+          # sign content with and without the bundle to simplify client migrations
+          cosign sign-blob -y --new-bundle-format=false --use-signing-config=false --output-signature "${artifact%.exe}.sig" --output-certificate "${artifact%.exe}.pem" "${artifact}"
+          cosign sign-blob -y --new-bundle-format=true  --use-signing-config=true  --bundle "${artifact%.exe}.sigstore.json" "${artifact}"
         done
 
     - name: Gather release details
