@@ -131,7 +131,7 @@ jobs:
       uses: anchore/sbom-action/download-syft@0b82b0b1a22399a1c542d4d656f70cd903571b5c # v0.21.1
       id: syft
       with:
-        syft-version: "v1.40.0"
+        syft-version: "v1.40.1"
     
     # Use regctl to modify olareg images to improve reproducibility
     - name: Install regctl

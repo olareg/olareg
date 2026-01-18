@@ -1,16 +1,16 @@
 {"name":"docker-arg-alpine-digest","key":"docker.io/library/alpine:3.23.2","version":"sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62"}
 {"name":"docker-arg-alpine-tag","key":"docker.io/library/alpine","version":"3.23.2"}
-{"name":"docker-arg-go-digest","key":"docker.io/library/golang:1.25.5-alpine","version":"sha256:ac09a5f469f307e5da71e766b0bd59c9c49ea460a528cc3e6686513d64a6f1fb"}
-{"name":"docker-arg-go-tag","key":"docker.io/library/golang","version":"1.25.5"}
+{"name":"docker-arg-go-digest","key":"docker.io/library/golang:1.25.6-alpine","version":"sha256:bc2596742c7a01aa8c520a075515c7fee21024b05bfaa18bd674fe82c100a05d"}
+{"name":"docker-arg-go-tag","key":"docker.io/library/golang","version":"1.25.6"}
 {"name":"gha-alpine-digest","key":"docker.io/library/alpine:3.23.2","version":"sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62"}
 {"name":"gha-alpine-tag-base","key":"docker.io/library/alpine","version":"3"}
 {"name":"gha-alpine-tag-comment","key":"docker.io/library/alpine","version":"3.23.2"}
 {"name":"gha-cosign-version","key":"https://github.com/sigstore/cosign.git","version":"v3.0.4"}
 {"name":"gha-golang-matrix","key":"golang-matrix","version":"[\"1.24\", \"1.25\"]"}
 {"name":"gha-golang-release","key":"golang-latest","version":"1.25"}
-{"name":"gha-syft-version","key":"docker.io/anchore/syft","version":"v1.40.0"}
+{"name":"gha-syft-version","key":"docker.io/anchore/syft","version":"v1.40.1"}
 {"name":"gha-uses-commit","key":"https://github.com/actions/checkout.git:v6.0.2","version":"de0fac2e4500dabe0009e67214ff5f5447ce83dd"}
-{"name":"gha-uses-commit","key":"https://github.com/actions/setup-go.git:v6.1.0","version":"4dc6199c7b1a012772edbd06daecab0f50c9053c"}
+{"name":"gha-uses-commit","key":"https://github.com/actions/setup-go.git:v6.2.0","version":"7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5"}
 {"name":"gha-uses-commit","key":"https://github.com/actions/stale.git:v10.1.1","version":"997185467fa4f803885201cee163a9f38240193d"}
 {"name":"gha-uses-commit","key":"https://github.com/actions/upload-artifact.git:v6.0.0","version":"b7c566a772e6b6bfb58ed0dc250532a479d7789f"}
 {"name":"gha-uses-commit","key":"https://github.com/anchore/sbom-action.git:v0.21.1","version":"0b82b0b1a22399a1c542d4d656f70cd903571b5c"}
@@ -21,7 +21,7 @@
 {"name":"gha-uses-commit","key":"https://github.com/sigstore/cosign-installer.git:v4.0.0","version":"faadad0cce49287aee09b3a48701e75088a2c6ad"}
 {"name":"gha-uses-commit","key":"https://github.com/softprops/action-gh-release.git:v2.5.0","version":"a06a81a03ee405af7f2048a818ed3f03bbf83c7b"}
 {"name":"gha-uses-semver","key":"https://github.com/actions/checkout.git","version":"v6.0.2"}
-{"name":"gha-uses-semver","key":"https://github.com/actions/setup-go.git","version":"v6.1.0"}
+{"name":"gha-uses-semver","key":"https://github.com/actions/setup-go.git","version":"v6.2.0"}
 {"name":"gha-uses-semver","key":"https://github.com/actions/stale.git","version":"v10.1.1"}
 {"name":"gha-uses-semver","key":"https://github.com/actions/upload-artifact.git","version":"v6.0.0"}
 {"name":"gha-uses-semver","key":"https://github.com/anchore/sbom-action.git","version":"v0.21.1"}
@@ -36,12 +36,12 @@
 {"name":"makefile-gomajor","key":"https://github.com/icholy/gomajor.git","version":"v0.15.0"}
 {"name":"makefile-gosec","key":"https://github.com/securego/gosec.git","version":"v2.22.11"}
 {"name":"makefile-markdown-lint","key":"docker.io/davidanson/markdownlint-cli2","version":"v0.20.0"}
-{"name":"makefile-osv-scanner","key":"https://github.com/google/osv-scanner.git","version":"v2.3.1"}
+{"name":"makefile-osv-scanner","key":"https://github.com/google/osv-scanner.git","version":"v2.3.2"}
 {"name":"makefile-staticcheck","key":"https://github.com/dominikh/go-tools.git","version":"v0.6.1"}
-{"name":"makefile-syft-container-digest","key":"anchore/syft:v1.40.0","version":"sha256:11a68ff5cd49a1579e1f05b061a96edf0a5add161ea5f38d62fc979704c46918"}
-{"name":"makefile-syft-container-tag","key":"anchore/syft","version":"v1.40.0"}
-{"name":"makefile-syft-version","key":"docker.io/anchore/syft","version":"v1.40.0"}
-{"name":"osv-golang-release","key":"docker.io/library/golang","version":"1.25.5"}
+{"name":"makefile-syft-container-digest","key":"anchore/syft:v1.40.1","version":"sha256:fba42bf6d51cfb2411618f8fe645f2cf4f6ffdedd69fd7ef12fdfb064a409f70"}
+{"name":"makefile-syft-container-tag","key":"anchore/syft","version":"v1.40.1"}
+{"name":"makefile-syft-version","key":"docker.io/anchore/syft","version":"v1.40.1"}
+{"name":"osv-golang-release","key":"docker.io/library/golang","version":"1.25.6"}
 {"name":"shell-alpine-digest","key":"docker.io/library/alpine:3.23.2","version":"sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62"}
 {"name":"shell-alpine-tag-base","key":"docker.io/library/alpine","version":"3"}
 {"name":"shell-alpine-tag-comment","key":"docker.io/library/alpine","version":"3.23.2"}
