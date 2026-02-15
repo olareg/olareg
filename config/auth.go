@@ -98,6 +98,7 @@ type authConf struct {
 }
 
 type authUser struct {
+	//#nosec G117 false positive, this secret is intentionally exported
 	Cred   string `yaml:"cred"`
 	groups map[string]bool
 }

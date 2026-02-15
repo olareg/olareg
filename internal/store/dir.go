@@ -132,6 +132,9 @@ func (d *dir) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 	if stringsHasAny(strings.Split(repoStr, "/"), indexFile, layoutFile, blobsDir) {
 		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
 	}
+	if !filepath.IsLocal(repoStr) {
+		return nil, fmt.Errorf("repo %s must be a relative path%.0w", repoStr, types.ErrRepoNotAllowed)
+	}
 	dr := dirRepo{
 		wgBlock: make(chan struct{}, 1),
 		path:    filepath.Join(d.root, repoStr),
@@ -615,11 +618,14 @@ func (dr *dirRepo) indexSave(locked bool) error {
 	defer fh.Close()
 	err = json.NewEncoder(fh).Encode(dr.index)
 	if err != nil {
+		//#nosec G703 repo path has been cleaned
 		_ = os.Remove(fh.Name())
 		return err
 	}
+	//#nosec G703 repo path has been cleaned
 	err = os.Rename(fh.Name(), filepath.Join(dr.path, indexFile))
 	if err != nil {
+		//#nosec G703 repo path has been cleaned
 		_ = os.Remove(fh.Name())
 		return err
 	}

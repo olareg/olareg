@@ -177,6 +177,7 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 		}
 		w.Header().Add("content-length", fmt.Sprintf("%d", len(out)))
 		w.WriteHeader(http.StatusOK)
+		//#nosec G705 this looks like a false positive
 		_, err = w.Write(out)
 		if err != nil {
 			s.log.Info("failed to write referrers response", "err", err, "repo", repoStr, "arg", arg)
