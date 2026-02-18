@@ -167,7 +167,6 @@ func indexIngest(repo Repo, index *types.Index, conf config.Config, locked bool)
 	digestTags := []types.Descriptor{}
 	// loop over manifests
 	for _, desc := range index.Manifests {
-		desc := desc
 		seen[desc.Digest] = true
 		if desc.MediaType == types.MediaTypeOCI1ManifestList && desc.Annotations != nil {
 			if referrerTagRe.MatchString(desc.Annotations[types.AnnotRefName]) {

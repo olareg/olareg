@@ -119,7 +119,6 @@ func TestStore(t *testing.T) {
 		},
 	}
 	for _, tc := range tt {
-		tc := tc
 		tc.conf.SetDefaults()
 		var s Store
 		switch tc.conf.Storage.StoreType {
@@ -1530,7 +1529,6 @@ func TestGarbageCollect(t *testing.T) {
 		// TODO: add more tests with other GC conf settings
 	}
 	for _, tc := range tt {
-		tc := tc
 		tc.conf.SetDefaults()
 		var s Store
 		switch tc.conf.Storage.StoreType {
@@ -1633,7 +1631,6 @@ func TestGarbageCollectContext(t *testing.T) {
 		},
 	}
 	for _, tc := range tt {
-		tc := tc
 		tc.conf.SetDefaults()
 		var s Store
 		switch tc.conf.Storage.StoreType {
@@ -1788,7 +1785,6 @@ func TestGarbageCollectUpload(t *testing.T) {
 		},
 	}
 	for _, tc := range tt {
-		tc := tc
 		tc.conf.SetDefaults()
 		var s Store
 		switch tc.conf.Storage.StoreType {

@@ -51,7 +51,7 @@ STATICCHECK_VER?=v0.7.0
 .FORCE:
 
 .PHONY: all
-all: fmt gofumpt goimports vet test lint binaries ## Full build of Go binaries (including fmt, vet, test, and lint)
+all: fmt gofumpt gofix goimports vet test lint binaries ## Full build of Go binaries (including fmt, vet, test, and lint)
 
 .PHONY: fmt
 fmt: ## go fmt
@@ -60,6 +60,10 @@ fmt: ## go fmt
 .PHONY: gofumpt
 gofumpt: $(GOPATH)/bin/gofumpt ## gofumpt is a stricter alternative to go fmt
 	gofumpt -l -w .
+
+.PHONY: gofix
+gofix: ## go fix
+	go fix ./...
 
 goimports: $(GOPATH)/bin/goimports
 	$(GOPATH)/bin/goimports -w -format-only -local github.com/olareg .
@@ -79,6 +83,7 @@ lint: lint-go lint-goimports lint-md lint-gosec ## Run all linting
 lint-go: $(GOPATH)/bin/gofumpt $(GOPATH)/bin/staticcheck .FORCE ## Run linting for Go
 	$(GOPATH)/bin/staticcheck -checks all ./...
 	$(GOPATH)/bin/gofumpt -l -d .
+	errors=$$(go fix -diff ./...); if [ "$${errors}" != "" ]; then echo "$${errors}"; exit 1; fi
 
 lint-goimports: $(GOPATH)/bin/goimports
 	@if [ -n "$$($(GOPATH)/bin/goimports -l -format-only -local github.com/olareg .)" ]; then \

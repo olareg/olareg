@@ -1,6 +1,8 @@
 package types
 
 import (
+	"maps"
+
 	digest "github.com/sudo-bmitch/oci-digest"
 )
 
@@ -51,9 +53,7 @@ func (d Descriptor) Copy() Descriptor {
 	}
 	if d.Annotations != nil {
 		d2.Annotations = make(map[string]string)
-		for k, v := range d.Annotations {
-			d2.Annotations[k] = v
-		}
+		maps.Copy(d2.Annotations, d.Annotations)
 	}
 	return d2
 }
