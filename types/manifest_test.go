@@ -368,7 +368,6 @@ func TestIndex(t *testing.T) {
 			},
 		}
 		for _, tc := range tt {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				resultDesc, resultErr := tc.i.GetDesc(tc.arg)
@@ -470,7 +469,6 @@ func TestIndex(t *testing.T) {
 			},
 		}
 		for _, tc := range tt {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				resultDesc, resultErr := tc.i.GetByAnnotation(tc.key, tc.val)
@@ -724,7 +722,6 @@ func TestAddDesc(t *testing.T) {
 		},
 	}
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.iIn.AddDesc(tc.dAdd, tc.opts...)
@@ -984,7 +981,6 @@ func TestRmDesc(t *testing.T) {
 		},
 	}
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.iIn.RmDesc(tc.dRm)

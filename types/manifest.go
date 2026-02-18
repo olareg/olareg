@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"maps"
 
 	digest "github.com/sudo-bmitch/oci-digest"
 )
@@ -90,9 +91,7 @@ func (i Index) Copy() Index {
 	}
 	if i.Annotations != nil {
 		i2.Annotations = make(map[string]string)
-		for k, v := range i.Annotations {
-			i2.Annotations[k] = v
-		}
+		maps.Copy(i2.Annotations, i.Annotations)
 	}
 	return i2
 }

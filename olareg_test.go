@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -256,7 +257,6 @@ func TestServer(t *testing.T) {
 		},
 	}
 	for _, tcServer := range ttServer {
-		tcServer := tcServer
 		t.Run(tcServer.name, func(t *testing.T) {
 			t.Parallel()
 			// new server
@@ -2553,12 +2553,8 @@ func genSampleData(t *testing.T) (sampleData, error) {
 	}
 	// merge images into index entry
 	for i := range imageCount {
-		for k, b := range images[i].blob {
-			indEntry.blob[k] = b
-		}
-		for k, m := range images[i].manifest {
-			indEntry.manifest[k] = m
-		}
+		maps.Copy(indEntry.blob, images[i].blob)
+		maps.Copy(indEntry.manifest, images[i].manifest)
 		indEntry.manifestList = append(indEntry.manifestList, images[i].manifestList...)
 	}
 	indEntry.manifestList = append(indEntry.manifestList, indDig)
@@ -2598,7 +2594,7 @@ func genSampleLayer(rng *rand.Rand, size int) (digest.Digest, digest.Digest, []b
 type sampleImage struct {
 	Create *time.Time `json:"created,omitempty"`
 	types.Platform
-	Config sampleConfig `json:"config,omitempty"`
+	Config sampleConfig `json:"config"`
 	RootFS sampleRootFS `json:"rootfs"`
 }
 
