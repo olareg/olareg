@@ -72,7 +72,7 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 				}
 				w.Header().Add("content-type", types.MediaTypeOCI1ManifestList)
 				w.WriteHeader(http.StatusOK)
-				_, err = w.Write(cacheResp[page])
+				_, err = w.Write(cacheResp[page]) //#nosec G705
 				if err != nil {
 					s.log.Info("failed to write referrers response", "err", err, "repo", repoStr, "arg", arg)
 				}
@@ -114,7 +114,7 @@ func (s *Server) referrerGet(repoStr, arg string) http.HandlerFunc {
 				w.Header().Add("Link", fmt.Sprintf("<%s>; rel=next", next.String()))
 			}
 			w.WriteHeader(http.StatusOK)
-			_, err = w.Write(cacheResp[page])
+			_, err = w.Write(cacheResp[page]) //#nosec G705
 			if err != nil {
 				s.log.Info("failed to write referrers response", "err", err, "repo", repoStr, "arg", arg)
 			}
