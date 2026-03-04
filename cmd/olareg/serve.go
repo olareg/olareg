@@ -188,6 +188,7 @@ func (opts *serveOpts) run(cmd *cobra.Command, args []string) error {
 	// run the server
 	err = s.Run(ctx)
 	if err != nil {
+		cancel()
 		return err
 	}
 	<-cleanShutdown
