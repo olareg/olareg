@@ -38,7 +38,8 @@ jobs:
 
     - name: Run OCI Distribution Spec Conformance ${{ matrix.oci-version }}
       id: run-conformance
-      uses: opencontainers/distribution-spec@main
+      uses: sudo-bmitch/distribution-spec@pr-conformance-commit
+      # uses: opencontainers/distribution-spec@main
       env:
         OCI_VERSION: "${{ matrix.oci-version }}"
         OCI_REGISTRY: "localhost:${{ steps.run-olareg.outputs.port }}"
