@@ -161,12 +161,14 @@ func (m *mem) Close() error {
 			continue
 		}
 		m.mu.Unlock()
+		<-repo.wgBlock
 		repo.wg.Wait()
 		// cancel all uploads
 		err := repo.uploads.DeleteAll()
 		if err != nil {
 			errs = append(errs, err)
 		}
+		repo.wgBlock <- struct{}{}
 		m.mu.Lock()
 		delete(m.repos, r)
 	}

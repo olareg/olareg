@@ -184,14 +184,17 @@ func (d *dir) Close() error {
 			errs = append(errs, err)
 			continue
 		}
+		<-repo.wgBlock
 		repo.wg.Wait()
 		if !*d.conf.Storage.ReadOnly {
 			err = repo.uploads.DeleteAll()
 			if err != nil {
 				errs = append(errs, err)
+				repo.wgBlock <- struct{}{}
 				continue
 			}
 		}
+		repo.wgBlock <- struct{}{}
 		err = d.repos.Delete(r)
 		if err != nil {
 			errs = append(errs, err)
