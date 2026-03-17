@@ -13,10 +13,12 @@ permissions:
   contents: read
 
 jobs:
-  run:
+  oci-conformance:
+    strategy:
+      matrix:
+        oci-version: [ "stable", "dev" ]
     runs-on: ubuntu-latest
     env:
-      RELEASE_GO_VER: "1.26"
       # do not automatically upgrade go to a different version: https://go.dev/doc/toolchain
       GOTOOLCHAIN: "local"
 
@@ -24,27 +26,28 @@ jobs:
     - name: Check out code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+    - name: "Set up Go"
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+
     - name: Build and run olareg in the background
       id: run-olareg
       run: |
         make ci-setup
         echo "port=$(docker port olareg-ci 5000 | head -1 | cut -f2 -d:)" >>$GITHUB_OUTPUT
 
-    - name: Run OCI Distribution Spec conformance tests
-      uses: opencontainers/distribution-spec@main
+    - name: Run OCI Distribution Spec Conformance ${{ matrix.oci-version }}
+      id: run-conformance
+      uses: sudo-bmitch/distribution-spec@pr-conformance-v2
+      # uses: opencontainers/distribution-spec@main
       env:
-        OCI_ROOT_URL: "http://localhost:${{ steps.run-olareg.outputs.port }}"
-        OCI_NAMESPACE: myorg/myrepo
-        OCI_TEST_PULL: 1
-        OCI_TEST_PUSH: 1
-        OCI_TEST_CONTENT_DISCOVERY: 1
-        OCI_TEST_CONTENT_MANAGEMENT: 1
-        OCI_HIDE_SKIPPED_WORKFLOWS: 0
-        OCI_DEBUG: 0
-        OCI_DELETE_MANIFEST_BEFORE_BLOBS: 0
-
-    # TODO: add CI tests with other tools (regclient, crane, skopeo, oras, docker)
+        OCI_VERSION: "${{ matrix.oci-version }}"
+        OCI_REGISTRY: "localhost:${{ steps.run-olareg.outputs.port }}"
+        OCI_TLS: "disabled"
+        OCI_REPO1: "myorg/myrepo"
+        OCI_REPO2: "myorg/myrepo2"
 
     - name: Cleanup
       run: |
         make ci-cleanup
+
+    # TODO: add CI tests with other tools (regclient, crane, skopeo, oras, docker)
