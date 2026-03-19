@@ -192,7 +192,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 			}
 		}
 		// check for digest and algorithm parameters
-		// TODO(bmitch): the digest-algorithm field is EXPERIMENTAL and needs to be adopted by OCI
+		// TODO(bmitch): the digest-algorithm field is EXPERIMENTAL and needs to be adopted by OCI: <https://github.com/opencontainers/distribution-spec/pull/543>
 		algoStr := r.URL.Query().Get("digest-algorithm")
 		if algoStr != "" {
 			algo, err := digest.AlgorithmLookup(algoStr)
