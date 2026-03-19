@@ -224,7 +224,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		// parse params
-		// TODO(bmitch): the digest field is EXPERIMENTAL and needs to be adopted by OCI
+		// TODO(bmitch): the digest field is EXPERIMENTAL and needs to be adopted by OCI: <https://github.com/opencontainers/distribution-spec/pull/543>
 		if dStr := r.URL.Query().Get("digest"); dStr != "" {
 			dExpect, err = digest.Parse(dStr)
 			if err != nil {
@@ -234,9 +234,17 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				return
 			}
 		}
+		// TODO(bmitch): the tag field is EXPERIMENTAL and needs to be adopted by OCI: <https://github.com/opencontainers/distribution-spec/pull/600>
+		tags := r.URL.Query()["tag"]
 		// parse arg
 		if types.RefTagRE.MatchString(arg) {
 			tag = arg
+			if len(tags) > 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoUnsupported("tag query parameter requires a digest"))
+				s.log.Debug("attempted to push with a tag query parameter without a digest", "repo", repoStr, "arg", arg, "tags", tags, "err", err)
+				return
+			}
 		} else {
 			var err error
 			dExpect, err = digest.Parse(arg)
@@ -376,11 +384,27 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				types.AnnotRefName: tag,
 			}
 		}
-		err = repo.IndexInsert(desc, addOpts...)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			s.log.Info("failed to create index entry", "repo", repoStr, "arg", arg, "err", err)
-			return
+		if len(tags) == 0 {
+			err = repo.IndexInsert(desc, addOpts...)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Info("failed to create index entry", "repo", repoStr, "arg", arg, "err", err)
+				return
+			}
+		} else {
+			// TODO(bmitch): the tag field is EXPERIMENTAL and needs to be adopted by OCI: <https://github.com/opencontainers/distribution-spec/pull/600>
+			for _, tag := range tags {
+				desc.Annotations = map[string]string{
+					types.AnnotRefName: tag,
+				}
+				err = repo.IndexInsert(desc, addOpts...)
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					s.log.Info("failed to create index entry", "repo", repoStr, "arg", arg, "err", err)
+					return
+				}
+				w.Header().Add("OCI-Tag", tag)
+			}
 		}
 		// push/update referrer if detected
 		if !subject.IsZero() {

@@ -1246,6 +1246,7 @@ func TestServer(t *testing.T) {
 				t.Parallel()
 				repo := "digest-512"
 				tag := "sha512"
+				mTag1, mTag2 := "image1", "image2"
 				// setup image content with one layer sha256, and rest of the content sha512
 				layer1Blob := []byte("hello layer1")
 				layer1Dig, err := digest.SHA512.FromBytes(layer1Blob)
@@ -1461,10 +1462,24 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to run monolithic upload: %v", err)
 				}
-				// push manifest with sha512 by digest
-				_, err = testAPIManifestPut(t, s, repo, manDig.String(), manBlob)
+				// push manifest by sha512 digest with two tag args
+				u, err = url.Parse("/v2/" + repo + "/manifests/" + manDig.String())
 				if err != nil {
-					t.Fatalf("failed to manifest put by digest: %v", err)
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				q = u.Query()
+				q.Set("tag", mTag1)
+				q.Add("tag", mTag2)
+				u.RawQuery = q.Encode()
+				_, err = testClientRun(t, s, "PUT", u.String(), manBlob,
+					testClientReqHeader("Content-Type", types.MediaTypeOCI1Manifest),
+					testClientRespStatus(http.StatusCreated),
+					testClientRespHeader(types.HeaderDockerDigest, manDig.String()),
+					testClientRespHeader("Location", ""),
+					testClientRespHeader("OCI-Tag", mTag1, mTag2),
+				)
+				if err != nil {
+					t.Fatalf("failed to manifest put by digest + tags: %v", err)
 				}
 				// push index by tag with sha512 digest arg
 				u, err = url.Parse("/v2/" + repo + "/manifests/" + tag)
@@ -1499,6 +1514,14 @@ func TestServer(t *testing.T) {
 				_, err = testAPIManifestGet(t, s, repo, manDig.String(), manBlob)
 				if err != nil {
 					t.Errorf("failed to get manifest by digest: %v", err)
+				}
+				_, err = testAPIManifestGet(t, s, repo, mTag1, manBlob)
+				if err != nil {
+					t.Errorf("failed to get manifest by tag %s: %v", mTag1, err)
+				}
+				_, err = testAPIManifestGet(t, s, repo, mTag2, manBlob)
+				if err != nil {
+					t.Errorf("failed to get manifest by tag %s: %v", mTag2, err)
 				}
 				_, err = testAPIBlobHead(t, s, repo, layer2Dig)
 				if err != nil {
@@ -2020,20 +2043,23 @@ func testClientRespBody(body []byte) testClientGen {
 	}
 }
 
-func testClientRespHeader(k, v string) testClientGen {
+func testClientRespHeader(k string, vList ...string) testClientGen {
 	return func(t *testing.T, next testClient) testClient {
 		return func(req *http.Request) (*httptest.ResponseRecorder, error) {
 			t.Helper()
 			resp, err := next(req)
 			respV := resp.Header().Values(k)
-			if v != "" {
+			for _, v := range vList {
+				if v == "" && len(vList) == 1 {
+					continue
+				}
 				if !slices.Contains(respV, v) {
 					t.Errorf("header mismatch for %s, expected %s, received %v", k, v, respV)
 					err = errValidationFailed
 				}
 			}
 			// if value not set, just verify existence of header
-			if v == "" && len(respV) == 0 {
+			if (len(vList) == 0 || vList[0] == "") && len(respV) == 0 {
 				t.Errorf("header missing for %s", k)
 				err = errValidationFailed
 			}
