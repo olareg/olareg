@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"golang.org/x/crypto/bcrypt"
-	"gopkg.in/yaml.v3"
 
 	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/types"
@@ -207,7 +207,7 @@ func (ac *authController) getConf() (*authConf, error) {
 		return ac.conf, err
 	}
 	afc := newAuthConf()
-	if err := yaml.NewDecoder(fh).Decode(&afc); err != nil && !errors.Is(err, io.EOF) {
+	if err := yaml.NewDecoder(fh, yaml.AllowDuplicateMapKey()).Decode(&afc); err != nil && !errors.Is(err, io.EOF) {
 		return ac.conf, fmt.Errorf("%w: %w", types.ErrParsingFailed, err)
 	}
 	for group := range afc.Groups {

@@ -433,7 +433,7 @@ func TestAuthFile(t *testing.T) {
 						Members: []string{"bar"},
 					},
 				},
-				ACLs: nil,
+				ACLs: []authACL{},
 			},
 		},
 		{
