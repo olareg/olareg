@@ -86,6 +86,7 @@ jobs:
             olareg-linux-arm64 \
             olareg-linux-ppc64le \
             olareg-linux-s390x \
+            olareg-linux-riscv64 \
             olareg-windows-amd64.exe \
           ; do
           # sign content with and without the bundle to simplify client migrations
