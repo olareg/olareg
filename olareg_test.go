@@ -302,7 +302,6 @@ func TestServer(t *testing.T) {
 			})
 			t.Run("Tag List Missing", func(t *testing.T) {
 				t.Parallel()
-
 				resp, err := testClientRun(t, s, "GET", "/v2/missing/tags/list", nil,
 					testClientRespStatus(http.StatusOK, http.StatusNotFound),
 				)
@@ -618,43 +617,45 @@ func TestServer(t *testing.T) {
 				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
+				se := *sd["image-amd64"]
 				t.Parallel()
-				if err := testSampleEntryPush(t, s, *sd["image-amd64"], "push-amd64", "v1"); err != nil {
+				if err := testSampleEntryPush(t, s, se, "push-amd64", "v1"); err != nil {
 					return
 				}
-				_ = testSampleEntryPull(t, s, *sd["image-amd64"], "push-amd64", "v1")
+				_ = testSampleEntryPull(t, s, se, "push-amd64", "v1")
 			})
 			t.Run("Index", func(t *testing.T) {
 				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
+				se := *sd["index"]
 				t.Parallel()
-				if err := testSampleEntryPush(t, s, *sd["index"], "index", "index"); err != nil {
+				if err := testSampleEntryPush(t, s, se, "index", "index"); err != nil {
 					return
 				}
-				_ = testSampleEntryPull(t, s, *sd["index"], "index", "index")
+				_ = testSampleEntryPull(t, s, se, "index", "index")
 			})
 			t.Run("Foreign layers", func(t *testing.T) {
 				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
+				se := *sd["image-foreign"]
 				t.Parallel()
-				if err := testSampleEntryPush(t, s, *sd["image-foreign"], "image-foreign", "image-foreign"); err != nil {
+				if err := testSampleEntryPush(t, s, se, "image-foreign", "image-foreign"); err != nil {
 					return
 				}
-				_ = testSampleEntryPull(t, s, *sd["image-foreign"], "image-foreign", "image-foreign")
+				_ = testSampleEntryPull(t, s, se, "image-foreign", "image-foreign")
 			})
 			t.Run("Sparse Image and Index", func(t *testing.T) {
 				if tcServer.readOnly || tcServer.testGC {
 					return
 				}
-				t.Parallel()
 				repo := "sparse"
 				for _, name := range []string{"index", "image-amd64"} {
 					dig := sd[name].manifestList[len(sd[name].manifestList)-1]
 					body := sd[name].manifest[dig]
 					var tcgList []testClientGen
-					// push of only the manifest should succeed to a sparse configured registry, otherwise fail
+					// expected result depends on whether registry is configured for sparse manifest support
 					if tcServer.testSparse {
 						tcgList = append(tcgList,
 							testClientRespStatus(http.StatusCreated),
@@ -681,6 +682,7 @@ func TestServer(t *testing.T) {
 				if !tcServer.readOnly {
 					return
 				}
+				se := *sd["index"]
 				t.Parallel()
 				// blob post should be forbidden
 				u, err := url.Parse("/v2/read-write/blobs/uploads/")
@@ -698,10 +700,10 @@ func TestServer(t *testing.T) {
 				tcgList := []testClientGen{
 					testClientRespStatus(http.StatusForbidden),
 				}
-				if mt := detectMediaType(sd["index"].manifest[sd["index"].manifestList[0]]); mt != "" {
+				if mt := detectMediaType(se.manifest[se.manifestList[0]]); mt != "" {
 					tcgList = append(tcgList, testClientReqHeader("Content-Type", mt))
 				}
-				_, err = testClientRun(t, s, "PUT", "/v2/read-write/manifests/latest", sd["index"].manifest[sd["index"].manifestList[0]], tcgList...)
+				_, err = testClientRun(t, s, "PUT", "/v2/read-write/manifests/latest", se.manifest[se.manifestList[0]], tcgList...)
 				if err != nil && !errors.Is(err, errValidationFailed) {
 					t.Errorf("failed to send manifest put: %v", err)
 				}
@@ -710,19 +712,21 @@ func TestServer(t *testing.T) {
 				if !tcServer.testGC || tcServer.readOnly {
 					return
 				}
+				seAMD := *sd["image-amd64"]
+				seARM := *sd["image-arm64"]
 				t.Parallel()
 				// push two images with three tags
-				if err := testSampleEntryPush(t, s, *sd["image-amd64"], "gc", "amd64"); err != nil {
+				if err := testSampleEntryPush(t, s, seAMD, "gc", "amd64"); err != nil {
 					return
 				}
-				if err := testSampleEntryPush(t, s, *sd["image-amd64"], "gc", "amd64-copy"); err != nil {
+				if err := testSampleEntryPush(t, s, seAMD, "gc", "amd64-copy"); err != nil {
 					return
 				}
-				if err := testSampleEntryPush(t, s, *sd["image-arm64"], "gc", "arm64"); err != nil {
+				if err := testSampleEntryPush(t, s, seARM, "gc", "arm64"); err != nil {
 					return
 				}
 				// delete one manifest by digest
-				if _, err := testAPIManifestRm(t, s, "gc", sd["image-arm64"].manifestList[0].String()); err != nil {
+				if _, err := testAPIManifestRm(t, s, "gc", seARM.manifestList[0].String()); err != nil {
 					t.Fatalf("failed to remove manifest: %v", err)
 				}
 				// delete the other manifest by tag
@@ -733,8 +737,8 @@ func TestServer(t *testing.T) {
 				for retry := range 10 {
 					time.Sleep(sleep + (time.Millisecond * 200 * time.Duration(retry)))
 					remaining := false
-					for dig := range sd["image-arm64"].blob {
-						if _, ok := sd["image-amd64"].blob[dig]; ok {
+					for dig := range seARM.blob {
+						if _, ok := seAMD.blob[dig]; ok {
 							continue // skip dup blobs
 						}
 						resp, err := testClientRun(t, s, "HEAD", "/v2/gc/blobs/"+dig.String(), nil)
@@ -753,7 +757,7 @@ func TestServer(t *testing.T) {
 					}
 				}
 				// verify get
-				if err := testSampleEntryPull(t, s, *sd["image-amd64"], "gc", "amd64"); err != nil {
+				if err := testSampleEntryPull(t, s, seAMD, "gc", "amd64"); err != nil {
 					t.Errorf("failed to pull entry after recreating server: %v", err)
 				}
 				// verify GC
@@ -777,8 +781,8 @@ func TestServer(t *testing.T) {
 				} else {
 					t.Log("arm64 was garbage collected")
 				}
-				for dig := range sd["image-arm64"].blob {
-					if _, ok := sd["image-amd64"].blob[dig]; ok {
+				for dig := range seARM.blob {
+					if _, ok := seAMD.blob[dig]; ok {
 						continue // skip dup blobs
 					}
 					if _, err := testClientRun(t, s, "GET", "/v2/gc/blobs/"+dig.String(), nil,
@@ -788,7 +792,7 @@ func TestServer(t *testing.T) {
 						t.Logf("blog GC verified: %s", dig.String())
 					}
 				}
-				for dig := range sd["image-amd64"].blob {
+				for dig := range seAMD.blob {
 					if _, err := testClientRun(t, s, "HEAD", "/v2/gc/blobs/"+dig.String(), nil,
 						testClientRespStatus(http.StatusOK)); err != nil {
 						t.Errorf("GC blob of image that should have been preserved: %v", err)
@@ -1024,16 +1028,17 @@ func TestServer(t *testing.T) {
 				if tcServer.readOnly || tcServer.testGC || tcServer.referrerDisabled || tcServer.deleteDisabled {
 					return
 				}
+				se := *sd["index"]
 				t.Parallel()
 				count := 25
 				bigEntry := 3
 				refIdx := types.Index{}
 				// push sample image
-				if err := testSampleEntryPush(t, s, *sd["index"], "referrer", "index"); err != nil {
+				if err := testSampleEntryPush(t, s, se, "referrer", "index"); err != nil {
 					return
 				}
-				subDig := sd["index"].manifestList[len(sd["index"].manifestList)-1]
-				subLen := int64(len(sd["index"].manifest[subDig]))
+				subDig := se.manifestList[len(se.manifestList)-1]
+				subLen := int64(len(se.manifest[subDig]))
 				// verify referrers response is empty before pushing any artifacts
 				resp, err := testAPIReferrersList(t, s, "referrer", subDig, "", nil)
 				if err != nil {
@@ -1243,105 +1248,37 @@ func TestServer(t *testing.T) {
 				if tcServer.readOnly || tcServer.testGC || tcServer.deleteDisabled {
 					return
 				}
+				se := *sd["sha512"]
 				t.Parallel()
 				repo := "digest-512"
 				tag := "sha512"
 				mTag1, mTag2 := "image1", "image2"
-				// setup image content with one layer sha256, and rest of the content sha512
-				layer1Blob := []byte("hello layer1")
-				layer1Dig, err := digest.SHA512.FromBytes(layer1Blob)
-				if err != nil {
-					t.Fatalf("failed to generate digest: %v", err)
+				// pull values out of the sample data entry to make the later tests easier to write
+				if len(se.blob) != 4 {
+					t.Fatalf("sha512 sample data must have 3 layers and one config blob")
 				}
-				layer2Blob := []byte("hello layer2")
-				layer2Dig, err := digest.SHA512.FromBytes(layer2Blob)
-				if err != nil {
-					t.Fatalf("failed to generate digest: %v", err)
+				if len(se.manifestList) != 2 {
+					t.Fatalf("sha512 sample data must have 1 index and 1 manifest")
 				}
-				layer3Blob := []byte("hello layer3")
-				layer3Dig, err := digest.SHA512.FromBytes(layer3Blob)
-				if err != nil {
-					t.Fatalf("failed to generate digest: %v", err)
+				blobList := make([]digest.Digest, 0, len(se.blob))
+				for dig := range se.blob {
+					blobList = append(blobList, dig)
 				}
-				configJSON := sampleImage{
-					Platform: types.Platform{
-						OS:           "linux",
-						Architecture: "amd64",
-					},
-					Config: sampleConfig{
-						Cmd: []string{"yolo"},
-					},
-					RootFS: sampleRootFS{
-						Type: "layers",
-						DiffIDs: []digest.Digest{
-							layer1Dig, layer2Dig,
-						},
-					},
-				}
-				configBlob, err := json.Marshal(configJSON)
-				if err != nil {
-					t.Fatalf("failed to marshal config: %v", err)
-				}
-				configDig, err := digest.SHA512.FromBytes(configBlob)
-				if err != nil {
-					t.Fatalf("failed to generate digest: %v", err)
-				}
-				man := types.Manifest{
-					SchemaVersion: 2,
-					MediaType:     types.MediaTypeOCI1Manifest,
-					Config: types.Descriptor{
-						MediaType: types.MediaTypeOCI1ImageConfig,
-						Digest:    configDig,
-						Size:      int64(len(configBlob)),
-					},
-					Layers: []types.Descriptor{
-						{
-							MediaType: types.MediaTypeOCI1Layer,
-							Size:      int64(len(layer1Blob)),
-							Digest:    layer1Dig,
-						},
-						{
-							MediaType: types.MediaTypeOCI1Layer,
-							Size:      int64(len(layer2Blob)),
-							Digest:    layer2Dig,
-						},
-						{
-							MediaType: types.MediaTypeOCI1Layer,
-							Size:      int64(len(layer3Blob)),
-							Digest:    layer3Dig,
-						},
-					},
-				}
-				manBlob, err := json.Marshal(man)
-				if err != nil {
-					t.Fatalf("failed to marshal manifest: %v", err)
-				}
-				manDig, err := digest.SHA512.FromBytes(manBlob)
-				if err != nil {
-					t.Fatalf("failed to generate digest: %v", err)
-				}
-				ind := types.Index{
-					SchemaVersion: 2,
-					MediaType:     types.MediaTypeOCI1ManifestList,
-					Manifests: []types.Descriptor{
-						{
-							MediaType: types.MediaTypeOCI1Manifest,
-							Digest:    manDig,
-							Size:      int64(len(manBlob)),
-						},
-					},
-				}
-				indBlob, err := json.Marshal(ind)
-				if err != nil {
-					t.Fatalf("failed to marshal index: %v", err)
-				}
-				indDig, err := digest.SHA512.FromBytes(indBlob)
-				if err != nil {
-					t.Fatalf("failed to generate digest: %v", err)
-				}
+				blobDig1 := blobList[0]
+				blobDig2 := blobList[1]
+				blobDig3 := blobList[2]
+				blobDig4 := blobList[3]
+				blob1 := se.blob[blobDig1]
+				blob2 := se.blob[blobDig2]
+				blob3 := se.blob[blobDig3]
+				blob4 := se.blob[blobDig4]
+				manDig := se.manifestList[0]
+				indDig := se.manifestList[1]
+				manBlob := se.manifest[manDig]
+				indBlob := se.manifest[indDig]
 				// push content
 				// first blob is a standard post/put, depends on backend store able to change digest algorithm
-				_, err = testAPIBlobPostPut(t, s, repo, layer1Dig, layer1Blob)
+				_, err := testAPIBlobPostPut(t, s, repo, blobDig1, blob1)
 				if err != nil {
 					t.Fatalf("failed to blob post: %v", err)
 				}
@@ -1351,7 +1288,7 @@ func TestServer(t *testing.T) {
 					t.Fatalf("failed to parse URL: %v", err)
 				}
 				q := u.Query()
-				q.Add("digest-algorithm", layer2Dig.Algorithm().String())
+				q.Add("digest-algorithm", blobDig2.Algorithm().String())
 				u.RawQuery = q.Encode()
 				resp, err := testClientRun(t, s, "POST", u.String(), nil,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
@@ -1369,9 +1306,9 @@ func TestServer(t *testing.T) {
 					t.Fatalf("failed to parse URL: %v", err)
 				}
 				u = u.ResolveReference(uLoc)
-				resp, err = testClientRun(t, s, "PATCH", u.String(), layer2Blob,
+				resp, err = testClientRun(t, s, "PATCH", u.String(), blob2,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
-					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(layer2Blob))),
+					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(blob2))),
 					testClientRespStatus(http.StatusAccepted))
 				if err != nil {
 					t.Errorf("failed to send blob patch: %v", err)
@@ -1387,11 +1324,11 @@ func TestServer(t *testing.T) {
 				}
 				u = u.ResolveReference(uLoc)
 				q = u.Query()
-				q.Add("digest", layer2Dig.String())
+				q.Add("digest", blobDig2.String())
 				u.RawQuery = q.Encode()
 				_, err = testClientRun(t, s, "PUT", u.String(), nil,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
-					testClientRespHeader(types.HeaderDockerDigest, layer2Dig.String()),
+					testClientRespHeader(types.HeaderDockerDigest, blobDig2.String()),
 					testClientRespStatus(http.StatusCreated),
 				)
 				if err != nil {
@@ -1418,9 +1355,9 @@ func TestServer(t *testing.T) {
 					t.Fatalf("failed to parse URL: %v", err)
 				}
 				u = u.ResolveReference(uLoc)
-				resp, err = testClientRun(t, s, "PATCH", u.String(), layer3Blob,
+				resp, err = testClientRun(t, s, "PATCH", u.String(), blob3,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
-					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(layer3Blob))),
+					testClientReqHeader("Content-Length", fmt.Sprintf("%d", len(blob3))),
 					testClientRespStatus(http.StatusAccepted))
 				if err != nil {
 					t.Errorf("failed to send blob patch: %v", err)
@@ -1436,28 +1373,28 @@ func TestServer(t *testing.T) {
 				}
 				u = u.ResolveReference(uLoc)
 				q = u.Query()
-				q.Add("digest", layer3Dig.String())
+				q.Add("digest", blobDig3.String())
 				u.RawQuery = q.Encode()
 				_, err = testClientRun(t, s, "PUT", u.String(), nil,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
-					testClientRespHeader(types.HeaderDockerDigest, layer3Dig.String()),
+					testClientRespHeader(types.HeaderDockerDigest, blobDig3.String()),
 					testClientRespStatus(http.StatusCreated),
 				)
 				if err != nil {
 					t.Fatalf("failed to send blob put: %v", err)
 				}
-				// config blob is pushed with a monolithic POST
+				// fourth blob is pushed with a monolithic POST
 				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/")
 				if err != nil {
 					t.Fatalf("failed to parse URL: %v", err)
 				}
 				q = u.Query()
-				q.Add("digest", configDig.String())
+				q.Add("digest", blobDig4.String())
 				u.RawQuery = q.Encode()
-				_, err = testClientRun(t, s, "POST", u.String(), configBlob,
+				_, err = testClientRun(t, s, "POST", u.String(), blob4,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
 					testClientRespStatus(http.StatusCreated),
-					testClientRespHeader(types.HeaderDockerDigest, configDig.String()),
+					testClientRespHeader(types.HeaderDockerDigest, blobDig4.String()),
 					testClientRespHeader("Location", ""))
 				if err != nil {
 					t.Fatalf("failed to run monolithic upload: %v", err)
@@ -1523,28 +1460,28 @@ func TestServer(t *testing.T) {
 				if err != nil {
 					t.Errorf("failed to get manifest by tag %s: %v", mTag2, err)
 				}
-				_, err = testAPIBlobHead(t, s, repo, layer2Dig)
+				_, err = testAPIBlobHead(t, s, repo, blobDig2)
 				if err != nil {
 					t.Errorf("failed to head layer2: %v", err)
 				}
-				_, err = testAPIBlobGet(t, s, repo, layer2Dig, layer2Blob)
+				_, err = testAPIBlobGet(t, s, repo, blobDig2, blob2)
 				if err != nil {
 					t.Errorf("failed to get layer2: %v", err)
 				}
-				_, err = testAPIBlobGet(t, s, repo, configDig, configBlob)
+				_, err = testAPIBlobGet(t, s, repo, blobDig4, blob4)
 				if err != nil {
 					t.Errorf("failed to get config: %v", err)
 				}
 				// delete blobs by digest
-				_, err = testAPIBlobRm(t, s, repo, layer1Dig)
+				_, err = testAPIBlobRm(t, s, repo, blobDig1)
 				if err != nil {
 					t.Errorf("failed to delete layer1: %v", err)
 				}
-				_, err = testAPIBlobRm(t, s, repo, layer2Dig)
+				_, err = testAPIBlobRm(t, s, repo, blobDig2)
 				if err != nil {
 					t.Errorf("failed to delete layer2: %v", err)
 				}
-				_, err = testAPIBlobRm(t, s, repo, configDig)
+				_, err = testAPIBlobRm(t, s, repo, blobDig4)
 				if err != nil {
 					t.Errorf("failed to delete config: %v", err)
 				}
@@ -1668,6 +1605,101 @@ func TestServer(t *testing.T) {
 				)
 				if err != nil {
 					return
+				}
+			})
+			t.Run("invalid tag arg", func(t *testing.T) {
+				if tcServer.readOnly || tcServer.testGC {
+					return
+				}
+				se := *sd["invalid-tag-arg"]
+				t.Parallel()
+				repo := "invalid-tag-arg"
+				for dig, be := range se.blob {
+					t.Run("BlobPostPut", func(t *testing.T) {
+						_, err := testAPIBlobPostPut(t, s, repo, dig, be)
+						if err != nil {
+							t.Fatalf("failed to push blob: %v", err)
+						}
+					})
+				}
+				// pushing the invalid tag should fail
+				tag := "invalid**tag--string"
+				dig := se.manifestList[0]
+				manifest := se.manifest[dig]
+				mt := detectMediaType(manifest)
+				_, err := testClientRun(t, s, "PUT", "/v2/"+repo+"/manifests/"+tag, manifest,
+					testClientReqHeader("Content-Type", mt),
+					testClientRespStatus(http.StatusBadRequest),
+				)
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send manifest put: %v", err)
+					}
+				}
+				// pulling the tag should also fail
+				_, err = testClientRun(t, s, "GET", "/v2/"+repo+"/manifests/"+tag, nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientRespStatus(http.StatusBadRequest, http.StatusNotFound),
+				)
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send manifest put: %v", err)
+					}
+				}
+			})
+			t.Run("invalid tag query param", func(t *testing.T) {
+				if tcServer.readOnly || tcServer.testGC {
+					return
+				}
+				se := *sd["invalid-tag-query-param"]
+				t.Parallel()
+				repo := "invalid-tag-query-param"
+				for dig, be := range se.blob {
+					t.Run("BlobPostPut", func(t *testing.T) {
+						_, err := testAPIBlobPostPut(t, s, repo, dig, be)
+						if err != nil {
+							t.Fatalf("failed to push blob: %v", err)
+						}
+					})
+				}
+				// pushing the invalid tag should fail
+				tag1 := "valid-tag"
+				tag2 := "invalid**tag--string"
+				dig := se.manifestList[0]
+				manifest := se.manifest[dig]
+				mt := detectMediaType(manifest)
+				u, err := url.Parse("/v2/" + repo + "/manifests/" + dig.String())
+				if err != nil {
+					t.Fatalf("failed to parse URL: %v", err)
+				}
+				q := u.Query()
+				q.Set("tag", tag1)
+				q.Add("tag", tag2)
+				u.RawQuery = q.Encode()
+				_, err = testClientRun(t, s, "PUT", u.String(), manifest,
+					testClientReqHeader("Content-Type", mt),
+					testClientRespStatus(http.StatusBadRequest),
+				)
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send manifest put: %v", err)
+					}
+				}
+				// pulling the digest should also fail
+				_, err = testClientRun(t, s, "GET", "/v2/"+repo+"/manifests/"+dig.String(), nil,
+					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
+					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
+					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
+					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
+					testClientRespStatus(http.StatusBadRequest, http.StatusNotFound),
+				)
+				if err != nil {
+					if !errors.Is(err, errValidationFailed) {
+						t.Errorf("failed to send manifest put: %v", err)
+					}
 				}
 			})
 			// TODO: test tag listing before and after pushing manifest
@@ -2357,6 +2389,14 @@ const (
 	sampleArtifactType = "application/vnd.example.artifact+json"
 )
 
+func newSampleEntry() sampleEntry {
+	return sampleEntry{
+		manifest:     map[digest.Digest][]byte{},
+		blob:         map[digest.Digest][]byte{},
+		manifestList: []digest.Digest{},
+	}
+}
+
 var imagePlatforms = []string{"amd64", "arm64"}
 
 func genSampleData(t *testing.T) (sampleData, error) {
@@ -2367,19 +2407,216 @@ func genSampleData(t *testing.T) (sampleData, error) {
 	sd := sampleData{}
 	// setup example image manifests
 	imageCount := len(imagePlatforms)
-	images := make([]*sampleEntry, imageCount)
+	entryImages := make([]*sampleEntry, imageCount)
 	for i := range imageCount {
-		entry := sampleEntry{
-			manifest:     map[digest.Digest][]byte{},
-			blob:         map[digest.Digest][]byte{},
-			manifestList: []digest.Digest{},
-		}
-		conf := sampleImage{
-			Create: &now,
-			Platform: types.Platform{
+		entry := newSampleEntry()
+		_, _, err := entry.genSampleImage(genSampleImageOpts{
+			platform: types.Platform{
 				OS:           "linux",
 				Architecture: imagePlatforms[i],
 			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		entryImages[i] = &entry
+		sd[fmt.Sprintf("image-%s", imagePlatforms[i])] = &entry
+	}
+
+	// create the image with 4 layers: foreign compressed, foreign uncompressed, foreign docker, and layer with a URL
+	entryForeign := newSampleEntry()
+	_, _, err := entryForeign.genSampleImage(genSampleImageOpts{
+		rng: rng,
+		layerOpts: []genSampleLayerOpts{
+			{
+				foreign:     true,
+				size:        layerSize,
+				mt:          types.MediaTypeOCI1ForeignLayerGzip,
+				foreignURLs: []string{"https://store.example.com/blobs/foreign1"},
+			},
+			{
+				foreign:     true,
+				size:        layerSize,
+				mt:          types.MediaTypeOCI1ForeignLayer,
+				compFn:      func(w io.Writer) io.WriteCloser { return nopWriteCloser{Writer: w} },
+				foreignURLs: []string{"https://store.example.com/blobs/foreign2"},
+			},
+			{
+				foreign:     true,
+				size:        layerSize,
+				mt:          types.MediaTypeDocker2ForeignLayer,
+				foreignURLs: []string{"https://store.example.com/blobs/foreign3"},
+			},
+			{
+				foreign:     true,
+				size:        layerSize,
+				mt:          types.MediaTypeOCI1LayerGzip,
+				foreignURLs: []string{"https://store.example.com/blobs/foreign4"},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	sd["image-foreign"] = &entryForeign
+
+	// setup example index
+	entryIndex := newSampleEntry()
+	// copy images into index entry
+	for i := range imageCount {
+		maps.Copy(entryIndex.blob, entryImages[i].blob)
+		maps.Copy(entryIndex.manifest, entryImages[i].manifest)
+		entryIndex.manifestList = append(entryIndex.manifestList, entryImages[i].manifestList...)
+	}
+	indDescList := make([]types.Descriptor, imageCount)
+	for l := range imageCount {
+		indDescList[l] = types.Descriptor{
+			MediaType: types.MediaTypeOCI1Manifest,
+			Size:      int64(len(entryImages[l].manifest[entryImages[l].manifestList[0]])),
+			Digest:    entryImages[l].manifestList[0],
+			Platform: &types.Platform{
+				OS:           "linux",
+				Architecture: imagePlatforms[l],
+			},
+		}
+	}
+	_, _, err = entryIndex.genSampleIndex(genSampleIndexOpts{
+		rng:       rng,
+		imageDesc: indDescList,
+		annotations: map[string]string{
+			"config-type": "test",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	sd["index"] = &entryIndex
+
+	// sha512 sample index with a single image containing 3 layers
+	entrySha512 := newSampleEntry()
+	_, _, err = entrySha512.genSampleIndex(genSampleIndexOpts{
+		rng:     rng,
+		digAlgo: digest.SHA512,
+		imageOpts: []genSampleImageOpts{
+			{
+				layerOpts: []genSampleLayerOpts{
+					{}, {}, {},
+				},
+				platform: types.Platform{
+					OS:           "linux",
+					Architecture: "amd64",
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	sd["sha512"] = &entrySha512
+
+	// various other sample images
+	for _, name := range []string{"invalid-tag-arg", "invalid-tag-query-param"} {
+		entry := newSampleEntry()
+		_, _, err := entry.genSampleImage(genSampleImageOpts{rng: rng})
+		if err != nil {
+			return nil, err
+		}
+		sd[name] = &entry
+	}
+
+	// TODO: setup example referrers: config with content, empty config, annotation only
+
+	return sd, nil
+}
+
+type genSampleIndexOpts struct {
+	rng          *rand.Rand
+	artifactType string
+	annotations  map[string]string
+	digAlgo      digest.Algorithm
+	imageDesc    []types.Descriptor
+	imageOpts    []genSampleImageOpts
+}
+
+func (se *sampleEntry) genSampleIndex(opts genSampleIndexOpts) (digest.Digest, int64, error) {
+	if opts.digAlgo.IsZero() {
+		opts.digAlgo = digest.Canonical
+	}
+	if len(opts.imageDesc) == 0 {
+		for _, imageOpt := range opts.imageOpts {
+			if imageOpt.rng == nil {
+				imageOpt.rng = opts.rng
+			}
+			if imageOpt.digAlgo.IsZero() {
+				imageOpt.digAlgo = opts.digAlgo
+			}
+			if imageOpt.platform.OS == "" || imageOpt.platform.Architecture == "" {
+				imageOpt.platform.OS = "linux"
+				imageOpt.platform.Architecture = "amd64"
+			}
+			manDig, manSize, err := se.genSampleImage(imageOpt)
+			if err != nil {
+				return digest.Digest{}, 0, err
+			}
+			opts.imageDesc = append(opts.imageDesc, types.Descriptor{
+				MediaType:   types.MediaTypeOCI1Manifest,
+				Digest:      manDig,
+				Size:        manSize,
+				Platform:    &imageOpt.platform,
+				Annotations: imageOpt.annotations,
+			})
+		}
+	}
+	ind := types.Index{
+		SchemaVersion: 2,
+		MediaType:     types.MediaTypeOCI1ManifestList,
+		ArtifactType:  opts.artifactType,
+		Manifests:     opts.imageDesc,
+		Annotations:   opts.annotations,
+	}
+	indJSON, err := json.Marshal(ind)
+	if err != nil {
+		return digest.Digest{}, 0, err
+	}
+	indDig, err := digest.Canonical.FromBytes(indJSON)
+	if err != nil {
+		return digest.Digest{}, 0, err
+	}
+	se.manifest[indDig] = indJSON
+	se.manifestList = append(se.manifestList, indDig)
+	return indDig, int64(len(indJSON)), nil
+}
+
+type genSampleImageOpts struct {
+	rng          *rand.Rand
+	artifactType string
+	annotations  map[string]string
+	digAlgo      digest.Algorithm
+	confDesc     types.Descriptor
+	layerDesc    []types.Descriptor
+	layerOpts    []genSampleLayerOpts
+	platform     types.Platform
+}
+
+func (se *sampleEntry) genSampleImage(opts genSampleImageOpts) (digest.Digest, int64, error) {
+	if opts.digAlgo.IsZero() {
+		opts.digAlgo = digest.Canonical
+	}
+	if opts.platform.OS == "" || opts.platform.Architecture == "" {
+		opts.platform = types.Platform{
+			OS:           "linux",
+			Architecture: "amd64",
+		}
+	}
+
+	if len(opts.layerDesc) == 0 || opts.confDesc.Digest.IsZero() {
+		if len(opts.layerOpts) == 0 {
+			opts.layerOpts = make([]genSampleLayerOpts, 2)
+		}
+		now := time.Now()
+		conf := sampleImage{
+			Create:   &now,
+			Platform: opts.platform,
 			Config: sampleConfig{
 				User:       "root",
 				Env:        []string{"PATH=/"},
@@ -2392,228 +2629,119 @@ func genSampleData(t *testing.T) (sampleData, error) {
 			},
 			RootFS: sampleRootFS{
 				Type:    "layers",
-				DiffIDs: make([]digest.Digest, layerPerImage),
+				DiffIDs: make([]digest.Digest, len(opts.layerOpts)),
 			},
 		}
-		man := types.Manifest{
-			SchemaVersion: 2,
-			MediaType:     types.MediaTypeOCI1Manifest,
-			Layers:        make([]types.Descriptor, layerPerImage),
-		}
-		for l := range layerPerImage {
-			digOrig, digComp, bytesComp, err := genSampleLayer(rng, layerSize)
-			if err != nil {
-				return nil, err
+		opts.layerDesc = make([]types.Descriptor, len(opts.layerOpts))
+		for l, layerOpt := range opts.layerOpts {
+			if layerOpt.mt == "" {
+				layerOpt.mt = types.MediaTypeOCI1LayerGzip
 			}
-			entry.blob[digComp] = bytesComp
+			if layerOpt.rng == nil {
+				layerOpt.rng = opts.rng
+			}
+			if layerOpt.digAlgo.IsZero() {
+				layerOpt.digAlgo = opts.digAlgo
+			}
+			digOrig, digComp, compSize, err := se.genSampleLayer(layerOpt)
+			if err != nil {
+				return digest.Digest{}, 0, err
+			}
 			conf.RootFS.DiffIDs[l] = digOrig
-			man.Layers[l] = types.Descriptor{
-				MediaType: types.MediaTypeOCI1LayerGzip,
-				Size:      int64(layerSize),
+			opts.layerDesc[l] = types.Descriptor{
+				MediaType: layerOpt.mt,
+				Size:      compSize,
 				Digest:    digComp,
+				URLs:      layerOpt.foreignURLs,
 			}
 		}
 		confJSON, err := json.Marshal(conf)
 		if err != nil {
-			return nil, err
+			return digest.Digest{}, 0, err
 		}
-		confDig, err := digest.Canonical.FromBytes(confJSON)
+		confDig, err := opts.digAlgo.FromBytes(confJSON)
 		if err != nil {
-			t.Fatalf("failed to generate digest: %v", err)
+			return digest.Digest{}, 0, err
 		}
-		entry.blob[confDig] = confJSON
-		man.Config = types.Descriptor{
+		se.blob[confDig] = confJSON
+		opts.confDesc = types.Descriptor{
 			MediaType: types.MediaTypeOCI1ImageConfig,
 			Size:      int64(len(confJSON)),
 			Digest:    confDig,
 		}
-		manJSON, err := json.Marshal(man)
-		if err != nil {
-			return nil, err
-		}
-		manDig, err := digest.Canonical.FromBytes(manJSON)
-		if err != nil {
-			t.Fatalf("failed to generate digest: %v", err)
-		}
-		entry.manifest[manDig] = manJSON
-		entry.manifestList = append(entry.manifestList, manDig)
-		images[i] = &entry
-		sd[fmt.Sprintf("image-%s", imagePlatforms[i])] = &entry
 	}
 
-	// setup an image with foreign layers
-	entry := sampleEntry{
-		manifest:     map[digest.Digest][]byte{},
-		blob:         map[digest.Digest][]byte{},
-		manifestList: []digest.Digest{},
-	}
-	conf := sampleImage{
-		Create: &now,
-		Platform: types.Platform{
-			OS:           "linux",
-			Architecture: "amd64",
-		},
-		Config: sampleConfig{
-			User:       "root",
-			Env:        []string{"PATH=/"},
-			Entrypoint: []string{"/entrypoint.sh"},
-			Cmd:        []string{"hello", "world"},
-			WorkingDir: "/",
-			Labels: map[string]string{
-				"config-type": "test",
-			},
-		},
-		RootFS: sampleRootFS{
-			Type:    "layers",
-			DiffIDs: make([]digest.Digest, 4),
-		},
-	}
 	man := types.Manifest{
 		SchemaVersion: 2,
 		MediaType:     types.MediaTypeOCI1Manifest,
-		Layers:        make([]types.Descriptor, 4),
-	}
-	// create the image with 4 layers, foreign compressed, foreign uncompressed, foreign docker, and layer with a URL
-	digOrig, digComp, bytesComp, err := genSampleLayer(rng, layerSize)
-	if err != nil {
-		return nil, err
-	}
-	conf.RootFS.DiffIDs[0] = digOrig
-	man.Layers[0] = types.Descriptor{
-		MediaType: types.MediaTypeOCI1ForeignLayerGzip,
-		Size:      int64(len(bytesComp)),
-		Digest:    digComp,
-		URLs:      []string{"https://store.example.com/blobs/sha256/" + digComp.Encoded()},
-	}
-	digOrig, _, _, err = genSampleLayer(rng, layerSize)
-	if err != nil {
-		return nil, err
-	}
-	conf.RootFS.DiffIDs[1] = digOrig
-	man.Layers[1] = types.Descriptor{
-		MediaType: types.MediaTypeOCI1ForeignLayer,
-		Size:      int64(layerSize),
-		Digest:    digOrig,
-	}
-	digOrig, digComp, bytesComp, err = genSampleLayer(rng, layerSize)
-	if err != nil {
-		return nil, err
-	}
-	conf.RootFS.DiffIDs[2] = digOrig
-	man.Layers[2] = types.Descriptor{
-		MediaType: types.MediaTypeDocker2ForeignLayer,
-		Size:      int64(len(bytesComp)),
-		Digest:    digComp,
-		URLs:      []string{"https://store.example.com/blobs/sha256/" + digComp.Encoded()},
-	}
-	digOrig, digComp, bytesComp, err = genSampleLayer(rng, layerSize)
-	if err != nil {
-		return nil, err
-	}
-	conf.RootFS.DiffIDs[3] = digOrig
-	man.Layers[3] = types.Descriptor{
-		MediaType: types.MediaTypeOCI1LayerGzip,
-		Size:      int64(len(bytesComp)),
-		Digest:    digComp,
-		URLs:      []string{"https://store.example.com/blobs/sha256/" + digComp.Encoded()},
-	}
-	confJSON, err := json.Marshal(conf)
-	if err != nil {
-		return nil, err
-	}
-	confDig, err := digest.Canonical.FromBytes(confJSON)
-	if err != nil {
-		t.Fatalf("failed to generate digest: %v", err)
-	}
-	entry.blob[confDig] = confJSON
-	man.Config = types.Descriptor{
-		MediaType: types.MediaTypeOCI1ImageConfig,
-		Size:      int64(len(confJSON)),
-		Digest:    confDig,
+		ArtifactType:  opts.artifactType,
+		Config:        opts.confDesc,
+		Layers:        opts.layerDesc,
+		Annotations:   opts.annotations,
 	}
 	manJSON, err := json.Marshal(man)
 	if err != nil {
-		return nil, err
+		return digest.Digest{}, 0, err
 	}
-	manDig, err := digest.Canonical.FromBytes(manJSON)
+	manDig, err := opts.digAlgo.FromBytes(manJSON)
 	if err != nil {
-		t.Fatalf("failed to generate digest: %v", err)
+		return digest.Digest{}, 0, err
 	}
-	entry.manifest[manDig] = manJSON
-	entry.manifestList = append(entry.manifestList, manDig)
-	sd["image-foreign"] = &entry
-
-	// setup example index
-	ind := types.Index{
-		SchemaVersion: 2,
-		MediaType:     types.MediaTypeOCI1ManifestList,
-		Manifests:     make([]types.Descriptor, imageCount),
-		Annotations:   map[string]string{},
-	}
-	for l := range imageCount {
-		ind.Manifests[l] = types.Descriptor{
-			MediaType: types.MediaTypeOCI1Manifest,
-			Size:      int64(len(images[l].manifest[images[l].manifestList[0]])),
-			Digest:    images[l].manifestList[0],
-			Platform: &types.Platform{
-				OS:           "linux",
-				Architecture: imagePlatforms[l],
-			},
-		}
-	}
-	ind.Annotations["config-type"] = "test"
-	indJSON, err := json.Marshal(ind)
-	if err != nil {
-		return nil, err
-	}
-	indDig, err := digest.Canonical.FromBytes(indJSON)
-	if err != nil {
-		t.Fatalf("failed to generate digest: %v", err)
-	}
-	indEntry := sampleEntry{
-		blob: map[digest.Digest][]byte{},
-		manifest: map[digest.Digest][]byte{
-			indDig: indJSON,
-		},
-		manifestList: []digest.Digest{},
-	}
-	// merge images into index entry
-	for i := range imageCount {
-		maps.Copy(indEntry.blob, images[i].blob)
-		maps.Copy(indEntry.manifest, images[i].manifest)
-		indEntry.manifestList = append(indEntry.manifestList, images[i].manifestList...)
-	}
-	indEntry.manifestList = append(indEntry.manifestList, indDig)
-	sd["index"] = &indEntry
-
-	// TODO: setup example referrers: config with content, empty config, annotation only
-
-	return sd, nil
+	se.manifest[manDig] = manJSON
+	se.manifestList = append(se.manifestList, manDig)
+	return manDig, int64(len(manJSON)), nil
 }
 
-func genSampleLayer(rng *rand.Rand, size int) (digest.Digest, digest.Digest, []byte, error) {
-	layerOrigBytes := make([]byte, size)
-	if _, err := rng.Read(layerOrigBytes); err != nil {
-		return digest.Digest{}, digest.Digest{}, []byte{}, err
+type genSampleLayerOpts struct {
+	rng         *rand.Rand
+	mt          string
+	size        int
+	digAlgo     digest.Algorithm
+	compFn      func(io.Writer) io.WriteCloser
+	foreign     bool
+	foreignURLs []string
+}
+
+func (se *sampleEntry) genSampleLayer(opts genSampleLayerOpts) (digest.Digest, digest.Digest, int64, error) {
+	// init unset opts
+	if opts.rng == nil {
+		opts.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	if opts.size <= 0 {
+		opts.size = 10240
+	}
+	if opts.digAlgo.IsZero() {
+		opts.digAlgo = digest.Canonical
+	}
+	if opts.compFn == nil {
+		opts.compFn = func(w io.Writer) io.WriteCloser { return gzip.NewWriter(w) }
+	}
+
+	layerOrigBytes := make([]byte, opts.size)
+	if _, err := opts.rng.Read(layerOrigBytes); err != nil {
+		return digest.Digest{}, digest.Digest{}, 0, err
 	}
 	var layerCompBuf bytes.Buffer
-	gzW := gzip.NewWriter(&layerCompBuf)
-	if _, err := gzW.Write(layerOrigBytes); err != nil {
-		return digest.Digest{}, digest.Digest{}, []byte{}, err
+	compW := opts.compFn(&layerCompBuf)
+	if _, err := compW.Write(layerOrigBytes); err != nil {
+		return digest.Digest{}, digest.Digest{}, 0, err
 	}
-	if err := gzW.Close(); err != nil {
-		return digest.Digest{}, digest.Digest{}, []byte{}, err
+	if err := compW.Close(); err != nil {
+		return digest.Digest{}, digest.Digest{}, 0, err
 	}
 	layerCompBytes := layerCompBuf.Bytes()
-	digOrig, err := digest.Canonical.FromBytes(layerOrigBytes)
+	digOrig, err := opts.digAlgo.FromBytes(layerOrigBytes)
 	if err != nil {
-		return digest.Digest{}, digest.Digest{}, []byte{}, err
+		return digest.Digest{}, digest.Digest{}, 0, err
 	}
-	digComp, err := digest.Canonical.FromBytes(layerCompBytes)
+	digComp, err := opts.digAlgo.FromBytes(layerCompBytes)
 	if err != nil {
-		return digest.Digest{}, digest.Digest{}, []byte{}, err
+		return digest.Digest{}, digest.Digest{}, 0, err
 	}
-	return digOrig, digComp, layerCompBytes, nil
+	if !opts.foreign {
+		se.blob[digComp] = layerCompBytes
+	}
+	return digOrig, digComp, int64(len(layerCompBytes)), nil
 }
 
 // sample types are partial schemas for image configs
@@ -2656,4 +2784,12 @@ func parseLinkHeader(s string) (string, error) {
 		return match[1], nil
 	}
 	return "", fmt.Errorf("failed to parse link header: %s", s)
+}
+
+type nopWriteCloser struct {
+	io.Writer
+}
+
+func (nopWriteCloser) Close() error {
+	return nil
 }
