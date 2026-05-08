@@ -264,13 +264,15 @@ func TestServer(t *testing.T) {
 			t.Cleanup(func() { _ = s.Close() })
 			t.Run("Unknown Method", func(t *testing.T) {
 				t.Parallel()
-				if _, err := testClientRun(t, s, "GET", "/unknown/url", nil,
+				if _, err := testClientRun(
+					t, s, "GET", "/unknown/url", nil,
 					testClientRespStatus(http.StatusNotFound),
 				); err != nil {
 					t.Errorf("unknown URL: %v", err)
 				}
 
-				if _, err := testClientRun(t, s, "GET", "/v2/unknown/method", nil,
+				if _, err := testClientRun(
+					t, s, "GET", "/v2/unknown/method", nil,
 					testClientRespStatus(http.StatusNotFound),
 				); err != nil {
 					t.Errorf("unknown v2 method: %v", err)
@@ -302,7 +304,8 @@ func TestServer(t *testing.T) {
 			})
 			t.Run("Tag List Missing", func(t *testing.T) {
 				t.Parallel()
-				resp, err := testClientRun(t, s, "GET", "/v2/missing/tags/list", nil,
+				resp, err := testClientRun(
+					t, s, "GET", "/v2/missing/tags/list", nil,
 					testClientRespStatus(http.StatusOK, http.StatusNotFound),
 				)
 				if err != nil || resp.Code == http.StatusNotFound {
@@ -328,7 +331,8 @@ func TestServer(t *testing.T) {
 					return
 				}
 				t.Parallel()
-				resp, err := testClientRun(t, s, "GET", "/../../../v2/"+existingRepo+"/tags/list", nil,
+				resp, err := testClientRun(
+					t, s, "GET", "/../../../v2/"+existingRepo+"/tags/list", nil,
 					testClientRespStatus(http.StatusOK),
 				)
 				if err != nil {
@@ -518,7 +522,8 @@ func TestServer(t *testing.T) {
 					return
 				}
 				// referrers should be disabled
-				_, err = testClientRun(t, s, "GET", "/v2/"+existingRepo+"/referrers/"+digI.String(), nil,
+				_, err = testClientRun(
+					t, s, "GET", "/v2/"+existingRepo+"/referrers/"+digI.String(), nil,
 					testClientRespStatus(http.StatusMethodNotAllowed),
 				)
 				if err != nil {
@@ -579,19 +584,22 @@ func TestServer(t *testing.T) {
 					return
 				}
 				// deletes should be disabled
-				_, err = testClientRun(t, s, "DELETE", "/v2/"+existingRepo+"/manifests/"+existingTag, nil,
+				_, err = testClientRun(
+					t, s, "DELETE", "/v2/"+existingRepo+"/manifests/"+existingTag, nil,
 					testClientRespStatus(http.StatusMethodNotAllowed),
 				)
 				if err != nil {
 					return
 				}
-				_, err = testClientRun(t, s, "DELETE", "/v2/"+existingRepo+"/manifests/"+digI.String(), nil,
+				_, err = testClientRun(
+					t, s, "DELETE", "/v2/"+existingRepo+"/manifests/"+digI.String(), nil,
 					testClientRespStatus(http.StatusMethodNotAllowed),
 				)
 				if err != nil {
 					return
 				}
-				_, err = testClientRun(t, s, "DELETE", "/v2/"+existingRepo+"/blobs/"+descC.Digest.String(), nil,
+				_, err = testClientRun(
+					t, s, "DELETE", "/v2/"+existingRepo+"/blobs/"+descC.Digest.String(), nil,
 					testClientRespStatus(http.StatusMethodNotAllowed),
 				)
 				if err != nil {
@@ -657,13 +665,15 @@ func TestServer(t *testing.T) {
 					var tcgList []testClientGen
 					// expected result depends on whether registry is configured for sparse manifest support
 					if tcServer.testSparse {
-						tcgList = append(tcgList,
+						tcgList = append(
+							tcgList,
 							testClientRespStatus(http.StatusCreated),
 							testClientRespHeader("Location", ""),
 							testClientRespHeader(types.HeaderDockerDigest, dig.String()),
 						)
 					} else {
-						tcgList = append(tcgList,
+						tcgList = append(
+							tcgList,
 							testClientRespStatus(http.StatusBadRequest),
 						)
 					}
@@ -938,7 +948,8 @@ func TestServer(t *testing.T) {
 					t.Fatalf("media type missing for v2 tag")
 				}
 				// get the v2 manifest, verify it is 404
-				_, err = testClientRun(t, s, "GET", "/v2/"+corruptRepo+"/manifests/"+corruptTag, nil,
+				_, err = testClientRun(
+					t, s, "GET", "/v2/"+corruptRepo+"/manifests/"+corruptTag, nil,
 					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
@@ -949,7 +960,8 @@ func TestServer(t *testing.T) {
 					t.Errorf("corrupt manifest did not 404 by tag")
 				}
 				// get the v2 manifest by digest, verify it is 404
-				_, err = testClientRun(t, s, "GET", "/v2/"+corruptRepo+"/manifests/"+dig.String(), nil,
+				_, err = testClientRun(
+					t, s, "GET", "/v2/"+corruptRepo+"/manifests/"+dig.String(), nil,
 					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
@@ -1326,7 +1338,8 @@ func TestServer(t *testing.T) {
 				q = u.Query()
 				q.Add("digest", blobDig2.String())
 				u.RawQuery = q.Encode()
-				_, err = testClientRun(t, s, "PUT", u.String(), nil,
+				_, err = testClientRun(
+					t, s, "PUT", u.String(), nil,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
 					testClientRespHeader(types.HeaderDockerDigest, blobDig2.String()),
 					testClientRespStatus(http.StatusCreated),
@@ -1375,7 +1388,8 @@ func TestServer(t *testing.T) {
 				q = u.Query()
 				q.Add("digest", blobDig3.String())
 				u.RawQuery = q.Encode()
-				_, err = testClientRun(t, s, "PUT", u.String(), nil,
+				_, err = testClientRun(
+					t, s, "PUT", u.String(), nil,
 					testClientReqHeader("Content-Type", "application/octet-stream"),
 					testClientRespHeader(types.HeaderDockerDigest, blobDig3.String()),
 					testClientRespStatus(http.StatusCreated),
@@ -1408,7 +1422,8 @@ func TestServer(t *testing.T) {
 				q.Set("tag", mTag1)
 				q.Add("tag", mTag2)
 				u.RawQuery = q.Encode()
-				_, err = testClientRun(t, s, "PUT", u.String(), manBlob,
+				_, err = testClientRun(
+					t, s, "PUT", u.String(), manBlob,
 					testClientReqHeader("Content-Type", types.MediaTypeOCI1Manifest),
 					testClientRespStatus(http.StatusCreated),
 					testClientRespHeader(types.HeaderDockerDigest, manDig.String()),
@@ -1426,7 +1441,8 @@ func TestServer(t *testing.T) {
 				q = u.Query()
 				q.Set("digest", indDig.String())
 				u.RawQuery = q.Encode()
-				_, err = testClientRun(t, s, "PUT", u.String(), indBlob,
+				_, err = testClientRun(
+					t, s, "PUT", u.String(), indBlob,
 					testClientReqHeader("Content-Type", types.MediaTypeOCI1ManifestList),
 					testClientRespStatus(http.StatusCreated),
 					testClientRespHeader(types.HeaderDockerDigest, indDig.String()),
@@ -1599,7 +1615,8 @@ func TestServer(t *testing.T) {
 					return
 				}
 				t.Parallel()
-				_, err := testClientRun(t, s, "GET", "/v2/"+existingRepo+"/tags/list", nil,
+				_, err := testClientRun(
+					t, s, "GET", "/v2/"+existingRepo+"/tags/list", nil,
 					testClientRespHeader("Warning", "299 - \""+warningMsg+"\""),
 					testClientRespStatus(http.StatusOK),
 				)
@@ -1627,7 +1644,8 @@ func TestServer(t *testing.T) {
 				dig := se.manifestList[0]
 				manifest := se.manifest[dig]
 				mt := detectMediaType(manifest)
-				_, err := testClientRun(t, s, "PUT", "/v2/"+repo+"/manifests/"+tag, manifest,
+				_, err := testClientRun(
+					t, s, "PUT", "/v2/"+repo+"/manifests/"+tag, manifest,
 					testClientReqHeader("Content-Type", mt),
 					testClientRespStatus(http.StatusBadRequest),
 				)
@@ -1637,7 +1655,8 @@ func TestServer(t *testing.T) {
 					}
 				}
 				// pulling the tag should also fail
-				_, err = testClientRun(t, s, "GET", "/v2/"+repo+"/manifests/"+tag, nil,
+				_, err = testClientRun(
+					t, s, "GET", "/v2/"+repo+"/manifests/"+tag, nil,
 					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
@@ -1679,7 +1698,8 @@ func TestServer(t *testing.T) {
 				q.Set("tag", tag1)
 				q.Add("tag", tag2)
 				u.RawQuery = q.Encode()
-				_, err = testClientRun(t, s, "PUT", u.String(), manifest,
+				_, err = testClientRun(
+					t, s, "PUT", u.String(), manifest,
 					testClientReqHeader("Content-Type", mt),
 					testClientRespStatus(http.StatusBadRequest),
 				)
@@ -1689,7 +1709,8 @@ func TestServer(t *testing.T) {
 					}
 				}
 				// pulling the digest should also fail
-				_, err = testClientRun(t, s, "GET", "/v2/"+repo+"/manifests/"+dig.String(), nil,
+				_, err = testClientRun(
+					t, s, "GET", "/v2/"+repo+"/manifests/"+dig.String(), nil,
 					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
@@ -1826,7 +1847,8 @@ func TestAuth(t *testing.T) {
 					return
 				}
 				// request v1 manifest
-				_, err := testClientRun(t, s, "GET", "/v2/"+repoCur+"/manifests/v1", nil,
+				_, err := testClientRun(
+					t, s, "GET", "/v2/"+repoCur+"/manifests/v1", nil,
 					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
@@ -1843,7 +1865,8 @@ func TestAuth(t *testing.T) {
 					return
 				}
 				// request v1 manifest
-				_, err := testClientRun(t, s, "GET", "/v2/"+repoCur+"/manifests/v1", nil,
+				_, err := testClientRun(
+					t, s, "GET", "/v2/"+repoCur+"/manifests/v1", nil,
 					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
@@ -1865,7 +1888,8 @@ func TestAuth(t *testing.T) {
 					t.Fatalf("failed to setup digest: %v", err)
 				}
 				// request v1 manifest
-				_, err = testClientRun(t, s, "DELETE", "/v2/"+repoCur+"/blobs/"+dig.String(), nil,
+				_, err = testClientRun(
+					t, s, "DELETE", "/v2/"+repoCur+"/blobs/"+dig.String(), nil,
 					testClientReqHeader("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(goodUser+":"+goodPass))),
 					testClientRespStatus(http.StatusMethodNotAllowed),
 				)
@@ -2226,7 +2250,8 @@ func testAPIManifestPut(t *testing.T, s *Server, repo string, digOrTag string, m
 		testClientRespHeader("Location", ""),
 	}
 	if strings.Contains(digOrTag, ":") {
-		tcgList = append(tcgList,
+		tcgList = append(
+			tcgList,
 			testClientRespHeader(types.HeaderDockerDigest, digOrTag),
 		)
 	}
