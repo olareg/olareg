@@ -822,7 +822,8 @@ func TestGarbageCollect(t *testing.T) {
 	}
 	blobList = append(blobList, dataImageLayer...)
 	blobList = append(blobList, dataImage...)
-	childList = append(childList,
+	childList = append(
+		childList,
 		types.Descriptor{
 			MediaType: types.MediaTypeOCI1Manifest,
 			Digest:    digImage[imageChild1],
@@ -834,7 +835,8 @@ func TestGarbageCollect(t *testing.T) {
 			Size:      int64(len(dataImage[imageChild2])),
 		},
 	)
-	descList = append(descList,
+	descList = append(
+		descList,
 		types.Descriptor{
 			MediaType: types.MediaTypeOCI1Manifest,
 			Digest:    digImage[imageTagged],
@@ -880,7 +882,8 @@ func TestGarbageCollect(t *testing.T) {
 		t.Fatalf("failed to generate digest: %v", err)
 	}
 	blobList = append(blobList, dataIndex)
-	descList = append(descList,
+	descList = append(
+		descList,
 		types.Descriptor{
 			MediaType: types.MediaTypeOCI1ManifestList,
 			Digest:    digIndex,
