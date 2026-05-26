@@ -198,6 +198,12 @@ ci-oci-conformance:
 ci-cleanup:
 	docker stop olareg-ci 
 
+.PHONY: clean
+clean: ## delete generated content
+	[ ! -d artifacts ] || rm -r artifacts
+	[ ! -d bin ] || rm -r bin
+	[ ! -d vendor ] || rm -r vendor
+
 # utilities for managing the project
 
 .PHONY: util-golang-major
