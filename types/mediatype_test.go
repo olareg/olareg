@@ -40,13 +40,19 @@ func TestMediaTypeAccepts(t *testing.T) {
 		expect  bool
 	}{
 		{
+			name:    "Empty",
+			mt:      MediaTypeOCI1ManifestList,
+			accepts: []string{},
+			expect:  true,
+		},
+		{
 			name:    "Single",
 			mt:      MediaTypeOCI1ManifestList,
 			accepts: []string{MediaTypeOCI1ManifestList},
 			expect:  true,
 		},
 		{
-			name:    "Missing",
+			name:    "Mismatch",
 			mt:      MediaTypeOCI1Manifest,
 			accepts: []string{MediaTypeOCI1ManifestList},
 			expect:  false,
@@ -62,6 +68,30 @@ func TestMediaTypeAccepts(t *testing.T) {
 			mt:      MediaTypeOCI1ManifestList,
 			accepts: []string{"application/vnd.oci.image.manifest.v1+json; charset=utf-8, application/vnd.oci.image.index.v1+json; charset=utf-8"},
 			expect:  true,
+		},
+		{
+			name:    "Wildcard",
+			mt:      MediaTypeOCI1ManifestList,
+			accepts: []string{"*/*"},
+			expect:  true,
+		},
+		{
+			name:    "Partial wildcard",
+			mt:      MediaTypeOCI1ManifestList,
+			accepts: []string{"application/*"},
+			expect:  true,
+		},
+		{
+			name:    "Invalid wildcard",
+			mt:      MediaTypeOCI1ManifestList,
+			accepts: []string{"*/vnd.oci.image.index.v1+json"},
+			expect:  false,
+		},
+		{
+			name:    "Mismatch wildcard",
+			mt:      MediaTypeOCI1ManifestList,
+			accepts: []string{"text/*"},
+			expect:  false,
 		},
 	}
 	for _, tc := range tt {

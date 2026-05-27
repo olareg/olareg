@@ -138,6 +138,7 @@ func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 				err = json.NewDecoder(rdr).Decode(&i)
 				if err != nil {
 					w.WriteHeader(http.StatusInternalServerError)
+					s.log.Info("failed to parse index searching for a media type match", "err", err, "repo", repoStr, "arg", arg)
 					return
 				}
 				found := false

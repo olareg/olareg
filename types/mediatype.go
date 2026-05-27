@@ -44,14 +44,34 @@ func MediaTypeBase(orig string) string {
 	return strings.TrimSpace(strings.ToLower(base))
 }
 
-// MediaTypeAccepts returns true when the descriptor is listed in the accept list.
+// MediaTypeAccepts returns true when the descriptor is listed in the accept list or accept list is empty.
 func MediaTypeAccepts(mt string, accepts []string) bool {
+	if len(accepts) == 0 {
+		return true
+	}
 	for _, a := range accepts {
 		for entry := range strings.SplitSeq(a, ",") {
-			if MediaTypeBase(entry) == mt {
+			if MediaTypeMatch(mt, MediaTypeBase(entry)) {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// MediaTypeMatch does a wildcard compare of two base media types
+func MediaTypeMatch(mt, accept string) bool {
+	if mt == accept {
+		return true
+	}
+	// handle wildcards
+	mtSplit := strings.Split(mt, "/")
+	acceptSplit := strings.Split(accept, "/")
+	if len(mtSplit) != 2 || len(acceptSplit) != 2 {
+		return false
+	}
+	if acceptSplit[1] == "*" && (acceptSplit[0] == "*" || acceptSplit[0] == mtSplit[0]) {
+		return true
 	}
 	return false
 }
