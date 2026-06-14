@@ -1,6 +1,6 @@
 {"name":"docker-arg-alpine-digest","key":"docker.io/library/alpine:3.24.0","version":"sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4"}
 {"name":"docker-arg-alpine-tag","key":"docker.io/library/alpine","version":"3.24.0"}
-{"name":"docker-arg-go-digest","key":"docker.io/library/golang:1.26.4-alpine","version":"sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f"}
+{"name":"docker-arg-go-digest","key":"docker.io/library/golang:1.26.4-alpine","version":"sha256:7a3e50096189ad57c9f9f865e7e4aa8585ed1585248513dc5cda498e2f41812c"}
 {"name":"docker-arg-go-tag","key":"docker.io/library/golang","version":"1.26.4"}
 {"name":"gha-alpine-digest","key":"docker.io/library/alpine:3.24.0","version":"sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4"}
 {"name":"gha-alpine-tag-base","key":"docker.io/library/alpine","version":"3"}
@@ -17,7 +17,7 @@
 {"name":"gha-uses-commit","key":"https://github.com/docker/build-push-action.git:v7.2.0","version":"f9f3042f7e2789586610d6e8b85c8f03e5195baf"}
 {"name":"gha-uses-commit","key":"https://github.com/docker/login-action.git:v4.2.0","version":"650006c6eb7dba73a995cc03b0b2d7f5ca915bee"}
 {"name":"gha-uses-commit","key":"https://github.com/docker/setup-buildx-action.git:v4.1.0","version":"d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5"}
-{"name":"gha-uses-commit","key":"https://github.com/regclient/actions.git:main","version":"c70ad64367908075211b10dcd2ab9fad4bfa1816"}
+{"name":"gha-uses-commit","key":"https://github.com/regclient/actions.git:main","version":"14f9d37db17b5dc41fefd1ffdd1af4b9e2490560"}
 {"name":"gha-uses-commit","key":"https://github.com/sigstore/cosign-installer.git:v4.1.2","version":"6f9f17788090df1f26f669e9d70d6ae9567deba6"}
 {"name":"gha-uses-commit","key":"https://github.com/softprops/action-gh-release.git:v3.0.0","version":"b4309332981a82ec1c5618f44dd2e27cc8bfbfda"}
 {"name":"gha-uses-semver","key":"https://github.com/actions/checkout.git","version":"v6.0.3"}
