@@ -58,7 +58,7 @@ jobs:
         elif [[ $GITHUB_REF == refs/pull/* ]]; then
           VERSION="pr-${{ github.event.number }}"
         fi
-        VERSION="$(echo "${VERSION}" | sed -r 's#/+#-#g')"
+        VERSION="$(echo "${VERSION}" | sed -r 's#\+#-#g')"
         TAGS="${GHCR_IMAGE}:${VERSION}${EXT}"
         # TAGS="${TAGS},${HUB_IMAGE}:${VERSION}${EXT}"
         TAG_COPIES=""

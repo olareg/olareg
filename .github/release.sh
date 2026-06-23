@@ -1,6 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
-# TODO: support RCs
 set -e
 branch=""
 tag=""
@@ -38,7 +37,7 @@ cd "$(dirname $0)"
 cd "$(git rev-parse --show-toplevel)"
 
 generate_changelog() {
-  echo "# Release ${1}\n\nChanges:\n"
+  echo -e "# Release ${1}\n\nChanges:\n"
   hashes="$(git log --reverse --merges --format="%h" "${prev_tag:+${prev_tag}..}HEAD")"
   prs=""
   users=""
@@ -56,8 +55,8 @@ generate_changelog() {
       users="${users}\n$(get_pr_user "${pr}")"
     fi
   done
-  echo "\nContributors:\n"
-  for user in $(echo "$users" | sort -u); do
+  echo -e "\nContributors:\n"
+  for user in $(echo -e "$users" | sort -u); do
     if [ -n "$user" ]; then
       echo "- @${user}"
     fi
@@ -97,7 +96,6 @@ if [ -z "$prev_tag" ]; then
   prev_tag="$(git tag -l | tail -1)"
 fi
 # for dry-run, output the change list from the prev_tag to main and stop
-# TODO: add a dry-run func to echo vs exec commands that would change things
 if [ "$opt_dry_run" = "1" ]; then
   generate_changelog "dry run"
   exit 0
@@ -109,47 +107,32 @@ if [ -z "$tag" ] || git show-ref "refs/tags/${tag}" --quiet; then
     next_patch="$(expr 1 + "${prev_tag##*.}")"
     next_tag="${prev_tag%.*}.${next_patch}"
   fi
-  read -p "Enter tag to create [${next_tag}]: " tag
+  read -p "Enter release to create [${next_tag}]: " tag
   if [ -z "$tag" ]; then
     tag="$next_tag"
   fi
   if git show-ref "refs/tags/${tag}" --quiet; then
-    echo "Tag already exists: ${tag}" >&2
+    echo "Release already exists: ${tag}" >&2
     exit 1
   fi
 fi
 
-# TODO: validate tag format (v1.2.3)
-
-# check if branch exists, create if missing from the last release branch, or main if all else fails
-branch="${tag#v}"
-branch="${branch%.*}"
-if git show-ref "refs/heads/releases/${branch}"; then
-  git checkout "releases/${branch}"
-elif git show-ref "refs/heads/releases/${prev_branch}"; then
-  prev_branch="${prev_tag#v}"
-  prev_branch="${prev_branch%.*}"
-  git checkout -b "releases/${branch}" "releases/${prev_branch}"
-else
-  git checkout -b "releases/${branch}" main
+# validate tag syntax (v1.2.3-rc1)
+if [[ ! ${tag} =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.*|$) ]]; then
+  echo -e "Unexpected tag syntax: \"${tag}\"" >&2
+  exit 1
 fi
-
-# merge changes from main
-git merge main -m "Merge for release ${tag}"
 
 # query for all logs since last tag, extract PR list with PR number and title
 # look into pulling PR text from GH and extracting change log message
 # format the log output to extract the PR number and commit id, don't show local branches
 echo "Generating changelog..."
-generate_changelog ${tag} | tee release.md
+generate_changelog ${tag} | tee RELEASE.md-next
+
+# update the release notes with the newest release at the top of the file
+echo >>RELEASE.md-next
+cat RELEASE.md >>RELEASE.md-next
+mv RELEASE.md-next RELEASE.md
 
 # prompt user to make any changes to release.md and approve release
-cat <<EOF
-# Verify and update the release.md, then execute the following:
-git add release.md
-git commit -sm "Release ${tag}"
-git push upstream releases/${branch}
-git tag -asm "Release ${tag}" ${tag}
-git push upstream ${tag}
-git checkout main
-EOF
+echo Verify and update the RELEASE.md, then push it in a PR

@@ -97,12 +97,25 @@ jobs:
     - name: Gather release details
       if: startsWith( github.ref, 'refs/tags/v' ) && github.repository_owner == 'olareg' && matrix.gover == env.RELEASE_GO_VER
       id: release_details
+      env:
+        RELEASE_FILE: RELEASE.md
+        TMP_FILE: /tmp/release.md
+        RELEASE_PREFIX: "## Release "
       run: |
+        # parse file to get the tag, and write current release notes to a temp file
+        awk "/^${RELEASE_PREFIX}/{if(++c>1)exit} c==1" <"${RELEASE_FILE}" >"${TMP_FILE}"
         VERSION=${GITHUB_REF#refs/tags/}
         VALID_RELEASE=false
-        if [ -f "release.md" ] && grep -q "Release $VERSION" release.md; then
+        if [ -f "${TMP_FILE}" ] && grep -q "Release $VERSION" "${TMP_FILE}"; then
           VALID_RELEASE=true
         fi
+        if [[ $VERSION =~ [0-9\.]+-.+$ ]]; then
+          PRERELEASE=true
+        else
+          PRERELEASE=false
+        fi
+        echo "pre_release=${PRERELEASE}" >>$GITHUB_OUTPUT
+        echo "release_file=${TMP_FILE}" >>$GITHUB_OUTPUT
         echo "valid=${VALID_RELEASE}" >>$GITHUB_OUTPUT
         echo "version=${VERSION}" >>$GITHUB_OUTPUT
 
@@ -114,9 +127,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ steps.release_details.outputs.version }}
-        body_path: release.md
+        body_path: ${{ steps.release_details.outputs.release_file }}
         draft: false
-        prerelease: false
+        prerelease: ${{ steps.release_details.outputs.pre_release }}
         files: ./artifacts/*
 
     - name: Save artifacts
