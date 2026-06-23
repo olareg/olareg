@@ -37,7 +37,7 @@ cd "$(dirname $0)"
 cd "$(git rev-parse --show-toplevel)"
 
 generate_changelog() {
-  echo -e "# Release ${1}\n\nChanges:\n"
+  echo -e "## Release ${1}\n\nChanges:\n"
   hashes="$(git log --reverse --merges --format="%h" "${prev_tag:+${prev_tag}..}HEAD")"
   prs=""
   users=""
@@ -127,11 +127,14 @@ fi
 # look into pulling PR text from GH and extracting change log message
 # format the log output to extract the PR number and commit id, don't show local branches
 echo "Generating changelog..."
-generate_changelog ${tag} | tee RELEASE.md-next
+echo -e "# Release Notes\n" >RELEASE.md-next
+generate_changelog ${tag} | tee -a RELEASE.md-next
 
 # update the release notes with the newest release at the top of the file
 echo >>RELEASE.md-next
-cat RELEASE.md >>RELEASE.md-next
+if [ -f RELEASE.md ]; then
+  tail +3 RELEASE.md >>RELEASE.md-next
+fi
 mv RELEASE.md-next RELEASE.md
 
 # prompt user to make any changes to release.md and approve release
