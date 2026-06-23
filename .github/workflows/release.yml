@@ -52,10 +52,7 @@ jobs:
         # run git tag for requested tag
         git tag -am "${TAG}" "${TAG}"
         # for non-rc releases, compute and force create major and minor tags
-        if [[ $TAG =~ [0-9\.]+-.+$ ]]; then
-          # prerelease
-        else
-          # stable release
+        if [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
           TAG_MINOR="${TAG%.*}"
           TAG_MAJOR="${TAG_MINOR%.*}"
           git tag -afm "${TAG_MINOR}" "${TAG_MINOR}"
