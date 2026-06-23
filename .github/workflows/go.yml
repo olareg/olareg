@@ -6,6 +6,7 @@ on:
       - '**'
     tags:
       - 'v*.*.*'
+      - 'v*.*.*-rc*'
   pull_request:
     branches: [ main ]
 
