@@ -1,6 +1,6 @@
 # Release Notes
 
-## Release v0.2.2-rc1
+## Release v0.2.2-rc2
 
 Features:
 
