@@ -7,6 +7,7 @@ prev_tag=""
 opt_dry_run=0
 opt_help=0
 gh_repo="olareg/olareg"
+gh_branch="main"
 gh_auth=""
 
 # CLI options to override image, platform, base digest, and comma separated list of tags to push
@@ -93,7 +94,7 @@ get_pr_user() {
 
 # prompt with last tag, asking for next tag, defaulting to patch update
 if [ -z "$prev_tag" ]; then
-  prev_tag="$(git tag -l | tail -1)"
+  prev_tag="$(git tag -l | grep -v -- "-rc" | tail -1)"
 fi
 # for dry-run, output the change list from the prev_tag to main and stop
 if [ "$opt_dry_run" = "1" ]; then
@@ -137,5 +138,14 @@ if [ -f RELEASE.md ]; then
 fi
 mv RELEASE.md-next RELEASE.md
 
-# prompt user to make any changes to release.md and approve release
-echo Verify and update the RELEASE.md, then push it in a PR
+# prompt user on the next steps
+remote="$(git remote -v show | awk "\$2~/github.com:${gh_repo%/*}\/${gh_repo##*/}/{print \$1; exit}")"
+remote="${remote:-origin}"
+cat <<EOF
+# Verify and update the RELEASE.md, then push it in a PR.
+# Once the PR has merged, tag the release with:
+git checkout "${gh_branch}"
+git pull "${remote}" "${gh_branch}"
+git tag -asm "Release ${tag}" "${tag}"
+git push "${remote}" "${tag}"
+EOF
