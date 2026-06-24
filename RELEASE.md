@@ -1,6 +1,6 @@
 # Release Notes
 
-## Release v0.2.2-rc4
+## Release v0.2.2
 
 Features:
 
@@ -12,6 +12,7 @@ Features:
 Fixes:
 
 - Validate tag values on push. ([PR 243][pr-243])
+- Generate semver tags for released images. ([PR 263][pr-263])
 
 Other Changes:
 
@@ -31,6 +32,7 @@ Contributors:
 [pr-252]: https://github.com/olareg/olareg/pull/252
 [pr-253]: https://github.com/olareg/olareg/pull/253
 [pr-255]: https://github.com/olareg/olareg/pull/255
+[pr-263]: https://github.com/olareg/olareg/pull/263
 
 ## Release v0.2.1
 
