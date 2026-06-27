@@ -1,3 +1,5 @@
+#!/bin/sh
+
 # Copyright the olareg contributors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,15 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# syntax=docker/dockerfile:1.4
-FROM testrepo:b1
+rc=0
+for file in $(git ls-files -- '*.go' '*.sh' '*.yml'); do
+  if ! grep -iq "copyright the olareg contributors" "${file}"; then
+    echo "Missing copyright comment: ${file}" >&2
+	 rc=1
+  fi
+done
 
-COPY layer1.txt /layer1
-ARG  arg=value
-COPY layer2.txt /layer2
-COPY layer3.txt /layer3
-COPY layer.tar /dir/layer.tar
-ARG  arg_label=value
-LABEL arg_label=${arg_label}
-LABEL version=3
-VOLUME /volume
+exit ${rc}
