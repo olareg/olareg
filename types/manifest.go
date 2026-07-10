@@ -17,6 +17,8 @@ package types
 import (
 	"encoding/json"
 	"maps"
+	"slices"
+	"time"
 
 	digest "github.com/sudo-bmitch/oci-digest"
 )
@@ -118,10 +120,9 @@ func (i Index) GetDesc(arg string) (Descriptor, error) {
 	}
 	if RefTagRE.MatchString(arg) {
 		// search for tag
-		for _, d := range i.Manifests {
-			if d.Annotations != nil && d.Annotations[AnnotRefName] == arg {
-				return d.Copy(), nil
-			}
+		mi := slices.IndexFunc(i.Manifests, func(cur Descriptor) bool { return annotationEqual(cur.Annotations, AnnotRefName, arg) })
+		if mi >= 0 {
+			return i.Manifests[mi].Copy(), nil
 		}
 	} else {
 		// else, attempt to parse digest
@@ -130,25 +131,22 @@ func (i Index) GetDesc(arg string) (Descriptor, error) {
 			return dZero, err
 		}
 		// return a matching descriptor, but stripped of any annotations to avoid mixing with tags
-		for _, d := range i.Manifests {
-			if d.Digest == dig {
-				return Descriptor{
-					MediaType: d.MediaType,
-					Digest:    d.Digest,
-					Size:      d.Size,
-				}, nil
-			}
+		mi := slices.IndexFunc(i.Manifests, func(cur Descriptor) bool { return cur.Digest.Equal(dig) })
+		if mi >= 0 {
+			return Descriptor{
+				MediaType: i.Manifests[mi].MediaType,
+				Digest:    i.Manifests[mi].Digest,
+				Size:      i.Manifests[mi].Size,
+			}, nil
 		}
-		if i.childManifests != nil {
-			for _, d := range i.childManifests {
-				if d.Digest == dig {
-					return Descriptor{
-						MediaType: d.MediaType,
-						Digest:    d.Digest,
-						Size:      d.Size,
-					}, nil
-				}
-			}
+		// fallback to searching child manifests
+		mi = slices.IndexFunc(i.childManifests, func(cur Descriptor) bool { return cur.Digest.Equal(dig) })
+		if mi >= 0 {
+			return Descriptor{
+				MediaType: i.childManifests[mi].MediaType,
+				Digest:    i.childManifests[mi].Digest,
+				Size:      i.childManifests[mi].Size,
+			}, nil
 		}
 	}
 	return dZero, ErrNotFound
@@ -157,16 +155,15 @@ func (i Index) GetDesc(arg string) (Descriptor, error) {
 // GetByAnnotation finds an entry with a matching annotation.
 func (i *Index) GetByAnnotation(key, val string) (Descriptor, error) {
 	var dRet Descriptor
-	if i.Manifests == nil {
-		return dRet, ErrNotFound
-	}
-	for _, d := range i.Manifests {
-		if d.Annotations == nil {
-			continue
+	mi := slices.IndexFunc(i.Manifests, func(cur Descriptor) bool {
+		if cur.Annotations == nil {
+			return false
 		}
-		if cur, ok := d.Annotations[key]; ok && (val == "" || val == cur) {
-			return d, nil
-		}
+		curVal, ok := cur.Annotations[key]
+		return ok && (val == "" || val == curVal)
+	})
+	if mi >= 0 {
+		return i.Manifests[mi], nil
 	}
 	return dRet, ErrNotFound
 }
@@ -182,123 +179,122 @@ func (i *Index) AddDesc(d Descriptor, opts ...IndexOpt) {
 	for _, opt := range opts {
 		opt(&conf)
 	}
+	d = d.Copy() // do not modify the original descriptor (Annotations are a pointer)
+	if d.Annotations == nil {
+		d.Annotations = map[string]string{}
+	}
+	// Set creation time on descriptor
+	d.Annotations[AnnotCreated] = time.Now().UTC().Format(time.RFC3339)
+	// extract tag and referrer details if set
+	tag := d.Annotations[AnnotRefName]
+	referrer := d.Annotations[AnnotReferrerSubject]
+
+	// Move entries from WithChildren option to childManifest list.
+	// These are from nested manifests that were pushed before the parent index (`d`).
+	for _, child := range conf.children {
+		if mi := slices.IndexFunc(i.Manifests, func(cur Descriptor) bool {
+			// the digest must match and this cannot have other selectors in the annotations
+			return cur.Digest.Equal(child.Digest) && annotationsEmpty(cur.Annotations)
+		}); mi >= 0 {
+			i.childManifests = append(i.childManifests, child)
+			i.Manifests = slices.Delete(i.Manifests, mi, mi+1)
+		}
+	}
+
+	// Remove this entry from the child list
+	i.childManifests = slices.DeleteFunc(i.childManifests, func(cur Descriptor) bool { return cur.Digest.Equal(d.Digest) })
+
+	// If this is the referrers response, replace existing response or append this response, and return
+	if referrer != "" {
+		if mi := slices.IndexFunc(i.Manifests, func(cur Descriptor) bool {
+			return annotationEqual(cur.Annotations, AnnotReferrerSubject, referrer)
+		}); mi >= 0 {
+			i.Manifests[mi] = d
+		} else {
+			i.Manifests = append(i.Manifests, d)
+		}
+		return
+	}
+
+	// If this is a tagged entry, untag any previous tag targets to different digests
+	if tag != "" {
+		for mi := len(i.Manifests) - 1; mi >= 0; mi-- {
+			if !i.Manifests[mi].Digest.Equal(d.Digest) && annotationEqual(i.Manifests[mi].Annotations, AnnotRefName, tag) {
+				// remove tag pointing to different digest, make a new descriptor in case there are other annotations
+				i.RmDesc(Descriptor{
+					MediaType: i.Manifests[mi].MediaType,
+					Digest:    i.Manifests[mi].Digest,
+					Size:      i.Manifests[mi].Size,
+					Annotations: map[string]string{
+						AnnotRefName: tag,
+					},
+				})
+				// ensure mi is not past the end of the list after the next `mi--`
+				if mi > len(i.Manifests) {
+					mi = len(i.Manifests)
+				}
+			}
+		}
+	}
+
+	// Search for a compatible entry with the same digest, if tagged find an entry with no tag or a matching tag, else if untagged match any digest
+	// Update only if tag is being added, else return
+	if mi := slices.IndexFunc(i.Manifests, func(cur Descriptor) bool {
+		return cur.Digest.Equal(d.Digest) &&
+			(tag == "" || annotationsEmpty(cur.Annotations) || annotationEqual(cur.Annotations, AnnotRefName, tag))
+	}); mi >= 0 {
+		// add tag to an existing entry without a tag
+		if tag != "" && annotationsEmpty(i.Manifests[mi].Annotations) {
+			i.Manifests[mi] = d
+		}
+		// all other matches are a noop to avoid changing the created time
+	} else {
+		i.Manifests = append(i.Manifests, d)
+	}
+
+	// TODO: track history in the index of tag create/delete
+}
+
+// RmDesc deletes a descriptor from the index.
+// If the digest is set, but not a tag or referrer annotation, all references to the digest are deleted.
+// If the tag is set, the specific digest is untagged if the digest is provided, otherwise all descriptors with the tag are deleted.
+// If the referrer annotation is set, all descriptors pointing to the referrer are deleted.
+// If the digest is unset, and the tag and referrer annotations are unset, no action is performed.
+func (i *Index) RmDesc(d Descriptor) {
 	tag := ""
 	referrer := ""
 	if d.Annotations != nil {
 		tag = d.Annotations[AnnotRefName]
 		referrer = d.Annotations[AnnotReferrerSubject]
 	}
-	// search for another descriptor to untag and referrers to delete
-	if tag != "" || referrer != "" {
-		for mi := len(i.Manifests) - 1; mi >= 0; mi-- {
-			if i.Manifests[mi].Digest != d.Digest && i.Manifests[mi].Annotations != nil {
-				if tag != "" && i.Manifests[mi].Annotations[AnnotRefName] == tag {
-					// remote tag pointing to different digest
-					rmDesc := Descriptor{
-						MediaType: i.Manifests[mi].MediaType,
-						Digest:    i.Manifests[mi].Digest,
-						Size:      i.Manifests[mi].Size,
-						Annotations: map[string]string{
-							AnnotRefName: tag,
-						},
-					}
-					i.RmDesc(rmDesc)
-					// ensure mi is not past the end of the list after the next `mi--`
-					if mi > len(i.Manifests) {
-						mi = len(i.Manifests)
-					}
-				} else if referrer != "" && i.Manifests[mi].Annotations[AnnotReferrerSubject] == referrer {
-					// remove previous referrer response
-					i.Manifests[mi] = i.Manifests[len(i.Manifests)-1]
-					i.Manifests = i.Manifests[:len(i.Manifests)-1]
-				}
-			}
-		}
-	}
-	// remove child entry if found
-	for ci := range i.childManifests {
-		if i.childManifests[ci].Digest == d.Digest {
-			i.childManifests[ci] = i.childManifests[len(i.childManifests)-1]
-			i.childManifests = i.childManifests[:len(i.childManifests)-1]
+	switch {
+	case tag == "" && referrer == "" && !d.Digest.IsZero():
+		// delete all references to a digest
+		i.childManifests = slices.DeleteFunc(i.childManifests, func(cur Descriptor) bool { return cur.Digest.Equal(d.Digest) })
+		i.Manifests = slices.DeleteFunc(i.Manifests, func(cur Descriptor) bool { return cur.Digest.Equal(d.Digest) })
+	case tag != "" && d.Digest.IsZero():
+		// remove tags
+		i.Manifests = slices.DeleteFunc(i.Manifests, func(cur Descriptor) bool { return annotationEqual(cur.Annotations, AnnotRefName, tag) })
+	case tag != "" && !d.Digest.IsZero():
+		// delete a specific tag, but leave one descriptor pointing to the digest
+		mi := slices.IndexFunc(i.Manifests, func(cur Descriptor) bool {
+			return cur.Digest.Equal(d.Digest) && annotationEqual(cur.Annotations, AnnotRefName, tag)
+		})
+		if mi < 0 {
 			break
 		}
-	}
-	// Move entries from WithChildren option to childManifest list.
-	// These are from child descriptors when an index is later pushed.
-	for _, cd := range conf.children {
-		for mi := range i.Manifests {
-			if i.Manifests[mi].Digest == cd.Digest && len(i.Manifests[mi].Annotations) == 0 {
-				i.Manifests[mi] = i.Manifests[len(i.Manifests)-1]
-				i.Manifests = i.Manifests[:len(i.Manifests)-1]
-				i.childManifests = append(i.childManifests, cd)
-				break
-			}
+		if slices.IndexFunc(i.Manifests, func(cur Descriptor) bool {
+			return cur.Digest.Equal(d.Digest) && !annotationEqual(cur.Annotations, AnnotRefName, tag)
+		}) >= 0 {
+			// another descriptor exists for the same digest, delete this tagged entry
+			i.Manifests = slices.Delete(i.Manifests, mi, mi+1)
+		} else {
+			// untagged this entry (by deleting the annotation)
+			delete(i.Manifests[mi].Annotations, AnnotRefName)
 		}
-	}
-	// search for matching or compatible entry
-	for mi, md := range i.Manifests {
-		if md.Digest == d.Digest {
-			if tag == "" && referrer == "" {
-				return
-			}
-			if md.Annotations == nil ||
-				((tag == "" || md.Annotations[AnnotRefName] == "" || md.Annotations[AnnotRefName] == tag) &&
-					(referrer == "" || md.Annotations[AnnotReferrerSubject] == "" || md.Annotations[AnnotReferrerSubject] == referrer)) {
-				i.Manifests[mi] = d
-				return
-			}
-		}
-	}
-	// append entry if no match found
-	i.Manifests = append(i.Manifests, d)
-}
-
-// RmDesc deletes a descriptor from the index.
-// If the descriptor has a digest and the tag value set, one reference to the untagged digest is preserved.
-// If the digest is blank and either tag or referrer annotations are provided, all matching tags/referrers are deleted.
-// Otherwise all references to the digest are removed.
-func (i *Index) RmDesc(d Descriptor) {
-	tag := ""
-	referrer := ""
-	if d.Annotations != nil {
-		if d.Annotations[AnnotRefName] != "" {
-			tag = d.Annotations[AnnotRefName]
-		}
-		if d.Annotations[AnnotReferrerSubject] != "" {
-			referrer = d.Annotations[AnnotReferrerSubject]
-		}
-	}
-	if tag == "" && !d.Digest.IsZero() {
-		for mi := len(i.childManifests) - 1; mi >= 0; mi-- {
-			if i.childManifests[mi].Digest == d.Digest {
-				i.childManifests[mi] = i.childManifests[len(i.childManifests)-1]
-				i.childManifests = i.childManifests[:len(i.childManifests)-1]
-			}
-		}
-	}
-	found := false
-	for mi := len(i.Manifests) - 1; mi >= 0; mi-- {
-		if !d.Digest.IsZero() && i.Manifests[mi].Digest.Equal(d.Digest) {
-			if tag != "" {
-				// deleting a tag leaves one untagged manifest entry
-				if found && (i.Manifests[mi].Annotations == nil || i.Manifests[mi].Annotations[AnnotRefName] == tag) {
-					i.Manifests[mi] = i.Manifests[len(i.Manifests)-1]
-					i.Manifests = i.Manifests[:len(i.Manifests)-1]
-				} else if i.Manifests[mi].Annotations != nil && i.Manifests[mi].Annotations[AnnotRefName] == tag {
-					delete(i.Manifests[mi].Annotations, AnnotRefName)
-				}
-				found = true
-			} else {
-				i.Manifests[mi] = i.Manifests[len(i.Manifests)-1]
-				i.Manifests = i.Manifests[:len(i.Manifests)-1]
-			}
-		} else if d.Digest.IsZero() && i.Manifests[mi].Annotations != nil &&
-			((tag != "" && i.Manifests[mi].Annotations[AnnotRefName] == tag) ||
-				(referrer != "" && i.Manifests[mi].Annotations[AnnotReferrerSubject] == referrer)) {
-			// delete all entries pointing to a tag or referrer when digest isn't defined
-			i.Manifests[mi] = i.Manifests[len(i.Manifests)-1]
-			i.Manifests = i.Manifests[:len(i.Manifests)-1]
-		}
+	case referrer != "":
+		// remove referrer response
+		i.Manifests = slices.DeleteFunc(i.Manifests, func(cur Descriptor) bool { return annotationEqual(cur.Annotations, AnnotReferrerSubject, referrer) })
 	}
 }
 
@@ -343,4 +339,12 @@ func ManifestReferrerDescriptor(raw []byte, d Descriptor) (Descriptor, Descripto
 	}
 	rd.Annotations = referrer.Annotations
 	return subject, rd, nil
+}
+
+func annotationEqual(annotations map[string]string, key, value string) bool {
+	return annotations != nil && annotations[key] == value
+}
+
+func annotationsEmpty(annotations map[string]string) bool {
+	return len(annotations) == 0 || (len(annotations) == 1 && annotations[AnnotCreated] != "")
 }

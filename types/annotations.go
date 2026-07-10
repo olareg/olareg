@@ -15,6 +15,8 @@
 package types
 
 const (
+	// AnnotCreated is the date and time of the descriptor, conforming to RFC 3339
+	AnnotCreated = "org.opencontainers.image.created"
 	// AnnotRefName is the annotation key for the tag, set on a descriptor in the OCI Layout index.json.
 	AnnotRefName = "org.opencontainers.image.ref.name"
 	// AnnotReferrerSubject is used on descriptors that point to the referrer response in an OCI layout index.json.
