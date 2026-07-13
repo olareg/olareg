@@ -43,11 +43,11 @@ ifeq "$(strip $(VER_BUMP))" ''
 		-u "$(shell id -u):$(shell id -g)" \
 		$(VER_BUMP_CONTAINER)
 endif
-MARKDOWN_LINT_VER?=v0.22.1
+MARKDOWN_LINT_VER?=v0.23.0
 GOFUMPT_VER?=v0.10.0
 GOMAJOR_VER?=v0.15.0
 GOSEC_VER?=v2.27.1
-GO_VULNCHECK_VER?=v1.5.0
+GO_VULNCHECK_VER?=v1.6.0
 OSV_SCANNER_VER?=v2.4.0
 SYFT?=$(shell command -v syft 2>/dev/null)
 SYFT_CMD_VER:=$(shell [ -x "$(SYFT)" ] && echo "v$$($(SYFT) version | awk '/^Version: / {print $$2}')" || echo "0")
