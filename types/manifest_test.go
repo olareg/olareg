@@ -16,10 +16,13 @@ package types
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	digest "github.com/sudo-bmitch/oci-digest"
+
+	"github.com/olareg/olareg/internal/reproducible"
 )
 
 func TestIndex(t *testing.T) {
@@ -508,7 +511,10 @@ func TestIndex(t *testing.T) {
 }
 
 func TestAddDesc(t *testing.T) {
-	t.Parallel()
+	// set a persistent time that will be in all new descriptors
+	t.Setenv(reproducible.EpocEnv, fmt.Sprintf("%d", time.Now().UTC().Unix()))
+	reproducible.TimeProcEnv()
+	timestamp := reproducible.TimeNow().Format(time.RFC3339)
 	// setup some sample index structs, empty, one entry, three entries, tags, annotations, children
 	tagA, tagB, tagC, tagD, tagIndex := "A", "B", "C", "D", "index"
 	digA, err := digest.FromString("A")
@@ -523,9 +529,12 @@ func TestAddDesc(t *testing.T) {
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digA,
 		Size:      1,
-		Annotations: map[string]string{
-			AnnotCreated: time.Now().UTC().Format(time.RFC3339),
-		},
+	}
+	descATime := Descriptor{
+		MediaType:   MediaTypeOCI1Manifest,
+		Digest:      digA,
+		Size:        1,
+		Annotations: map[string]string{AnnotCreated: timestamp},
 	}
 	descATag := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
@@ -533,7 +542,7 @@ func TestAddDesc(t *testing.T) {
 		Size:      1,
 		Annotations: map[string]string{
 			AnnotRefName: tagA,
-			AnnotCreated: time.Now().UTC().Format(time.RFC3339),
+			AnnotCreated: timestamp,
 		},
 	}
 	digB, err := digest.FromString("B")
@@ -545,13 +554,19 @@ func TestAddDesc(t *testing.T) {
 		Digest:    digB,
 		Size:      1,
 	}
+	descBTime := Descriptor{
+		MediaType:   MediaTypeOCI1Manifest,
+		Digest:      digB,
+		Size:        1,
+		Annotations: map[string]string{AnnotCreated: timestamp},
+	}
 	descBTag := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digB,
 		Size:      1,
 		Annotations: map[string]string{
 			AnnotRefName: tagB,
-			AnnotCreated: time.Now().UTC().Format(time.RFC3339),
+			AnnotCreated: timestamp,
 		},
 	}
 	digC, err := digest.FromString("C")
@@ -563,13 +578,19 @@ func TestAddDesc(t *testing.T) {
 		Digest:    digC,
 		Size:      1,
 	}
+	descCTime := Descriptor{
+		MediaType:   MediaTypeOCI1Manifest,
+		Digest:      digC,
+		Size:        1,
+		Annotations: map[string]string{AnnotCreated: timestamp},
+	}
 	descCTag := Descriptor{
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digC,
 		Size:      1,
 		Annotations: map[string]string{
 			AnnotRefName: tagC,
-			AnnotCreated: time.Now().UTC().Format(time.RFC3339),
+			AnnotCreated: timestamp,
 		},
 	}
 	descCSubj := Descriptor{
@@ -586,6 +607,12 @@ func TestAddDesc(t *testing.T) {
 		MediaType: MediaTypeOCI1Manifest,
 		Digest:    digD,
 		Size:      1,
+	}
+	descDTime := Descriptor{
+		MediaType:   MediaTypeOCI1Manifest,
+		Digest:      digD,
+		Size:        1,
+		Annotations: map[string]string{AnnotCreated: timestamp},
 	}
 	// descDTag := Descriptor{
 	// 	MediaType:   MediaTypeOCI1Manifest,
@@ -612,34 +639,32 @@ func TestAddDesc(t *testing.T) {
 		MediaType:   MediaTypeOCI1ManifestList,
 		Digest:      digIndex,
 		Size:        5,
-		Annotations: map[string]string{AnnotRefName: tagIndex},
+		Annotations: map[string]string{AnnotRefName: tagIndex, AnnotCreated: timestamp},
 	}
 	_ = tagD
 	tt := []struct {
-		name         string
-		iIn          Index
-		dAdd         Descriptor
-		opts         []IndexOpt
-		iOut         Index
-		checkCreated bool
+		name string
+		iIn  Index
+		dAdd Descriptor
+		opts []IndexOpt
+		iOut Index
 	}{
 		{
 			name: "Zero Add A",
 			iIn:  Index{},
 			dAdd: descA,
 			iOut: Index{
-				Manifests: []Descriptor{descA},
+				Manifests: []Descriptor{descATime},
 			},
-			checkCreated: true,
 		},
 		{
 			name: "A Add A",
 			iIn: Index{
-				Manifests: []Descriptor{descA},
+				Manifests: []Descriptor{descATime},
 			},
 			dAdd: descA,
 			iOut: Index{
-				Manifests: []Descriptor{descA},
+				Manifests: []Descriptor{descATime},
 			},
 		},
 		{
@@ -655,54 +680,39 @@ func TestAddDesc(t *testing.T) {
 		{
 			name: "A Add B",
 			iIn: Index{
-				Manifests: []Descriptor{descA},
+				Manifests: []Descriptor{descATime},
 			},
 			dAdd: descB,
 			iOut: Index{
-				Manifests: []Descriptor{descA, descB},
+				Manifests: []Descriptor{descATime, descBTime},
 			},
-			checkCreated: true,
 		},
 		{
 			name: "ABC Add tag to B",
 			iIn: Index{
-				Manifests: []Descriptor{descA, {
-					MediaType: MediaTypeOCI1Manifest,
-					Digest:    digB,
-					Size:      1,
-				}, descC},
+				Manifests: []Descriptor{descATime, descB, descC},
 			},
 			dAdd: descBTag,
 			iOut: Index{
-				Manifests: []Descriptor{descA, descBTag, descC},
+				Manifests: []Descriptor{descATime, descBTag, descC},
 			},
 		},
 		{
 			name: "ABC children Add tag to child B",
 			iIn: Index{
-				Manifests: []Descriptor{descIndexTag},
-				childManifests: []Descriptor{descA, {
-					MediaType: MediaTypeOCI1Manifest,
-					Digest:    digB,
-					Size:      1,
-				}, descC},
+				Manifests:      []Descriptor{descIndexTag},
+				childManifests: []Descriptor{descA, descB, descC},
 			},
 			dAdd: descBTag,
 			iOut: Index{
 				Manifests:      []Descriptor{descIndexTag, descBTag},
 				childManifests: []Descriptor{descA, descC},
 			},
-			checkCreated: true,
 		},
 		{
-			name: "ABC tag Add replacement A tag",
+			name: "ABC tag replace A tag digest",
 			iIn: Index{
-				Manifests: []Descriptor{{
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digA,
-					Size:        1,
-					Annotations: map[string]string{AnnotRefName: tagA},
-				}, descBTag, descCTag},
+				Manifests: []Descriptor{descATag, descBTag, descCTag},
 			},
 			dAdd: Descriptor{
 				MediaType:   MediaTypeOCI1Manifest,
@@ -711,14 +721,13 @@ func TestAddDesc(t *testing.T) {
 				Annotations: map[string]string{AnnotRefName: tagA},
 			},
 			iOut: Index{
-				Manifests: []Descriptor{descA, descBTag, descCTag, {
+				Manifests: []Descriptor{descATime, descBTag, descCTag, {
 					MediaType:   MediaTypeOCI1Manifest,
 					Digest:      digA2,
 					Size:        2,
-					Annotations: map[string]string{AnnotRefName: tagA},
+					Annotations: map[string]string{AnnotRefName: tagA, AnnotCreated: timestamp},
 				}},
 			},
-			checkCreated: true,
 		},
 		{
 			name: "ABC subject Add replacement subject to A",
@@ -736,41 +745,30 @@ func TestAddDesc(t *testing.T) {
 					MediaType:   MediaTypeOCI1Manifest,
 					Digest:      digD,
 					Size:        1,
-					Annotations: map[string]string{AnnotReferrerSubject: digA.String()},
+					Annotations: map[string]string{AnnotReferrerSubject: digA.String(), AnnotCreated: timestamp},
 				}},
 			},
-			checkCreated: true,
 		},
 		{
-			name: "ABCD Add IndexTag with Children",
+			name: "ABCD Add IndexTag with Children BCD",
 			iIn: Index{
-				Manifests: []Descriptor{descA, descB, descC, descD},
+				Manifests: []Descriptor{descATime, descBTime, descCTime, descDTime},
 			},
 			dAdd: descIndexTag,
 			opts: []IndexOpt{IndexWithChildren([]Descriptor{descB, descC, descD})},
 			iOut: Index{
-				Manifests:      []Descriptor{descA, descIndexTag},
+				Manifests:      []Descriptor{descATime, descIndexTag},
 				childManifests: []Descriptor{descB, descC, descD},
 			},
-			checkCreated: true,
 		},
 	}
 	for _, tc := range tt {
 		t.Run(tc.name, func(t *testing.T) {
+			ind := tc.iIn.Copy() // clone to avoid modifying a descriptor used in other tests
 			t.Parallel()
-			tc.iIn.AddDesc(tc.dAdd, tc.opts...)
-			if !testIndexEqual(tc.iIn, tc.iOut) {
-				t.Errorf("index mismatch, expected %v, received %v", tc.iOut, tc.iIn)
-			}
-			if tc.checkCreated {
-				last := len(tc.iIn.Manifests) - 1
-				if last < 0 {
-					t.Errorf("no last entry to check creation timestamp")
-				} else if tc.iIn.Manifests[last].Annotations == nil {
-					t.Errorf("annotations are not defined on last entry: %v", tc.iIn.Manifests[last])
-				} else if tc.iIn.Manifests[last].Annotations[AnnotCreated] == "" {
-					t.Errorf("creation timestamp was not set on last entry: %v", tc.iIn.Manifests[last])
-				}
+			ind.AddDesc(tc.dAdd, tc.opts...)
+			if !testIndexEqual(ind, tc.iOut) {
+				t.Errorf("index mismatch, expected %v, received %v", tc.iOut, ind)
 			}
 		})
 	}
@@ -1035,10 +1033,6 @@ func TestRmDesc(t *testing.T) {
 	}
 }
 
-// TODO: test AddDesc, tt with index, desc to add, result. test digests, tags, referrers, children
-
-// TODO: test RmDesc, tt with index, desc to remove, result. test digests, tags, referrers, children
-
 func testDescEqual(a, b Descriptor) bool {
 	if a.MediaType != b.MediaType ||
 		a.Size != b.Size ||
@@ -1046,7 +1040,7 @@ func testDescEqual(a, b Descriptor) bool {
 		a.ArtifactType != b.ArtifactType {
 		return false
 	}
-	// only compare well-known annotations, avoid failing for a changed timestamp or dropped unknown annotation
+	// only compare well-known annotations, don't error on dropped unknown annotation
 	aAnnotations := map[string]string{}
 	bAnnotations := map[string]string{}
 	if len(a.Annotations) > 0 {
@@ -1055,7 +1049,7 @@ func testDescEqual(a, b Descriptor) bool {
 	if len(b.Annotations) > 0 {
 		bAnnotations = b.Annotations
 	}
-	for _, key := range []string{AnnotRefName, AnnotReferrerSubject} {
+	for _, key := range []string{AnnotRefName, AnnotReferrerSubject, AnnotCreated} {
 		if aAnnotations[key] != bAnnotations[key] {
 			return false
 		}

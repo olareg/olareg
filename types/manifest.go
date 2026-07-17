@@ -21,6 +21,8 @@ import (
 	"time"
 
 	digest "github.com/sudo-bmitch/oci-digest"
+
+	"github.com/olareg/olareg/internal/reproducible"
 )
 
 // Index references manifests for various platforms.
@@ -184,7 +186,7 @@ func (i *Index) AddDesc(d Descriptor, opts ...IndexOpt) {
 		d.Annotations = map[string]string{}
 	}
 	// Set creation time on descriptor
-	d.Annotations[AnnotCreated] = time.Now().UTC().Format(time.RFC3339)
+	d.Annotations[AnnotCreated] = reproducible.TimeNow().Format(time.RFC3339)
 	// extract tag and referrer details if set
 	tag := d.Annotations[AnnotRefName]
 	referrer := d.Annotations[AnnotReferrerSubject]
