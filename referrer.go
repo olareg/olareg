@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 
 	digest "github.com/sudo-bmitch/oci-digest"
@@ -304,8 +305,14 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 			}
 		}()
 	}
-	// add descriptor to index and push into blob store
-	refResp.AddDesc(desc)
+	if mi := slices.IndexFunc(refResp.Manifests, func(cur types.Descriptor) bool { return desc.Digest.Equal(cur.Digest) }); mi >= 0 {
+		// replace existing response with this digest
+		refResp.Manifests[mi] = desc
+	} else {
+		// add descriptor to index
+		refResp.Manifests = append(refResp.Manifests, desc)
+	}
+	// push the updated response to the blob store
 	iRaw, err := json.Marshal(refResp)
 	if err != nil {
 		return err
@@ -339,7 +346,7 @@ func (s *Server) referrerAdd(repo store.Repo, subject digest.Digest, desc types.
 		},
 	}
 	// adding the new response also deletes the previous response
-	err = repo.IndexInsert(dNew, types.IndexWithChildren(refResp.Manifests))
+	err = repo.IndexInsert(dNew, types.LayoutWithChildren(refResp.Manifests))
 	if err != nil {
 		return err
 	}
@@ -377,7 +384,7 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 		return err
 	}
 	// remove descriptor from response
-	refResp.RmDesc(desc)
+	refResp.Manifests = slices.DeleteFunc(refResp.Manifests, func(cur types.Descriptor) bool { return desc.Digest.Equal(cur.Digest) })
 	// push response back to blob store with a new digest
 	refRespRaw, err = json.Marshal(refResp)
 	if err != nil {
@@ -412,7 +419,7 @@ func (s *Server) referrerDelete(repo store.Repo, subject digest.Digest, desc typ
 		},
 	}
 	// adding the new response also deletes the previous response
-	err = repo.IndexInsert(dNew, types.IndexWithChildren(refResp.Manifests))
+	err = repo.IndexInsert(dNew, types.LayoutWithChildren(refResp.Manifests))
 	if err != nil {
 		return err
 	}

@@ -1581,10 +1581,10 @@ func TestGarbageCollect(t *testing.T) {
 				}
 			}
 			for i, desc := range descList {
-				opts := []types.IndexOpt{}
+				opts := []types.LayoutIndexOpt{}
 				if i == len(descList)-1 {
 					// append all children on last entry
-					opts = append(opts, types.IndexWithChildren(childList))
+					opts = append(opts, types.LayoutWithChildren(childList))
 				}
 				err = repo.IndexInsert(desc, opts...)
 				if err != nil {

@@ -25,7 +25,7 @@ import (
 	"github.com/olareg/olareg/internal/reproducible"
 )
 
-func TestIndex(t *testing.T) {
+func TestLayoutIndex(t *testing.T) {
 	t.Parallel()
 	// setup some sample index structs, empty, one entry, three entries, tags, annotations, children
 	tagA, tagB, tagC, tagD, tagIndex := "A", "B", "C", "D", "index"
@@ -116,60 +116,80 @@ func TestIndex(t *testing.T) {
 		Size:        5,
 		Annotations: map[string]string{AnnotRefName: tagIndex},
 	}
-	iZero := Index{}
-	iEmpty := Index{
-		SchemaVersion: 2,
-		MediaType:     MediaTypeOCI1ManifestList,
-		Manifests:     []Descriptor{},
+	iZero := LayoutIndex{
+		Index: Index{},
 	}
-	iOne := Index{
-		SchemaVersion: 2,
-		MediaType:     MediaTypeOCI1ManifestList,
-		Manifests:     []Descriptor{descA},
+	iEmpty := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{},
+		},
 	}
-	iOneTag := Index{
-		SchemaVersion: 2,
-		MediaType:     MediaTypeOCI1ManifestList,
-		Manifests:     []Descriptor{descATag},
+	iOne := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{descA},
+		},
 	}
-	iThree := Index{
-		SchemaVersion: 2,
-		MediaType:     MediaTypeOCI1ManifestList,
-		Manifests:     []Descriptor{descB, descC, descD},
+	iOneTag := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{descATag},
+		},
 	}
-	iThreeTag := Index{
-		SchemaVersion: 2,
-		MediaType:     MediaTypeOCI1ManifestList,
-		Manifests:     []Descriptor{descBTag, descCTag, descDTag},
+	iThree := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{descB, descC, descD},
+		},
 	}
-	iIndex := Index{
-		SchemaVersion: 2,
-		MediaType:     MediaTypeOCI1ManifestList,
-		Manifests:     []Descriptor{descIndex},
+	iThreeTag := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{descBTag, descCTag, descDTag},
+		},
 	}
-	iChildren := Index{
-		SchemaVersion:  2,
-		MediaType:      MediaTypeOCI1ManifestList,
-		Manifests:      []Descriptor{descIndexTag},
+	iIndex := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{descIndex},
+		},
+	}
+	iChildren := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{descIndexTag},
+		},
 		childManifests: []Descriptor{descB, descC, descD},
 	}
-	iChildrenAdd := Index{
-		SchemaVersion: 2,
-		MediaType:     MediaTypeOCI1ManifestList,
-		Manifests:     []Descriptor{descIndexTag},
+	iChildrenAdd := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{descIndexTag},
+		},
 	}
 	iChildrenAdd.AddChildren([]Descriptor{descB, descC, descD})
-	iSubject := Index{
-		SchemaVersion: 2,
-		MediaType:     MediaTypeOCI1ManifestList,
-		Manifests:     []Descriptor{descATag, descBTag, descCSubj, descDSubj},
+	iSubject := LayoutIndex{
+		Index: Index{
+			SchemaVersion: 2,
+			MediaType:     MediaTypeOCI1ManifestList,
+			Manifests:     []Descriptor{descATag, descBTag, descCSubj, descDSubj},
+		},
 	}
 
 	t.Run("GetDesc", func(t *testing.T) {
 		t.Parallel()
 		tt := []struct {
 			name       string
-			i          Index
+			i          LayoutIndex
 			arg        string
 			expectDesc Descriptor
 			expectErr  error
@@ -412,7 +432,7 @@ func TestIndex(t *testing.T) {
 		t.Parallel()
 		tt := []struct {
 			name       string
-			i          Index
+			i          LayoutIndex
 			key, val   string
 			expectDesc Descriptor
 			expectErr  error
@@ -510,11 +530,12 @@ func TestIndex(t *testing.T) {
 	})
 }
 
-func TestAddDesc(t *testing.T) {
+func TestLayoutAddDesc(t *testing.T) {
 	// set a persistent time that will be in all new descriptors
-	t.Setenv(reproducible.EpocEnv, fmt.Sprintf("%d", time.Now().UTC().Unix()))
+	timeNow := time.Now().UTC().Truncate(time.Second)
+	timestamp := timeNow.Format(time.RFC3339)
+	t.Setenv(reproducible.EpocEnv, fmt.Sprintf("%d", timeNow.Unix()))
 	reproducible.TimeProcEnv()
-	timestamp := reproducible.TimeNow().Format(time.RFC3339)
 	// setup some sample index structs, empty, one entry, three entries, tags, annotations, children
 	tagA, tagB, tagC, tagD, tagIndex := "A", "B", "C", "D", "index"
 	digA, err := digest.FromString("A")
@@ -630,11 +651,11 @@ func TestAddDesc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to generate digest: %v", err)
 	}
-	// descIndex := Descriptor{
-	// 	MediaType: MediaTypeOCI1ManifestList,
-	// 	Digest:    digIndex,
-	// 	Size:      5,
-	// }
+	descIndex := Descriptor{
+		MediaType: MediaTypeOCI1ManifestList,
+		Digest:    digIndex,
+		Size:      5,
+	}
 	descIndexTag := Descriptor{
 		MediaType:   MediaTypeOCI1ManifestList,
 		Digest:      digIndex,
@@ -644,75 +665,115 @@ func TestAddDesc(t *testing.T) {
 	_ = tagD
 	tt := []struct {
 		name string
-		iIn  Index
+		iIn  LayoutIndex
 		dAdd Descriptor
-		opts []IndexOpt
-		iOut Index
+		opts []LayoutIndexOpt
+		iOut LayoutIndex
 	}{
 		{
 			name: "Zero Add A",
-			iIn:  Index{},
+			iIn:  LayoutIndex{},
 			dAdd: descA,
-			iOut: Index{
-				Manifests: []Descriptor{descATime},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime},
+				},
 			},
 		},
 		{
 			name: "A Add A",
-			iIn: Index{
-				Manifests: []Descriptor{descATime},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime},
+				},
 			},
 			dAdd: descA,
-			iOut: Index{
-				Manifests: []Descriptor{descATime},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime},
+				},
 			},
 		},
 		{
 			name: "A tag Add A",
-			iIn: Index{
-				Manifests: []Descriptor{descATag},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag},
+				},
 			},
 			dAdd: descA,
-			iOut: Index{
-				Manifests: []Descriptor{descATag},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag},
+				},
 			},
 		},
 		{
 			name: "A Add B",
-			iIn: Index{
-				Manifests: []Descriptor{descATime},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime},
+				},
 			},
 			dAdd: descB,
-			iOut: Index{
-				Manifests: []Descriptor{descATime, descBTime},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime, descBTime},
+				},
 			},
 		},
 		{
 			name: "ABC Add tag to B",
-			iIn: Index{
-				Manifests: []Descriptor{descATime, descB, descC},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime, descB, descC},
+				},
 			},
 			dAdd: descBTag,
-			iOut: Index{
-				Manifests: []Descriptor{descATime, descBTag, descC},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime, descBTag, descC},
+				},
+				History: map[string][]LayoutHistory{
+					tagB: {
+						{
+							Time:       timeNow,
+							Descriptor: descB,
+						},
+					},
+				},
 			},
 		},
 		{
 			name: "ABC children Add tag to child B",
-			iIn: Index{
-				Manifests:      []Descriptor{descIndexTag},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descIndexTag},
+				},
 				childManifests: []Descriptor{descA, descB, descC},
 			},
 			dAdd: descBTag,
-			iOut: Index{
-				Manifests:      []Descriptor{descIndexTag, descBTag},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descIndexTag, descBTag},
+				},
 				childManifests: []Descriptor{descA, descC},
+				History: map[string][]LayoutHistory{
+					tagB: {
+						{
+							Time:       timeNow,
+							Descriptor: descB,
+						},
+					},
+				},
 			},
 		},
 		{
 			name: "ABC tag replace A tag digest",
-			iIn: Index{
-				Manifests: []Descriptor{descATag, descBTag, descCTag},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag, descBTag, descCTag},
+				},
 			},
 			dAdd: Descriptor{
 				MediaType:   MediaTypeOCI1Manifest,
@@ -720,19 +781,35 @@ func TestAddDesc(t *testing.T) {
 				Size:        2,
 				Annotations: map[string]string{AnnotRefName: tagA},
 			},
-			iOut: Index{
-				Manifests: []Descriptor{descATime, descBTag, descCTag, {
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digA2,
-					Size:        2,
-					Annotations: map[string]string{AnnotRefName: tagA, AnnotCreated: timestamp},
-				}},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime, descBTag, descCTag, {
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digA2,
+						Size:        2,
+						Annotations: map[string]string{AnnotRefName: tagA, AnnotCreated: timestamp},
+					}},
+				},
+				History: map[string][]LayoutHistory{
+					tagA: {
+						{
+							Time: timeNow,
+							Descriptor: Descriptor{
+								MediaType: MediaTypeOCI1Manifest,
+								Digest:    digA2,
+								Size:      2,
+							},
+						},
+					},
+				},
 			},
 		},
 		{
 			name: "ABC subject Add replacement subject to A",
-			iIn: Index{
-				Manifests: []Descriptor{descATag, descBTag, descCSubj},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag, descBTag, descCSubj},
+				},
 			},
 			dAdd: Descriptor{
 				MediaType:   MediaTypeOCI1Manifest,
@@ -740,25 +817,39 @@ func TestAddDesc(t *testing.T) {
 				Size:        1,
 				Annotations: map[string]string{AnnotReferrerSubject: digA.String()},
 			},
-			iOut: Index{
-				Manifests: []Descriptor{descATag, descBTag, {
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digD,
-					Size:        1,
-					Annotations: map[string]string{AnnotReferrerSubject: digA.String(), AnnotCreated: timestamp},
-				}},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag, descBTag, {
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digD,
+						Size:        1,
+						Annotations: map[string]string{AnnotReferrerSubject: digA.String(), AnnotCreated: timestamp},
+					}},
+				},
 			},
 		},
 		{
 			name: "ABCD Add IndexTag with Children BCD",
-			iIn: Index{
-				Manifests: []Descriptor{descATime, descBTime, descCTime, descDTime},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime, descBTime, descCTime, descDTime},
+				},
 			},
 			dAdd: descIndexTag,
-			opts: []IndexOpt{IndexWithChildren([]Descriptor{descB, descC, descD})},
-			iOut: Index{
-				Manifests:      []Descriptor{descATime, descIndexTag},
+			opts: []LayoutIndexOpt{LayoutWithChildren([]Descriptor{descB, descC, descD})},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATime, descIndexTag},
+				},
 				childManifests: []Descriptor{descB, descC, descD},
+				History: map[string][]LayoutHistory{
+					tagIndex: {
+						{
+							Time:       timeNow,
+							Descriptor: descIndex,
+						},
+					},
+				},
 			},
 		},
 	}
@@ -767,15 +858,18 @@ func TestAddDesc(t *testing.T) {
 			ind := tc.iIn.Copy() // clone to avoid modifying a descriptor used in other tests
 			t.Parallel()
 			ind.AddDesc(tc.dAdd, tc.opts...)
-			if !testIndexEqual(ind, tc.iOut) {
+			if !testLayoutEqual(ind, tc.iOut) {
 				t.Errorf("index mismatch, expected %v, received %v", tc.iOut, ind)
 			}
 		})
 	}
 }
 
-func TestRmDesc(t *testing.T) {
-	t.Parallel()
+func TestLayoutRmDesc(t *testing.T) {
+	// set a persistent time that will be in history entries
+	timeNow := time.Now().UTC().Truncate(time.Second)
+	t.Setenv(reproducible.EpocEnv, fmt.Sprintf("%d", timeNow.Unix()))
+	reproducible.TimeProcEnv()
 	// setup some sample index structs, empty, one entry, three entries, tags, annotations, children
 	tagA, tagB, tagC, tagD, tagIndex := "A", "B", "C", "D", "index"
 	_, _ = tagD, tagIndex
@@ -834,16 +928,16 @@ func TestRmDesc(t *testing.T) {
 		Size:        1,
 		Annotations: map[string]string{AnnotRefName: tagC},
 	}
-	descCSubj := Descriptor{
-		MediaType:   MediaTypeOCI1Manifest,
-		Digest:      digC,
-		Size:        1,
-		Annotations: map[string]string{AnnotReferrerSubject: digA.String()},
-	}
-	digD, err := digest.FromString("D")
-	if err != nil {
-		t.Fatalf("failed to generate digest: %v", err)
-	}
+	// descCSubj := Descriptor{
+	// 	MediaType:   MediaTypeOCI1Manifest,
+	// 	Digest:      digC,
+	// 	Size:        1,
+	// 	Annotations: map[string]string{AnnotReferrerSubject: digA.String()},
+	// }
+	// digD, err := digest.FromString("D")
+	// if err != nil {
+	// 	t.Fatalf("failed to generate digest: %v", err)
+	// }
 	// descD := Descriptor{
 	// 	MediaType: MediaTypeOCI1Manifest,
 	// 	Digest:    digD,
@@ -855,12 +949,12 @@ func TestRmDesc(t *testing.T) {
 	// 	Size:        1,
 	// 	Annotations: map[string]string{AnnotRefName: tagD},
 	// }
-	descDSubj := Descriptor{
-		MediaType:   MediaTypeOCI1Manifest,
-		Digest:      digD,
-		Size:        1,
-		Annotations: map[string]string{AnnotReferrerSubject: digB.String()},
-	}
+	// descDSubj := Descriptor{
+	// 	MediaType:   MediaTypeOCI1Manifest,
+	// 	Digest:      digD,
+	// 	Size:        1,
+	// 	Annotations: map[string]string{AnnotReferrerSubject: digB.String()},
+	// }
 	digIndex, err := digest.FromString("index")
 	if err != nil {
 		t.Fatalf("failed to generate digest: %v", err)
@@ -878,147 +972,187 @@ func TestRmDesc(t *testing.T) {
 	}
 	tt := []struct {
 		name string
-		iIn  Index
+		iIn  LayoutIndex
 		dRm  Descriptor
-		iOut Index
+		iOut LayoutIndex
 	}{
 		{
 			name: "Zero Rm A",
-			iIn:  Index{},
+			iIn:  LayoutIndex{},
 			dRm:  descA,
-			iOut: Index{},
+			iOut: LayoutIndex{},
 		},
 		{
 			name: "A Rm B",
-			iIn: Index{
-				Manifests: []Descriptor{descA},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descA},
+				},
 			},
 			dRm: descB,
-			iOut: Index{
-				Manifests: []Descriptor{descA},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descA},
+				},
 			},
 		},
 		{
 			name: "A Rm A",
-			iIn: Index{
-				Manifests: []Descriptor{descA},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descA},
+				},
 			},
 			dRm: descA,
-			iOut: Index{
-				Manifests: []Descriptor{},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{},
+				},
 			},
 		},
 		{
 			// this test is descriptor order dependent
 			name: "A,ATag,A2Tag Rm ATag",
-			iIn: Index{
-				Manifests: []Descriptor{descA, {
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digA,
-					Size:        1,
-					Annotations: map[string]string{AnnotRefName: tagA},
-				}, {
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digA,
-					Size:        1,
-					Annotations: map[string]string{AnnotRefName: tagA + "2"},
-				}},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descA, {
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digA,
+						Size:        1,
+						Annotations: map[string]string{AnnotRefName: tagA},
+					}, {
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digA,
+						Size:        1,
+						Annotations: map[string]string{AnnotRefName: tagA + "2"},
+					}},
+				},
 			},
 			dRm: descATag,
-			iOut: Index{
-				Manifests: []Descriptor{descA, {
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digA,
-					Size:        1,
-					Annotations: map[string]string{AnnotRefName: tagA + "2"},
-				}},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descA, {
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digA,
+						Size:        1,
+						Annotations: map[string]string{AnnotRefName: tagA + "2"},
+					}},
+				},
+				History: map[string][]LayoutHistory{
+					tagA: {
+						{
+							Time:       timeNow,
+							Deleted:    true,
+							Descriptor: descA,
+						},
+					},
+				},
 			},
 		},
 		{
 			// this test is descriptor order dependent
 			name: "A2Tag,ATag,A Rm ATag",
-			iIn: Index{
-				Manifests: []Descriptor{{
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digA,
-					Size:        1,
-					Annotations: map[string]string{AnnotRefName: tagA},
-				}, {
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digA,
-					Size:        1,
-					Annotations: map[string]string{AnnotRefName: tagA + "2"},
-				}, descA},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{{
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digA,
+						Size:        1,
+						Annotations: map[string]string{AnnotRefName: tagA},
+					}, {
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digA,
+						Size:        1,
+						Annotations: map[string]string{AnnotRefName: tagA + "2"},
+					}, descA},
+				},
 			},
 			dRm: descATag,
-			iOut: Index{
-				Manifests: []Descriptor{{
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digA,
-					Size:        1,
-					Annotations: map[string]string{AnnotRefName: tagA + "2"},
-				}, descA},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{{
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digA,
+						Size:        1,
+						Annotations: map[string]string{AnnotRefName: tagA + "2"},
+					}, descA},
+				},
+				History: map[string][]LayoutHistory{
+					tagA: {
+						{
+							Time:       timeNow,
+							Deleted:    true,
+							Descriptor: descA,
+						},
+					},
+				},
 			},
 		},
 		{
 			name: "ABC Tag Rm B",
-			iIn: Index{
-				Manifests: []Descriptor{descATag, descBTag, descCTag},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag, descBTag, descCTag},
+				},
 			},
 			dRm: descB,
-			iOut: Index{
-				Manifests: []Descriptor{descATag, descCTag},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag, descCTag},
+				},
+				History: map[string][]LayoutHistory{
+					tagB: {
+						{
+							Time:       timeNow,
+							Deleted:    true,
+							Descriptor: descB,
+						},
+					},
+				},
 			},
 		},
 		{
 			name: "ABC child Rm B",
-			iIn: Index{
-				Manifests:      []Descriptor{descIndexTag},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descIndexTag},
+				},
 				childManifests: []Descriptor{descA, descB, descC},
 			},
 			dRm: descB,
-			iOut: Index{
-				Manifests:      []Descriptor{descIndexTag},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descIndexTag},
+				},
 				childManifests: []Descriptor{descA, descC},
 			},
 		},
 		{
 			name: "ABC Tag Rm B Tag",
-			iIn: Index{
-				Manifests: []Descriptor{descATag, {
-					MediaType:   MediaTypeOCI1Manifest,
-					Digest:      digB,
-					Size:        1,
-					Annotations: map[string]string{AnnotRefName: tagB},
-				}, descCTag},
+			iIn: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag, {
+						MediaType:   MediaTypeOCI1Manifest,
+						Digest:      digB,
+						Size:        1,
+						Annotations: map[string]string{AnnotRefName: tagB},
+					}, descCTag},
+				},
 			},
 			dRm: descBTag,
-			iOut: Index{
-				Manifests: []Descriptor{descATag, descB, descCTag},
-			},
-		},
-		{
-			name: "ABC Tag Rm A by tag",
-			iIn: Index{
-				Manifests: []Descriptor{descATag, descBTag, descCTag},
-			},
-			dRm: Descriptor{
-				Annotations: map[string]string{AnnotRefName: tagA},
-			},
-			iOut: Index{
-				Manifests: []Descriptor{descBTag, descCTag},
-			},
-		},
-		{
-			name: "ABCD Subject Rm C by subject",
-			iIn: Index{
-				Manifests: []Descriptor{descATag, descBTag, descCSubj, descDSubj},
-			},
-			dRm: Descriptor{
-				Annotations: map[string]string{AnnotReferrerSubject: digA.String()},
-			},
-			iOut: Index{
-				Manifests: []Descriptor{descATag, descBTag, descDSubj},
+			iOut: LayoutIndex{
+				Index: Index{
+					Manifests: []Descriptor{descATag, descB, descCTag},
+				},
+				History: map[string][]LayoutHistory{
+					tagB: {
+						{
+							Time:       timeNow,
+							Deleted:    true,
+							Descriptor: descB,
+						},
+					},
+				},
 			},
 		},
 	}
@@ -1026,7 +1160,7 @@ func TestRmDesc(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.iIn.RmDesc(tc.dRm)
-			if !testIndexEqual(tc.iIn, tc.iOut) {
+			if !testLayoutEqual(tc.iIn, tc.iOut) {
 				t.Errorf("index mismatch, expected %v, received %v", tc.iOut, tc.iIn)
 			}
 		})
@@ -1057,10 +1191,11 @@ func testDescEqual(a, b Descriptor) bool {
 	return true
 }
 
-func testIndexEqual(a, b Index) bool {
+func testLayoutEqual(a, b LayoutIndex) bool {
 	if len(a.Manifests) != len(b.Manifests) ||
 		len(a.childManifests) != len(b.childManifests) ||
 		len(a.Annotations) != len(b.Annotations) ||
+		len(a.History) != len(b.History) ||
 		a.ArtifactType != b.ArtifactType {
 		return false
 	}
@@ -1096,6 +1231,19 @@ func testIndexEqual(a, b Index) bool {
 		vB, ok := b.Annotations[k]
 		if !ok || vA != vB {
 			return false
+		}
+	}
+	for tag := range a.History {
+		if len(a.History[tag]) != len(b.History[tag]) {
+			return false
+		}
+		for i, hA := range a.History[tag] {
+			hB := b.History[tag][i]
+			if hA.Deleted != hB.Deleted ||
+				!hA.Time.Equal(hB.Time) ||
+				!testDescEqual(hA.Descriptor, hB.Descriptor) {
+				return false
+			}
 		}
 	}
 	return true
