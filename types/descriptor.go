@@ -50,6 +50,14 @@ type Descriptor struct {
 	ArtifactType string `json:"artifactType,omitempty"`
 }
 
+// annotationVal returns a value from the annotations, or an empty string if unset.
+func (d Descriptor) annotationVal(key string) string {
+	if d.Annotations == nil {
+		return ""
+	}
+	return d.Annotations[key]
+}
+
 // Copy returns a copy of the descriptor
 func (d Descriptor) Copy() Descriptor {
 	d2 := d

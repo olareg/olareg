@@ -50,7 +50,7 @@ type memRepo struct {
 	wg      sync.WaitGroup
 	wgBlock chan struct{}
 	timeMod time.Time
-	index   types.Index
+	index   types.LayoutIndex
 	blobs   map[digest.Digest]*memRepoBlob
 	uploads *cache.Cache[string, *memRepoUpload]
 	log     *slog.Logger
@@ -125,11 +125,13 @@ func (m *mem) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 	}
 	mr := &memRepo{
 		wgBlock: make(chan struct{}, 1),
-		index: types.Index{
-			SchemaVersion: 2,
-			MediaType:     types.MediaTypeOCI1ManifestList,
-			Manifests:     []types.Descriptor{},
-			Annotations:   map[string]string{},
+		index: types.LayoutIndex{
+			Index: types.Index{
+				SchemaVersion: 2,
+				MediaType:     types.MediaTypeOCI1ManifestList,
+				Manifests:     []types.Descriptor{},
+				Annotations:   map[string]string{},
+			},
 		},
 		blobs: map[digest.Digest]*memRepoBlob{},
 		log:   m.log,
@@ -254,7 +256,7 @@ func (m *mem) gc(cur, prev time.Time) error {
 }
 
 // IndexGet returns the current top level index for a repo.
-func (mr *memRepo) IndexGet() (types.Index, error) {
+func (mr *memRepo) IndexGet() (types.LayoutIndex, error) {
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
 	ic := mr.index.Copy()
@@ -262,7 +264,7 @@ func (mr *memRepo) IndexGet() (types.Index, error) {
 }
 
 // IndexInsert adds a new entry to the index and writes the change to index.json.
-func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) error {
+func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.LayoutIndexOpt) error {
 	if *mr.conf.Storage.ReadOnly {
 		return types.ErrReadOnly
 	}
@@ -521,7 +523,7 @@ func (mr *memRepo) repoInit() error {
 		return err
 	}
 	defer fh.Close()
-	parseIndex := types.Index{}
+	parseIndex := types.LayoutIndex{}
 	err = json.NewDecoder(fh).Decode(&parseIndex)
 	if err != nil {
 		return err

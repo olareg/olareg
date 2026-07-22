@@ -202,7 +202,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			return
 		}
 		var dExpect digest.Digest
-		addOpts := []types.IndexOpt{}
+		addOpts := []types.LayoutIndexOpt{}
 		repo, err := s.store.RepoGet(r.Context(), repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
@@ -349,7 +349,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 				s.log.Debug("failed to parse image manifest", "repo", repoStr, "arg", arg, "mediaType", mt, "err", err)
 				return
 			}
-			addOpts = append(addOpts, types.IndexWithChildren(m.Manifests))
+			addOpts = append(addOpts, types.LayoutWithChildren(m.Manifests))
 			// validate manifests exist
 			eList := s.manifestVerifyIndex(repo, m)
 			if eList != nil {

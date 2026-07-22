@@ -56,9 +56,9 @@ type Store interface {
 // Repo interface is used to access a CAS and the index managing known manifests.
 type Repo interface {
 	// IndexGet returns the current top level index for a repo.
-	IndexGet() (types.Index, error)
+	IndexGet() (types.LayoutIndex, error)
 	// IndexInsert adds a new entry to the index and writes the change to index.json.
-	IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) error
+	IndexInsert(desc types.Descriptor, opts ...types.LayoutIndexOpt) error
 	// IndexRemove deletes an entry from the index and writes the change to index.json.
 	IndexRemove(desc types.Descriptor) error
 
@@ -157,9 +157,9 @@ func genSessionID() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(sb), nil
 }
 
-// indexIngest processes an index, adding child descriptors, and converting referrers if appropriate.
+// indexIngest processes an index.json file, adding child descriptors, and converting referrers if appropriate.
 // return is true when index has been modified.
-func indexIngest(repo Repo, index *types.Index, conf config.Config, locked bool) (bool, error) {
+func indexIngest(repo Repo, index *types.LayoutIndex, conf config.Config, locked bool) (bool, error) {
 	mod := false
 	// error if referrer API not enabled and annotation indicates this is already converted, this repo should not writable
 	if !*conf.API.Referrer.Enabled && index.Annotations != nil && index.Annotations[types.AnnotReferrerConvert] == "true" {
@@ -398,7 +398,7 @@ func referrerListDedup(rl []types.Descriptor) []types.Descriptor {
 // repoGarbageCollect runs a GC against the repo.
 // The repo should be locked before calling this.
 // Changes to the index will be returned and should be saved to the store.
-func repoGarbageCollect(repo Repo, conf config.Config, index types.Index, locked bool) (types.Index, bool, error) {
+func repoGarbageCollect(repo Repo, conf config.Config, index types.LayoutIndex, locked bool) (types.LayoutIndex, bool, error) {
 	var cutoff time.Time
 	if conf.Storage.GC.GracePeriod >= 0 {
 		cutoff = time.Now().Add(conf.Storage.GC.GracePeriod * -1)

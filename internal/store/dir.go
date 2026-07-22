@@ -56,7 +56,7 @@ type dirRepo struct {
 	name      string
 	path      string
 	exists    bool
-	index     types.Index
+	index     types.LayoutIndex
 	uploads   *cache.Cache[string, *dirRepoUpload]
 	log       *slog.Logger
 	conf      config.Config
@@ -277,8 +277,8 @@ func (d *dir) gc(cur, prev time.Time) error {
 	return nil
 }
 
-// IndexGet returns the current top level index for a repo.
-func (dr *dirRepo) IndexGet() (types.Index, error) {
+// IndexGet returns the current top level index.json for a repo.
+func (dr *dirRepo) IndexGet() (types.LayoutIndex, error) {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
 	err := dr.indexLoad(false, true)
@@ -290,7 +290,7 @@ func (dr *dirRepo) IndexGet() (types.Index, error) {
 }
 
 // IndexInsert adds a new entry to the index and writes the change to index.json.
-func (dr *dirRepo) IndexInsert(desc types.Descriptor, opts ...types.IndexOpt) error {
+func (dr *dirRepo) IndexInsert(desc types.Descriptor, opts ...types.LayoutIndexOpt) error {
 	if *dr.conf.Storage.ReadOnly {
 		return types.ErrReadOnly
 	}
@@ -568,11 +568,13 @@ func (dr *dirRepo) indexLoad(force, locked bool) error {
 	}
 	if dr.index.MediaType == "" && len(dr.index.Manifests) == 0 {
 		// default values for the index if the load fails (does not exist or unparsable)
-		dr.index = types.Index{
-			SchemaVersion: 2,
-			MediaType:     types.MediaTypeOCI1ManifestList,
-			Manifests:     []types.Descriptor{},
-			Annotations:   map[string]string{},
+		dr.index = types.LayoutIndex{
+			Index: types.Index{
+				SchemaVersion: 2,
+				MediaType:     types.MediaTypeOCI1ManifestList,
+				Manifests:     []types.Descriptor{},
+				Annotations:   map[string]string{},
+			},
 		}
 		if *dr.conf.API.Referrer.Enabled {
 			dr.index.Annotations[types.AnnotReferrerConvert] = "true"
@@ -595,7 +597,7 @@ func (dr *dirRepo) indexLoad(force, locked bool) error {
 		// file is unchanged from previous loaded version
 		return nil
 	}
-	parseIndex := types.Index{}
+	parseIndex := types.LayoutIndex{}
 	err = json.NewDecoder(fh).Decode(&parseIndex)
 	if err != nil {
 		return err
