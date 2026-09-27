@@ -23,14 +23,46 @@ import (
 var (
 	// ErrBlobExists is returned when attempting to create a blob that already exists.
 	ErrBlobExists = errors.New("blob exists")
+	// ErrBlobUnknown is returned when the blob is unknown to the registry.
+	ErrBlobUnknown = errors.New("blob unknown")
+	// ErrBlobUploadInvalid is returned when the blob upload is invalid.
+	ErrBlobUploadInvalid = errors.New("blob upload invalid")
+	// ErrBlobUploadUnknown is returned when the blob upload is unknown to registry.
+	ErrBlobUploadUnknown = errors.New("blob upload unknown to registry")
+	// ErrDigestInvalid is returned when the provided digest did not match the uploaded content.
+	ErrDigestInvalid = errors.New("provided digest did not match uploaded content")
+	// ErrForbidden is returned when an action is not allowed.
+	ErrForbidden = errors.New("forbidden")
+	// ErrManifestBlobUnknown is returned when the manifest references a manifest or blob unknown to the registry.
+	ErrManifestBlobUnknown = errors.New("manifest references a manifest or blob unknown to registry")
+	// ErrManifestInvalid is returned when the manifest is invalid.
+	ErrManifestInvalid = errors.New("manifest invalid")
+	// ErrManifestUnknown is returned when the manifest unknown to the registry.
+	ErrManifestUnknown = errors.New("manifest unknown to registry")
+	// ErrNameInvalid is returned when the repository name is invalid.
+	ErrNameInvalid = errors.New("invalid repository name")
+	// ErrNameUnknown is returned when the repository name is not known to the registry.
+	ErrNameUnknown = errors.New("NAME_UNKNOWN")
 	// ErrNotFound is returned when a resource is not found.
 	ErrNotFound = errors.New("not found")
+	// ErrPaginationSkippedDescriptor is returned when a descriptor is too large to be included in pagination.
+	ErrPaginationSkippedDescriptor = errors.New("pagination skipped a descriptor")
 	// ErrParsingFailed is used to indicate the input not be parsed.
 	ErrParsingFailed = errors.New("parsing failed")
 	// ErrReadOnly is returned when the storage system does not permit write access.
 	ErrReadOnly = errors.New("read only storage")
 	// ErrRepoNotAllowed is used when a repository name is not permitted.
 	ErrRepoNotAllowed = errors.New("repository name is not permitted")
+	// ErrSizeInvalid is returned when provided length did not match the content length.
+	ErrSizeInvalid = errors.New("provided length did not match content length")
+	// ErrUnauthorized is returned when authentication is required.
+	ErrUnauthorized = errors.New("authentication required")
+	// ErrDenied is returned when the requested access to the resource is denied.
+	ErrDenied = errors.New("requested access to the resource is denied")
+	// ErrUnsupported is returned when the operation is unsupported.
+	ErrUnsupported = errors.New("the operation is unsupported")
+	// ErrTooManyRequests is returned when there are too many requests.
+	ErrTooManyRequests = errors.New("too many requests")
 )
 
 // ErrorResp is returned by the registry on an invalid request.

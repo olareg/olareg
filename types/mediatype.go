@@ -120,6 +120,15 @@ func MediaTypeImage(mt string) bool {
 	return false
 }
 
+// MediaTypeManifest returns true if the media type is a known manifest.
+func MediaTypeManifest(mt string) bool {
+	switch mt {
+	case MediaTypeDocker2Manifest, MediaTypeOCI1Manifest, MediaTypeDocker2ManifestList, MediaTypeOCI1ManifestList:
+		return true
+	}
+	return false
+}
+
 // mtDetect is a combination of index and image manifest contents.
 // The fields JSON is able to unmarshal help detect the media type of the raw manifest.
 type mtDetect struct {

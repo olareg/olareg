@@ -16,11 +16,12 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/olareg/olareg/types"
 )
 
 func TestServe(t *testing.T) {
@@ -39,7 +40,7 @@ func TestServe(t *testing.T) {
 		{
 			name:      "unknown-store",
 			args:      []string{"serve", "--store-type", "unknown"},
-			expectErr: fmt.Errorf(`unable to parse store type unknown: unknown store value "unknown"`),
+			expectErr: types.ErrNotFound,
 		},
 		{
 			name: "port",

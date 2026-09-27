@@ -24,4 +24,13 @@ const (
 	AnnotReferrerSubject = "org.olareg.referrer.subject"
 	// AnnotReferrerConvert is set to true to indicate any referrers in the OCI Layout pushed with the fallback tag have been converted to the referrer.subject annotation.
 	AnnotReferrerConvert = "org.olareg.referrer.convert"
+	// AnnotTagHistory is used on descriptors that point to the tag history.
+	// The value is the tag name.
+	AnnotTagHistory = "org.olareg.tag.history"
+	// AnnotTagEvent is an experimental pending the merge of https://github.com/opencontainers/distribution-spec/pull/606.
+	AnnotTagEvent        = "org.opencontainers.distribution.tag.event"
+	AnnotTagEventCreated = "created"
+	AnnotTagEventDeleted = "deleted"
+	// AnnotTagTimestamp is an experimental pending the merge of https://github.com/opencontainers/distribution-spec/pull/606.
+	AnnotTagTimestamp = "org.opencontainers.distribution.tag.timestamp"
 )

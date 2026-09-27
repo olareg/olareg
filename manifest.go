@@ -21,13 +21,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	digest "github.com/sudo-bmitch/oci-digest"
 
-	"github.com/olareg/olareg/internal/store"
 	"github.com/olareg/olareg/types"
 )
 
@@ -38,7 +36,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
 			return
 		}
-		repo, err := s.store.RepoGet(r.Context(), repoStr)
+		repo, err := s.backend.RepoGet(repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -49,57 +47,27 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
-		defer repo.Done()
-		index, err := repo.IndexGet()
-		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			_ = types.ErrRespJSON(w, types.ErrInfoNameUnknown("repository does not exist"))
-			return
-		}
-		// get descriptor for arg from index
-		desc, err := index.GetDesc(arg)
-		if err != nil || desc.Digest.String() == "" {
-			s.log.Debug("failed to get descriptor", "err", err, "repo", repoStr, "arg", arg)
-			w.WriteHeader(http.StatusNotFound)
-			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
-			return
-		}
-		// if referrers is enabled, remove entry from the referrers list
-		if *s.conf.API.Referrer.Enabled {
-			// wrap in a func to allow a return from errors without breaking the actual delete
-			err = func() error {
-				rdr, err := repo.BlobGet(desc.Digest)
-				if err != nil {
-					return err
-				}
-				raw, err := io.ReadAll(rdr)
-				_ = rdr.Close()
-				if err != nil {
-					return err
-				}
-				subject, refDesc, err := types.ManifestReferrerDescriptor(raw, desc)
-				if err != nil {
-					if errors.Is(err, types.ErrNotFound) {
-						return nil
-					}
-					return err
-				}
-				err = s.referrerDelete(repo, subject.Digest, refDesc)
-				if err != nil {
-					return err
-				}
-				return nil
-			}()
-			if err != nil {
-				s.log.Info("failed to delete entry from referrers response", "repo", repoStr, "arg", arg, "err", err)
+		if types.RefTagRE.MatchString(arg) {
+			err = repo.TagDelete(arg)
+			if err != nil && !errors.Is(err, types.ErrNotFound) {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Debug("failed to delete tag", "err", err, "repo", repoStr, "arg", arg)
+				return
 			}
-		}
-		// delete the digest or tag
-		err = repo.IndexRemove(desc)
-		if err != nil {
-			s.log.Debug("failed to remove manifest", "repo", repoStr, "arg", arg, "err", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+		} else {
+			dig, err := digest.Parse(arg)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("tag or digest invalid"))
+				s.log.Debug("failed to parse tag or digest", "repo", repoStr, "arg", arg, "err", err)
+				return
+			}
+			err = repo.ManifestDelete(dig)
+			if err != nil && !errors.Is(err, types.ErrNotFound) {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Debug("failed to delete manifest", "err", err, "repo", repoStr, "arg", arg)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusAccepted)
 	}
@@ -107,7 +75,7 @@ func (s *Server) manifestDelete(repoStr, arg string) http.HandlerFunc {
 
 func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repo, err := s.store.RepoGet(r.Context(), repoStr)
+		repo, err := s.backend.RepoGet(repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -118,75 +86,63 @@ func (s *Server) manifestGet(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
-		defer repo.Done()
-		index, err := repo.IndexGet()
-		if err != nil {
-			// TODO: handle different errors (perm denied, not found, internal server error)
-			w.WriteHeader(http.StatusNotFound)
-			_ = types.ErrRespJSON(w, types.ErrInfoNameUnknown("repository does not exist"))
-			return
-		}
-		// get descriptor for arg from index
-		desc, err := index.GetDesc(arg)
-		if err != nil || desc.Digest.String() == "" {
-			if r.Method != http.MethodHead {
-				s.log.Debug("failed to get descriptor", "err", err, "repo", repoStr, "arg", arg)
-			}
-			w.WriteHeader(http.StatusNotFound)
-			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
-			return
-		}
-		// if desc does not match requested accept header
-		acceptList := r.Header.Values("Accept")
-		if !types.MediaTypeAccepts(desc.MediaType, acceptList) {
-			// if accept header is defined, desc is an index, and arg is a tag
-			if len(acceptList) > 0 && types.MediaTypeIndex(desc.MediaType) && types.RefTagRE.MatchString(arg) {
-				// parse the index to find a matching media type
-				i := types.Index{}
-				rdr, err := repo.BlobGet(desc.Digest)
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				defer rdr.Close()
-				err = json.NewDecoder(rdr).Decode(&i)
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					s.log.Info("failed to parse index searching for a media type match", "err", err, "repo", repoStr, "arg", arg)
-					return
-				}
-				found := false
-				for _, d := range i.Manifests {
-					if types.MediaTypeAccepts(d.MediaType, acceptList) {
-						// use first match if found
-						desc = d
-						found = true
-						break
-					}
-				}
-				if !found {
-					w.WriteHeader(http.StatusNotFound)
-					_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("requested media type not found, available media type is "+desc.MediaType))
-					return
-				}
-			} else {
+		var dig digest.Digest
+		if types.RefTagRE.MatchString(arg) {
+			dig, err = repo.TagGet(arg)
+			if errors.Is(err, types.ErrNotFound) {
 				w.WriteHeader(http.StatusNotFound)
-				_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("requested media type not found, available media type is "+desc.MediaType))
+				_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag was not found in repository"))
+				return
+			} else if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Debug("failed to get tag", "err", err, "repo", repoStr, "arg", arg)
+				return
+			}
+		} else {
+			dig, err = digest.Parse(arg)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("tag or digest invalid"))
+				s.log.Debug("failed to parse tag or digest", "repo", repoStr, "arg", arg, "err", err)
 				return
 			}
 		}
-		rdr, err := repo.BlobGet(desc.Digest)
-		if err != nil {
-			s.log.Info("failed to open manifest blob", "err", err)
-			if errors.Is(err, types.ErrNotFound) || os.IsNotExist(err) {
-				w.WriteHeader(http.StatusNotFound)
-				_ = types.ErrRespJSON(w, types.ErrInfoManifestBlobUnknown("requested manifest was not found in blob store"))
-			} else {
+		desc, rdr, err := repo.ManifestGet(dig)
+		acceptList := r.Header.Values("Accept")
+		// if desc does not match requested accept header, but we are pulling an index by tag, try to find a matching descriptor
+		if err == nil && len(acceptList) > 0 && !types.MediaTypeAccepts(desc.MediaType, acceptList) &&
+			types.MediaTypeIndex(desc.MediaType) && types.RefTagRE.MatchString(arg) {
+			i := types.Index{}
+			err = json.NewDecoder(rdr).Decode(&i)
+			_ = rdr.Close()
+			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
+				s.log.Info("failed to parse index searching for a media type match", "err", err, "repo", repoStr, "arg", arg)
+				return
 			}
+			for _, d := range i.Manifests {
+				if types.MediaTypeAccepts(d.MediaType, acceptList) {
+					// use first match if found
+					desc, rdr, err = repo.ManifestGet(d.Digest)
+					break
+				}
+			}
+		}
+		if errors.Is(err, types.ErrNotFound) {
+			w.WriteHeader(http.StatusNotFound)
+			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("tag or digest was not found in repository"))
+			return
+		} else if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			s.log.Info("failed to retrieve manifest", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
 		defer rdr.Close()
+		if !types.MediaTypeAccepts(desc.MediaType, acceptList) {
+			w.WriteHeader(http.StatusNotFound)
+			_ = types.ErrRespJSON(w, types.ErrInfoManifestUnknown("requested media type not found, available media type is "+desc.MediaType))
+			return
+		}
 		w.Header().Add("Content-Type", desc.MediaType)
 		w.Header().Add(types.HeaderDockerDigest, desc.Digest.String())
 		// use ServeContent to handle range requests
@@ -201,9 +157,8 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			_ = types.ErrRespJSON(w, types.ErrInfoDenied("repository is read-only"))
 			return
 		}
-		var dExpect digest.Digest
-		addOpts := []types.LayoutIndexOpt{}
-		repo, err := s.store.RepoGet(r.Context(), repoStr)
+		var dig digest.Digest
+		repo, err := s.backend.RepoGet(repoStr)
 		if err != nil {
 			if errors.Is(err, types.ErrRepoNotAllowed) {
 				w.WriteHeader(http.StatusBadRequest)
@@ -214,40 +169,16 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to get repo", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
-		defer repo.Done()
 		// parse/validate headers
 		mt := r.Header.Get("content-type")
 		mt, _, _ = strings.Cut(mt, ";")
 		mt = strings.TrimSpace(strings.ToLower(mt))
-		switch mt {
-		case types.MediaTypeDocker2Manifest, types.MediaTypeDocker2ManifestList,
-			types.MediaTypeOCI1Manifest, types.MediaTypeOCI1ManifestList:
-			// valid types, noop
-		case "":
-			// detect media type later if unset
-		default:
-			// fail fast
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("unsupported media type: "+mt))
-			s.log.Debug("unsupported media type", "repo", repoStr, "arg", arg, "mediaType", mt)
-			return
-		}
 		if r.ContentLength > s.conf.API.Manifest.Limit {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid(fmt.Sprintf("manifest too large, limited to %d bytes", s.conf.API.Manifest.Limit)))
 			return
 		}
 		// parse params
-		// TODO(bmitch): the digest field is deprecated and will be removed in the future
-		if dStr := r.URL.Query().Get("digest"); dStr != "" {
-			dExpect, err = digest.Parse(dStr)
-			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest invalid"))
-				s.log.Debug("failed to parse digest", "repo", repoStr, "digest", dStr, "err", err)
-				return
-			}
-		}
 		// read and validate the tags
 		tags := r.URL.Query()["tag"]
 		for _, tag := range tags {
@@ -259,6 +190,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			}
 		}
 		// parse arg
+		pushByDig := false
 		if types.RefTagRE.MatchString(arg) {
 			if len(tags) > 0 {
 				w.WriteHeader(http.StatusBadRequest)
@@ -268,14 +200,14 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			}
 			tags = []string{arg}
 		} else {
-			var err error
-			dExpect, err = digest.Parse(arg)
+			dig, err = digest.Parse(arg)
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("tag or digest invalid"))
 				s.log.Debug("failed to parse tag or digest", "repo", repoStr, "arg", arg, "err", err)
 				return
 			}
+			pushByDig = true
 		}
 		// read manifest
 		rLimit := io.LimitReader(r.Body, s.conf.API.Manifest.Limit)
@@ -285,213 +217,50 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			s.log.Info("failed to read manifest", "repo", repoStr, "arg", arg, "err", err)
 			return
 		}
-		// verify / set digest
-		dAlgo := digest.Canonical
-		if !dExpect.IsZero() {
-			dAlgo = dExpect.Algorithm()
-		}
-		d, err := dAlgo.FromBytes(mRaw)
+		// push manifest to the backend
+		desc, procTags, subjDig, err := repo.ManifestPut(mRaw, mt, dig, tags)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			s.log.Debug("failed to generate digest", "repo", repoStr, "arg", arg)
-			return
-		}
-		if !dExpect.IsZero() && !d.Equal(dExpect) {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid("digest mismatch, expected "+d.String()))
-			s.log.Debug("content digest did not match request", "repo", repoStr, "arg", arg, "expect", d.String())
-			return
-		}
-		// if mt == "", detect media type
-		if mt == "" {
-			mt = types.MediaTypeDetect(mRaw)
-		}
-		// parse and validate image or index contents
-		var subject digest.Digest
-		var referrer *types.Descriptor
-		switch mt {
-		case types.MediaTypeOCI1Manifest, types.MediaTypeDocker2Manifest:
-			m := types.Manifest{}
-			err = json.Unmarshal(mRaw, &m)
-			if err != nil {
+			if errors.Is(err, types.ErrManifestInvalid) {
 				w.WriteHeader(http.StatusBadRequest)
-				_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("manifest could not be parsed"))
-				s.log.Debug("failed to parse image manifest", "repo", repoStr, "arg", arg, "mediaType", mt, "err", err)
+				_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid(err.Error()))
+				s.log.Debug("failed to push manifest (invalid)", "repo", repoStr, "arg", arg, "err", err)
 				return
-			}
-			// validate image blobs exist
-			eList := s.manifestVerifyImage(repo, m)
-			if eList != nil {
+			} else if errors.Is(err, types.ErrDigestInvalid) {
 				w.WriteHeader(http.StatusBadRequest)
-				_ = types.ErrRespJSON(w, eList...)
-				s.log.Debug("manifest blobs missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
+				_ = types.ErrRespJSON(w, types.ErrInfoDigestInvalid(err.Error()))
+				s.log.Debug("failed to push manifest (bad digest)", "repo", repoStr, "arg", arg, "err", err)
 				return
-			}
-			if m.Subject != nil && !m.Subject.Digest.IsZero() && *s.conf.API.Referrer.Enabled {
-				subject = m.Subject.Digest
-				referrer = &types.Descriptor{
-					MediaType:    mt,
-					ArtifactType: m.ArtifactType,
-					Size:         int64(len(mRaw)),
-					Digest:       d,
-					Annotations:  m.Annotations,
-				}
-				if m.ArtifactType == "" {
-					referrer.ArtifactType = m.Config.MediaType
-				}
-			}
-		case types.MediaTypeOCI1ManifestList, types.MediaTypeDocker2ManifestList:
-			m := types.Index{}
-			err = json.Unmarshal(mRaw, &m)
-			if err != nil {
+			} else if errors.Is(err, types.ErrManifestBlobUnknown) {
 				w.WriteHeader(http.StatusBadRequest)
-				_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("manifest could not be parsed"))
-				s.log.Debug("failed to parse image manifest", "repo", repoStr, "arg", arg, "mediaType", mt, "err", err)
+				_ = types.ErrRespJSON(w, types.ErrInfoManifestBlobUnknown(err.Error()))
+				s.log.Debug("failed to push manifest (blob unknown)", "repo", repoStr, "arg", arg, "err", err)
 				return
-			}
-			addOpts = append(addOpts, types.LayoutWithChildren(m.Manifests))
-			// validate manifests exist
-			eList := s.manifestVerifyIndex(repo, m)
-			if eList != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				_ = types.ErrRespJSON(w, eList...)
-				s.log.Debug("child manifests missing", "repo", repoStr, "arg", arg, "mediaType", mt, "errList", eList)
-				return
-			}
-			if m.Subject != nil && !m.Subject.Digest.IsZero() && *s.conf.API.Referrer.Enabled {
-				subject = m.Subject.Digest
-				referrer = &types.Descriptor{
-					MediaType:    mt,
-					ArtifactType: m.ArtifactType,
-					Size:         int64(len(mRaw)),
-					Digest:       d,
-					Annotations:  m.Annotations,
-				}
-			}
-		default:
-			w.WriteHeader(http.StatusBadRequest)
-			_ = types.ErrRespJSON(w, types.ErrInfoManifestInvalid("unsupported media type: "+mt))
-			s.log.Debug("unsupported media type", "repo", repoStr, "arg", arg, "mediaType", mt)
-			return
-		}
-		// push to blob store
-		bc, _, err := repo.BlobCreate(store.BlobWithDigest(d))
-		if err != nil && !errors.Is(err, types.ErrBlobExists) {
-			w.WriteHeader(http.StatusInternalServerError)
-			s.log.Info("failed to create blob", "repo", repoStr, "arg", arg, "err", err)
-			return
-		} else if err == nil {
-			_, err = bc.Write(mRaw)
-			if err != nil {
-				_ = bc.Close()
+			} else {
 				w.WriteHeader(http.StatusInternalServerError)
-				s.log.Info("failed to write blob", "repo", repoStr, "arg", arg, "err", err)
-				return
-			}
-			err = bc.Close()
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				s.log.Info("failed to close blob", "repo", repoStr, "arg", arg, "err", err)
+				s.log.Info("failed to push manifest", "repo", repoStr, "arg", arg, "err", err)
 				return
 			}
 		}
-		// add entry to index
-		desc := types.Descriptor{
-			MediaType: mt,
-			Size:      int64(len(mRaw)),
-			Digest:    d,
-		}
-		if len(tags) == 0 {
-			err = repo.IndexInsert(desc, addOpts...)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				s.log.Info("failed to create index entry", "repo", repoStr, "arg", arg, "err", err)
-				return
-			}
-		} else {
-			for _, tag := range tags {
-				desc.Annotations = map[string]string{
-					types.AnnotRefName: tag,
-				}
-				err = repo.IndexInsert(desc, addOpts...)
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					s.log.Info("failed to create index entry", "repo", repoStr, "arg", arg, "err", err)
-					return
-				}
+		// report processed tags when pushing by digest
+		if pushByDig {
+			for _, tag := range procTags {
 				w.Header().Add("OCI-Tag", tag)
 			}
 		}
-		// push/update referrer if detected
-		if !subject.IsZero() {
-			err = s.referrerAdd(repo, subject, *referrer)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				s.log.Info("failed to add referrer", "repo", repoStr, "arg", arg, "err", err)
-				return
-			}
-			w.Header().Set("OCI-Subject", subject.String())
+		// set subject header if referrers were updated
+		if !subjDig.IsZero() {
+			w.Header().Set("OCI-Subject", subjDig.String())
 		}
 		// set the location header
 		//#nosec G125 all variables in the path have been sanitized
-		loc, err := url.JoinPath("/v2", repoStr, "manifests", d.String())
+		loc, err := url.JoinPath("/v2", repoStr, "manifests", desc.Digest.String())
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			s.log.Error("failed to build location header for manifest put", "err", err, "repo", repoStr, "arg", arg)
 			return
 		}
 		w.Header().Set("location", loc)
-		w.Header().Add(types.HeaderDockerDigest, d.String())
+		w.Header().Add(types.HeaderDockerDigest, desc.Digest.String())
 		w.WriteHeader(http.StatusCreated)
 	}
-}
-
-func (s *Server) manifestVerifyImage(repo store.Repo, m types.Manifest) []types.ErrorInfo {
-	es := []types.ErrorInfo{}
-	if *s.conf.API.Manifest.SparseImage {
-		return nil
-	}
-	if len(m.Config.URLs) == 0 {
-		r, err := repo.BlobGet(m.Config.Digest)
-		if err != nil {
-			es = append(es, types.ErrInfoManifestBlobUnknown("config not found: "+m.Config.Digest.String()))
-		} else {
-			_ = r.Close()
-		}
-	}
-	for _, d := range m.Layers {
-		// foreign layers and non-distributable media types may not have the blob stored locally
-		if types.MediaTypeForeign(d.MediaType) || len(d.URLs) > 0 {
-			continue
-		}
-		r, err := repo.BlobGet(d.Digest)
-		if err != nil {
-			es = append(es, types.ErrInfoManifestBlobUnknown("layer not found: "+d.Digest.String()))
-		} else {
-			_ = r.Close()
-		}
-	}
-	if len(es) > 0 {
-		return es
-	}
-	return nil
-}
-
-func (s *Server) manifestVerifyIndex(repo store.Repo, m types.Index) []types.ErrorInfo {
-	es := []types.ErrorInfo{}
-	if *s.conf.API.Manifest.SparseIndex {
-		return nil
-	}
-	for _, d := range m.Manifests {
-		r, err := repo.BlobGet(d.Digest)
-		if err != nil {
-			es = append(es, types.ErrInfoManifestBlobUnknown("manifest not found: "+d.Digest.String()))
-		} else {
-			_ = r.Close()
-		}
-	}
-	if len(es) > 0 {
-		return es
-	}
-	return nil
 }

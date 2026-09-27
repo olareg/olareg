@@ -76,15 +76,16 @@ func TestServer(t *testing.T) {
 	boolF := false
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ttServer := []struct {
-		name             string
-		conf             config.Config
-		existing         bool
-		readOnly         bool
-		deleteDisabled   bool
-		referrerDisabled bool
-		testGC           bool
-		testSparse       bool
-		testWarn         bool
+		name               string
+		conf               config.Config
+		existing           bool
+		readOnly           bool
+		deleteDisabled     bool
+		referrerDisabled   bool
+		tagHistoryDisabled bool
+		testGC             bool
+		testSparse         bool
+		testWarn           bool
 	}{
 		{
 			name: "Mem",
@@ -102,6 +103,9 @@ func TestServer(t *testing.T) {
 					},
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
+					},
+					TagHistory: config.ConfigAPITagHistory{
+						Limit: 5 * 1024,
 					},
 					Warnings: []string{warningMsg},
 				},
@@ -132,6 +136,9 @@ func TestServer(t *testing.T) {
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
+					TagHistory: config.ConfigAPITagHistory{
+						Limit: 5 * 1024,
+					},
 					Warnings: []string{warningMsg},
 				},
 				Log: logger,
@@ -156,6 +163,9 @@ func TestServer(t *testing.T) {
 					},
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
+					},
+					TagHistory: config.ConfigAPITagHistory{
+						Limit: 5 * 1024,
 					},
 				},
 				Log: logger,
@@ -185,16 +195,20 @@ func TestServer(t *testing.T) {
 					Referrer: config.ConfigAPIReferrer{
 						Enabled: &boolF,
 					},
+					TagHistory: config.ConfigAPITagHistory{
+						Enabled: &boolF,
+					},
 					Warnings: []string{warningMsg},
 				},
 				Log: logger,
 			},
-			existing:         true,
-			deleteDisabled:   true,
-			referrerDisabled: true,
-			testGC:           false,
-			testSparse:       true,
-			testWarn:         true,
+			existing:           true,
+			deleteDisabled:     true,
+			referrerDisabled:   true,
+			tagHistoryDisabled: true,
+			testGC:             false,
+			testSparse:         true,
+			testWarn:           true,
 		},
 		{
 			name: "Dir",
@@ -213,6 +227,9 @@ func TestServer(t *testing.T) {
 					},
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
+					},
+					TagHistory: config.ConfigAPITagHistory{
+						Limit: 5 * 1024,
 					},
 				},
 				Log: logger,
@@ -243,6 +260,9 @@ func TestServer(t *testing.T) {
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
+					TagHistory: config.ConfigAPITagHistory{
+						Limit: 5 * 1024,
+					},
 				},
 				Log: logger,
 			},
@@ -261,6 +281,9 @@ func TestServer(t *testing.T) {
 					Referrer: config.ConfigAPIReferrer{
 						Limit: 512 * 1024,
 					},
+					TagHistory: config.ConfigAPITagHistory{
+						Limit: 512 * 1024,
+					},
 					Warnings: []string{warningMsg},
 				},
 				Log: logger,
@@ -274,7 +297,10 @@ func TestServer(t *testing.T) {
 		t.Run(tcServer.name, func(t *testing.T) {
 			t.Parallel()
 			// new server
-			s := New(tcServer.conf)
+			s, err := New(tcServer.conf)
+			if err != nil {
+				t.Fatalf("failed to initialize server: %v", err)
+			}
 			t.Cleanup(func() { _ = s.Close() })
 			t.Run("Unknown Method", func(t *testing.T) {
 				t.Parallel()
@@ -785,7 +811,7 @@ func TestServer(t *testing.T) {
 					t.Errorf("failed to pull entry after recreating server: %v", err)
 				}
 				// verify GC
-				if _, err := testClientRun(t, s, "GET", "/v2/gc/manifest/amd64-copy", nil,
+				if _, err := testClientRun(t, s, "GET", "/v2/gc/manifests/amd64-copy", nil,
 					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
@@ -795,7 +821,7 @@ func TestServer(t *testing.T) {
 				} else {
 					t.Log("amd64-copy was garbage collected")
 				}
-				if _, err := testClientRun(t, s, "GET", "/v2/gc/manifest/arm64", nil,
+				if _, err := testClientRun(t, s, "GET", "/v2/gc/manifests/arm64", nil,
 					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
 					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
 					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
@@ -813,7 +839,7 @@ func TestServer(t *testing.T) {
 						testClientRespStatus(http.StatusNotFound)); err != nil {
 						t.Errorf("did not receive a not-found error on a GC blob: %v", err)
 					} else {
-						t.Logf("blog GC verified: %s", dig.String())
+						t.Logf("blob GC verified: %s", dig.String())
 					}
 				}
 				for dig := range seAMD.blob {
@@ -821,7 +847,7 @@ func TestServer(t *testing.T) {
 						testClientRespStatus(http.StatusOK)); err != nil {
 						t.Errorf("GC blob of image that should have been preserved: %v", err)
 					} else {
-						t.Logf("blog retention verified: %s", dig.String())
+						t.Logf("blob retention verified: %s", dig.String())
 					}
 				}
 			})
@@ -1160,7 +1186,7 @@ func TestServer(t *testing.T) {
 					}
 					return
 				}
-				nextLink, err := parseLinkHeader(resp.Result().Header.Get("link"))
+				nextLink, err := parseLinkHeader(path, resp.Result().Header.Get("link"))
 				if err != nil {
 					t.Fatalf("%v", err)
 				}
@@ -1203,7 +1229,7 @@ func TestServer(t *testing.T) {
 						}
 						return
 					}
-					nextLink, err = parseLinkHeader(resp.Result().Header.Get("link"))
+					nextLink, err = parseLinkHeader(nextLink, resp.Result().Header.Get("link"))
 					if err != nil {
 						t.Fatalf("%v", err)
 					}
@@ -1525,105 +1551,6 @@ func TestServer(t *testing.T) {
 					t.Errorf("failed to delete index by digest: %v", err)
 				}
 			})
-			t.Run("digest-algo-unknown", func(t *testing.T) {
-				if tcServer.readOnly || tcServer.testGC || tcServer.deleteDisabled {
-					return
-				}
-				t.Parallel()
-				repo := "digest-unknown"
-				sd, err := genSampleData(t)
-				if err != nil {
-					t.Fatalf("failed to generate sample data")
-				}
-				// create a digest with an unknown algorithm
-				badDig := "unknown:12345"
-				// attempt to get/head blob
-				u, err := url.Parse("/v2/" + repo + "/blobs/" + badDig)
-				if err != nil {
-					t.Fatalf("failed to parse URL: %v", err)
-				}
-				_, err = testClientRun(t, s, "HEAD", u.String(), nil,
-					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send head request: %v", err)
-				}
-				_, err = testClientRun(t, s, "GET", u.String(), nil,
-					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send get request: %v", err)
-				}
-				// attempt to delete blob
-				_, err = testClientRun(t, s, "DELETE", u.String(), nil,
-					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send delete request: %v", err)
-				}
-				// attempt to push blob
-				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/?digest=" + url.QueryEscape(badDig))
-				if err != nil {
-					t.Fatalf("failed to parse URL: %v", err)
-				}
-				_, err = testClientRun(t, s, "POST", u.String(), nil,
-					testClientRespStatus(http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send blob post with digest: %v", err)
-				}
-				u, err = url.Parse("/v2/" + repo + "/blobs/uploads/?digest-algorithm=unknown")
-				if err != nil {
-					t.Fatalf("failed to parse URL: %v", err)
-				}
-				_, err = testClientRun(t, s, "POST", u.String(), nil,
-					testClientRespStatus(http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send blob post with algorithm: %v", err)
-				}
-				// attempt to get/head manifest
-				u, err = url.Parse("/v2/" + repo + "/manifests/" + badDig)
-				if err != nil {
-					t.Fatalf("failed to parse URL: %v", err)
-				}
-				_, err = testClientRun(t, s, "HEAD", u.String(), nil,
-					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
-					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
-					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
-					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
-					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send manifest head: %v", err)
-				}
-				_, err = testClientRun(t, s, "GET", u.String(), nil,
-					testClientReqHeader("Accept", types.MediaTypeOCI1Manifest),
-					testClientReqHeader("Accept", types.MediaTypeOCI1ManifestList),
-					testClientReqHeader("Accept", types.MediaTypeDocker2Manifest),
-					testClientReqHeader("Accept", types.MediaTypeDocker2ManifestList),
-					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send manifest get: %v", err)
-				}
-				// attempt to push manifest
-				_, err = testClientRun(t, s, "PUT", u.String(), sd["image-amd64"].manifest[sd["image-amd64"].manifestList[0]],
-					testClientReqHeader("Content-Type", types.MediaTypeOCI1Manifest),
-					testClientRespStatus(http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send manifest put: %v", err)
-				}
-				u, err = url.Parse("/v2/" + repo + "/manifests/bad?digest=" + url.QueryEscape(badDig))
-				if err != nil {
-					t.Fatalf("failed to parse URL: %v", err)
-				}
-				_, err = testClientRun(t, s, "PUT", u.String(), sd["image-amd64"].manifest[sd["image-amd64"].manifestList[0]],
-					testClientReqHeader("Content-Type", types.MediaTypeOCI1Manifest),
-					testClientRespStatus(http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send manifest put: %v", err)
-				}
-				// attempt to delete manifest
-				_, err = testClientRun(t, s, "DELETE", u.String(), nil,
-					testClientRespStatus(http.StatusNotFound, http.StatusBadRequest))
-				if err != nil {
-					t.Errorf("failed to send manifest delete: %v", err)
-				}
-			})
 			t.Run("warning", func(t *testing.T) {
 				if !tcServer.testWarn {
 					return
@@ -1737,6 +1664,194 @@ func TestServer(t *testing.T) {
 					}
 				}
 			})
+			t.Run("tag-history", func(t *testing.T) {
+				if tcServer.readOnly || tcServer.testGC || tcServer.deleteDisabled || tcServer.tagHistoryDisabled {
+					return
+				}
+				se1 := *sd["image-amd64"]
+				se2 := *sd["image-arm64"]
+				se3 := *sd["index"]
+				tcgList := []testClientGen{
+					testClientRespStatus(http.StatusOK),
+					testClientRespHeader("Content-Type", types.MediaTypeOCI1ManifestList),
+				}
+				t.Parallel()
+				var i types.Index
+				// push two images to the same tag
+				if err := testSampleEntryPush(t, s, se1, "tag-history", "tag"); err != nil {
+					return
+				}
+				if err := testSampleEntryPush(t, s, se2, "tag-history", "tag"); err != nil {
+					return
+				}
+				// sleep for 1 second, get the current time, sleep for 1 second
+				time.Sleep(time.Second)
+				midpoint := time.Now().UTC().Format(time.RFC3339)
+				time.Sleep(time.Second)
+				// delete the tag
+				if _, err := testAPIManifestRm(t, s, "tag-history", "tag"); err != nil {
+					return
+				}
+				// push an image to the tag
+				if err := testSampleEntryPush(t, s, se3, "tag-history", "tag"); err != nil {
+					return
+				}
+				// query with 0 entries
+				resp, err := testClientRun(t, s, http.MethodGet, "/v2/tag-history/_oci/tag-history/tag?n=0", nil, tcgList...)
+				if err != nil {
+					return
+				}
+				i = types.Index{}
+				err = json.NewDecoder(resp.Body).Decode(&i)
+				if err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if len(i.Manifests) != 0 {
+					t.Errorf("history length mismatch, expected 0, received %d", len(i.Manifests))
+				}
+				// query the full tag history
+				resp, err = testClientRun(t, s, http.MethodGet, "/v2/tag-history/_oci/tag-history/tag", nil, tcgList...)
+				if err != nil {
+					return
+				}
+				i = types.Index{}
+				err = json.NewDecoder(resp.Body).Decode(&i)
+				if err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if len(i.Manifests) != 4 {
+					t.Errorf("history length mismatch, expected 4, received %d", len(i.Manifests))
+				}
+				// repeat the request to hit the cache
+				resp, err = testClientRun(t, s, http.MethodGet, "/v2/tag-history/_oci/tag-history/tag", nil, tcgList...)
+				if err != nil {
+					return
+				}
+				i = types.Index{}
+				err = json.NewDecoder(resp.Body).Decode(&i)
+				if err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if len(i.Manifests) != 4 {
+					t.Errorf("history length mismatch, expected 4, received %d", len(i.Manifests))
+				}
+				// query after the midpoint
+				resp, err = testClientRun(t, s, http.MethodGet, "/v2/tag-history/_oci/tag-history/tag?since="+url.QueryEscape(midpoint), nil, tcgList...)
+				if err != nil {
+					return
+				}
+				i = types.Index{}
+				err = json.NewDecoder(resp.Body).Decode(&i)
+				if err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if len(i.Manifests) != 2 {
+					t.Errorf("history length mismatch, expected 2, received %d", len(i.Manifests))
+				} else if !i.Manifests[0].Digest.Equal(se3.manifestList[len(se3.manifestList)-1]) {
+					t.Errorf("last entry does not match last digest tagged, expected %s, received %s",
+						se3.manifestList[len(se3.manifestList)-1].String(),
+						i.Manifests[0].Digest.String())
+				}
+				// query before the midpoint
+				resp, err = testClientRun(t, s, http.MethodGet, "/v2/tag-history/_oci/tag-history/tag?before="+url.QueryEscape(midpoint), nil, tcgList...)
+				if err != nil {
+					return
+				}
+				i = types.Index{}
+				err = json.NewDecoder(resp.Body).Decode(&i)
+				if err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if len(i.Manifests) != 2 {
+					t.Errorf("history length mismatch, expected 2, received %d", len(i.Manifests))
+				} else if !i.Manifests[1].Digest.Equal(se1.manifestList[len(se1.manifestList)-1]) {
+					t.Errorf("first entry does not match last digest tagged, expected %s, received %s",
+						se1.manifestList[len(se1.manifestList)-1].String(),
+						i.Manifests[1].Digest.String())
+				}
+			})
+			t.Run("tag-history pagination", func(t *testing.T) {
+				if tcServer.readOnly || tcServer.testGC || tcServer.deleteDisabled || tcServer.tagHistoryDisabled {
+					return
+				}
+				reqCount := 30
+				se1 := *sd["image-amd64"]
+				se2 := *sd["image-arm64"]
+				tcgList := []testClientGen{
+					testClientRespStatus(http.StatusOK),
+					testClientRespHeader("Content-Type", types.MediaTypeOCI1ManifestList),
+				}
+				t.Parallel()
+				// push two images to send the layers and config
+				if err := testSampleEntryPush(t, s, se1, "tag-history-paginate", "tag"); err != nil {
+					return
+				}
+				if err := testSampleEntryPush(t, s, se2, "tag-history-paginate", "tag"); err != nil {
+					return
+				}
+				// push enough tags to trigger pagination
+				m1 := se1.manifest[se1.manifestList[len(se1.manifestList)-1]]
+				m2 := se2.manifest[se2.manifestList[len(se2.manifestList)-1]]
+				for range reqCount {
+					if _, err := testAPIManifestPut(t, s, "tag-history-paginate", "paginate", m1); err != nil {
+						return
+					}
+					if _, err := testAPIManifestPut(t, s, "tag-history-paginate", "paginate", m2); err != nil {
+						return
+					}
+				}
+				path := "/v2/tag-history-paginate/_oci/tag-history/paginate"
+				resp, err := testClientRun(t, s, http.MethodGet, path, nil, tcgList...)
+				if err != nil {
+					return
+				}
+				nextLink, err := parseLinkHeader(path, resp.Result().Header.Get("link"))
+				if err != nil {
+					t.Fatalf("%v", err)
+				}
+				if nextLink == "" {
+					t.Errorf("tag-history did not trigger pagination, size = %d", resp.Result().ContentLength)
+				}
+				pageCount := 1
+				i := types.Index{}
+				err = json.NewDecoder(resp.Body).Decode(&i)
+				if err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				// push another tag change while pagination results are being returned from the cache
+				if _, err := testAPIManifestPut(t, s, "tag-history-paginate", "paginate", m1); err != nil {
+					return
+				}
+				if _, err := testAPIManifestPut(t, s, "tag-history-paginate", "paginate", m2); err != nil {
+					return
+				}
+				// get the rest of the paginated results
+				for nextLink != "" {
+					resp, err = testClientRun(t, s, "GET", nextLink, nil, tcgList...)
+					if err != nil {
+						if !errors.Is(err, errValidationFailed) {
+							t.Errorf("failed to send tag-history request: %v", err)
+						}
+						return
+					}
+					nextLink, err = parseLinkHeader(nextLink, resp.Result().Header.Get("link"))
+					if err != nil {
+						t.Fatalf("%v", err)
+					}
+					iPage := types.Index{}
+					err = json.NewDecoder(resp.Result().Body).Decode(&iPage)
+					if err != nil {
+						t.Fatalf("failed to decode tag history body: %v", err)
+					}
+					i.Manifests = append(i.Manifests, iPage.Manifests...)
+					pageCount++
+				}
+				t.Logf("received %d pages of tag-history", pageCount)
+				if len(i.Manifests) != reqCount*2 {
+					t.Errorf("tag-history paginated response count expected %d, received %d", reqCount*2, len(i.Manifests))
+				}
+			})
+			// TODO: test tag history disabled to verify API responds appropriately
 			// TODO: test tag listing before and after pushing manifest
 			// TODO: test blob chunked upload, stream upload, and blob mount
 		})
@@ -1835,7 +1950,10 @@ func TestAuth(t *testing.T) {
 		t.Run(tcServer.name, func(t *testing.T) {
 			t.Parallel()
 			// new server
-			s := New(tcServer.conf)
+			s, err := New(tcServer.conf)
+			if err != nil {
+				t.Fatalf("failed to initialize backend server: %v", err)
+			}
 			t.Cleanup(func() { _ = s.Close() })
 			t.Run("unauth read", func(t *testing.T) {
 				tcgList := []testClientGen{
@@ -1920,7 +2038,7 @@ func TestAuth(t *testing.T) {
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 	limit := 10
-	s := New(config.Config{
+	s, err := New(config.Config{
 		Storage: config.ConfigStorage{
 			StoreType: config.StoreMem,
 		},
@@ -1928,6 +2046,9 @@ func TestRateLimit(t *testing.T) {
 			RateLimit: limit,
 		},
 	})
+	if err != nil {
+		t.Fatalf("failed to initialize server: %v", err)
+	}
 	t.Cleanup(func() { _ = s.Close() })
 	reachedLimit := false
 	for range limit * 2 {
@@ -1947,7 +2068,7 @@ func TestRateLimit(t *testing.T) {
 	if !reachedLimit {
 		t.Errorf("never reached rate limit")
 	}
-	_, err := testClientRun(t, s, "GET", "/v2/", nil,
+	_, err = testClientRun(t, s, "GET", "/v2/", nil,
 		testClientReqHeader("X-Forwarded-For", "127.0.0.2"),
 		testClientRespStatus(http.StatusOK))
 	if err != nil {
@@ -2815,14 +2936,23 @@ func detectMediaType(b []byte) string {
 
 var linkRegexp = regexp.MustCompile(`^<([^>]+)>; rel=next$`)
 
-func parseLinkHeader(s string) (string, error) {
-	if s == "" {
+func parseLinkHeader(prevPath, linkHeader string) (string, error) {
+	if linkHeader == "" {
 		return "", nil
 	}
-	if match := linkRegexp.FindStringSubmatch(s); len(match) > 1 {
-		return match[1], nil
+	match := linkRegexp.FindStringSubmatch(linkHeader)
+	if len(match) <= 1 {
+		return "", fmt.Errorf("failed to parse link header: %s", linkHeader)
 	}
-	return "", fmt.Errorf("failed to parse link header: %s", s)
+	u, err := url.Parse(prevPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse previous path: %w", err)
+	}
+	next, err := u.Parse(match[1])
+	if err != nil {
+		return "", fmt.Errorf("failed to apply relative path to URL: %w", err)
+	}
+	return next.String(), nil
 }
 
 type nopWriteCloser struct {

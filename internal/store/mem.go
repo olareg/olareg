@@ -16,115 +16,96 @@ package store
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
+	"iter"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/config"
-	"github.com/olareg/olareg/internal/cache"
-	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/types"
 )
+
+// mem is the in memory representation of an OCI Layout.
+// When holding multiple mutex locks simultaneously, always start from fine grain lock first (memRepoUpload, then memRepo, then mem) to avoid deadlocks.
 
 type mem struct {
 	mu    sync.Mutex
 	repos map[string]*memRepo
+	blobs map[digest.Digest]*memBlob
 	log   *slog.Logger
-	conf  config.Config
-	wg    sync.WaitGroup
-	stop  chan struct{}
+	conf  config.ConfigStorage
+	next  Store
 }
 
 type memRepo struct {
-	mu      sync.Mutex
-	wg      sync.WaitGroup
-	wgBlock chan struct{}
-	timeMod time.Time
-	index   types.LayoutIndex
-	blobs   map[digest.Digest]*memRepoBlob
-	uploads *cache.Cache[string, *memRepoUpload]
-	log     *slog.Logger
-	path    string
-	conf    config.Config
+	mu    sync.Mutex
+	m     *mem
+	name  string
+	index types.LayoutIndex
+	blobs map[digest.Digest]*memRepoBlob
+	next  Repo
+}
+
+type memBlob struct {
+	b        []byte
+	refCount int
 }
 
 type memRepoBlob struct {
-	b []byte
-	m blobMeta
+	b   []byte
+	mod time.Time
 }
 
 type memRepoUpload struct {
-	mu        sync.Mutex
-	buffer    *bytes.Buffer
-	alg       digest.Algorithm
-	w         digest.Writer
-	expect    digest.Digest
-	mr        *memRepo
-	sessionID string
+	mu     sync.Mutex
+	buffer *bytes.Buffer
+	mr     *memRepo
 }
 
-func NewMem(conf config.Config, opts ...Opts) Store {
-	sc := storeConf{}
+// newMem creates a new memory backed store.
+func newMem(conf config.ConfigStorage, opts ...Opts) (Store, error) {
+	op := OptParams{
+		log: slog.New(slog.DiscardHandler),
+	}
 	for _, opt := range opts {
-		opt(&sc)
+		opt(&op)
 	}
 	m := &mem{
 		repos: map[string]*memRepo{},
-		log:   sc.log,
+		blobs: map[digest.Digest]*memBlob{},
+		log:   op.log,
 		conf:  conf,
-		stop:  make(chan struct{}),
 	}
-	if m.log == nil {
-		// TODO: update to automatically discarding logger in future Go release
-		// https://github.com/golang/go/issues/62005
-		m.log = slog.New(sloghandle.Discard)
+	if conf.RootDir != "" {
+		// configure directory backend as a read-only fallthrough storage
+		dirConf := conf
+		bTrue := true
+		dirConf.ReadOnly = &bTrue
+		dir, err := newDir(dirConf, opts...)
+		if err != nil {
+			return nil, err
+		}
+		m.next = dir
 	}
-	if !*m.conf.Storage.ReadOnly && m.conf.Storage.GC.Frequency > 0 {
-		m.wg.Add(1)
-		go m.gcTicker()
-	}
-	return m
+	return m, nil
 }
 
-func (m *mem) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
+// repoGet returns an existing repo or initializes a new one.
+func (m *mem) RepoGet(repo string) (Repo, error) {
 	m.mu.Lock()
-	locked := true
-	defer func() {
-		if locked {
-			m.mu.Unlock()
-		}
-	}()
-	// if stop ch was closed, fail
-	select {
-	case <-m.stop:
-		return nil, fmt.Errorf("cannot get repo after Close")
-	default:
+	defer m.mu.Unlock()
+	if mr, ok := m.repos[repo]; ok {
+		return mr, nil
 	}
-	if mr, ok := m.repos[repoStr]; ok {
-		m.mu.Unlock()
-		locked = false
-		// wgBlock prevents adding to the WG while a wg.Wait is running, GC blocks new requests
-		select {
-		case <-mr.wgBlock:
-			mr.wg.Add(1)
-			mr.wgBlock <- struct{}{}
-			return mr, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
+	// create an empty repo
 	mr := &memRepo{
-		wgBlock: make(chan struct{}, 1),
+		m:    m,
+		name: repo,
 		index: types.LayoutIndex{
 			Index: types.Index{
 				SchemaVersion: 2,
@@ -134,426 +115,358 @@ func (m *mem) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
 			},
 		},
 		blobs: map[digest.Digest]*memRepoBlob{},
-		log:   m.log,
-		conf:  m.conf,
 	}
-	uploadCacheOpt := cache.Opts[string, *memRepoUpload]{}
-	if m.conf.Storage.GC.RepoUploadMax > 0 {
-		uploadCacheOpt.Count = m.conf.Storage.GC.RepoUploadMax
-	}
-	if m.conf.Storage.GC.GracePeriod > 0 {
-		uploadCacheOpt.Age = m.conf.Storage.GC.GracePeriod
-	}
-	mr.uploads = cache.New[string, *memRepoUpload](uploadCacheOpt)
-	mr.wgBlock <- struct{}{}
-	if *m.conf.API.Referrer.Enabled {
-		mr.index.Annotations[types.AnnotReferrerConvert] = "true"
-	}
-	if m.conf.Storage.RootDir != "" {
-		mr.path = filepath.Join(m.conf.Storage.RootDir, repoStr)
-		err := mr.repoInit()
-		if err != nil {
-			return nil, err
+	if m.next != nil {
+		if nextRepo, err := m.next.RepoGet(repo); err == nil {
+			mr.next = nextRepo
+			// initialize the index
+			idx, err := nextRepo.IndexGet()
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize index: %v", err)
+			}
+			mr.index = idx
 		}
 	}
-	mr.wg.Add(1)
-	m.repos[repoStr] = mr
+	m.repos[repo] = mr
 	return mr, nil
 }
 
+// IsEphemeral indicates whether or not the repos continue to exist after closing.
+func (m *mem) IsEphemeral() bool {
+	return true
+}
+
+// Close is used to free up backend resources.
+// Further calls to Backend methods may fail after this is run.
 func (m *mem) Close() error {
-	// signal to background jobs to exit and block new repos from being created
-	close(m.stop)
-	// wait for access to each repo to finish, and then delete it to free memory
 	m.mu.Lock()
-	repoNames := make([]string, 0, len(m.repos))
-	for r := range m.repos {
-		repoNames = append(repoNames, r)
-	}
-	errs := []error{}
-	for _, r := range repoNames {
-		repo, ok := m.repos[r]
-		if !ok {
-			continue
-		}
-		m.mu.Unlock()
-		<-repo.wgBlock
-		repo.wg.Wait()
-		// cancel all uploads
-		err := repo.uploads.DeleteAll()
-		if err != nil {
-			errs = append(errs, err)
-		}
-		repo.wgBlock <- struct{}{}
-		m.mu.Lock()
-		delete(m.repos, r)
-	}
-	// wait for background jobs to finish
-	m.mu.Unlock()
-	m.wg.Wait()
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
+	defer m.mu.Unlock()
+	m.blobs = map[digest.Digest]*memBlob{}
+	m.repos = map[string]*memRepo{}
 	return nil
 }
 
-// gcTicker is a goroutine to continuously run the GC on a schedule
-func (m *mem) gcTicker() {
-	defer m.wg.Done()
-	ticker := time.NewTicker(m.conf.Storage.GC.Frequency)
-	prev := time.Time{}
-	for {
-		select {
-		case cur := <-ticker.C:
-			_ = m.gc(cur, prev)
-			prev = cur
-		case <-m.stop:
-			ticker.Stop()
-			return
+// IndexGet returns the top level index.json file contents.
+func (mr *memRepo) IndexGet() (types.LayoutIndex, error) {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	return mr.index.Copy(), nil
+}
+
+// IndexSet returns the top level index.json file contents.
+func (mr *memRepo) IndexSet(i types.LayoutIndex) error {
+	if *mr.m.conf.ReadOnly {
+		return types.ErrReadOnly
+	}
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	mr.index = i.Copy()
+	mr.m.log.Debug("memRepo index updated", "repo", mr.name, "entries", len(i.Manifests))
+	return nil
+}
+
+// BlobCreate is used to create a new blob.
+func (mr *memRepo) BlobCreate() (BlobCreator, error) {
+	if *mr.m.conf.ReadOnly {
+		return nil, types.ErrReadOnly
+	}
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	buffer := &bytes.Buffer{}
+	bc := &memRepoUpload{
+		buffer: buffer,
+		mr:     mr,
+	}
+	return bc, nil
+}
+
+// BlobDelete removes an entry from the CAS.
+func (mr *memRepo) BlobDelete(d digest.Digest) error {
+	if *mr.m.conf.ReadOnly {
+		return types.ErrReadOnly
+	}
+	if d.IsZero() {
+		return fmt.Errorf("invalid digest: %s", d.String())
+	}
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	if b, ok := mr.blobs[d]; ok {
+		if b != nil {
+			if mr.next != nil {
+				mr.blobs[d] = nil
+			} else {
+				delete(mr.blobs, d)
+			}
+			mr.m.mu.Lock()
+			if mr.m.blobs[d] != nil && mr.m.blobs[d].refCount > 1 {
+				mr.m.blobs[d].refCount--
+			} else {
+				delete(mr.m.blobs, d)
+			}
+			mr.m.mu.Unlock()
+		} else {
+			return types.ErrNotFound
+		}
+	} else if mr.next != nil {
+		b, err := mr.next.BlobGet(d)
+		if errors.Is(err, types.ErrNotFound) {
+			return types.ErrNotFound
+		}
+		_ = b.Close()
+		// blob exists in fallback, only delete it from the memory store with a flag on the repo
+		mr.blobs[d] = nil
+	} else {
+		return types.ErrNotFound
+	}
+	mr.m.log.Debug("blob deleted", "repo", mr.name, "digest", d.String())
+	return nil
+}
+
+// BlobGet returns a reader to an entry from the CAS.
+func (mr *memRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
+	if d.IsZero() {
+		return nil, fmt.Errorf("invalid digest: %s", d.String())
+	}
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	if b, ok := mr.blobs[d]; ok {
+		if b != nil && ok {
+			return types.BytesReadCloser{Reader: bytes.NewReader(b.b)}, nil
+		} else {
+			// blob explicitly deleted, do not fallback
+			return nil, types.ErrNotFound
+		}
+	} else if mr.next != nil {
+		// fallback to underlying storage
+		return mr.next.BlobGet(d)
+	} else {
+		return nil, types.ErrNotFound
+	}
+}
+
+// BlobMeta returns metadata on a blob.
+func (mr *memRepo) BlobMeta(d digest.Digest) (BlobMeta, error) {
+	if d.IsZero() {
+		return BlobMeta{}, fmt.Errorf("invalid digest: %s", d.String())
+	}
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	if b, ok := mr.blobs[d]; ok {
+		if b != nil && ok {
+			return BlobMeta{Mod: b.mod, Size: int64(len(b.b))}, nil
+		} else {
+			// blob explicitly deleted, do not fallback
+			return BlobMeta{}, types.ErrNotFound
+		}
+	} else if mr.next != nil {
+		// fallback to underlying storage
+		return mr.next.BlobMeta(d)
+	} else {
+		return BlobMeta{}, types.ErrNotFound
+	}
+}
+
+// BlobPut directly adds a blob without an intermediate `BlobCreator`
+func (mr *memRepo) BlobPut(d digest.Digest, b []byte) error {
+	if *mr.m.conf.ReadOnly {
+		return types.ErrReadOnly
+	}
+	if d.IsZero() {
+		return types.ErrDigestInvalid
+	}
+	if b == nil {
+		return fmt.Errorf("bytes cannot be nil%.0w", types.ErrNotFound)
+	}
+	mrb := &memRepoBlob{
+		b:   b,
+		mod: time.Now(),
+	}
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	m := mr.m
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.blobs[d]; ok {
+		if !bytes.Equal(existing.b, mrb.b) {
+			return fmt.Errorf("digest collision encountered pushing to %s: %s", mr.name, d.String())
+		}
+		mrb.b = existing.b
+		m.blobs[d].refCount++
+	} else {
+		m.blobs[d] = &memBlob{
+			b:        mrb.b,
+			refCount: 1,
+		}
+	}
+	mr.blobs[d] = mrb
+	m.log.Debug("blob created", "repo", mr.name, "digest", d.String())
+	return nil
+}
+
+// Walk is used to traverse the contents of a repo.
+// Descriptors that are not found will be silently skipped.
+func (mr *memRepo) Walk(depth types.ManifestParseDepth, retReader bool, descList ...types.Descriptor) iter.Seq[WalkStep] {
+	return func(yield func(WalkStep) bool) {
+		for i := 0; i < len(descList); i++ { // descList may be appended in this loop
+			d := descList[i]
+			step := WalkStep{Desc: d}
+			var raw []byte
+			mr.mu.Lock()
+			mrb, ok := mr.blobs[d.Digest]
+			mr.mu.Unlock()
+			if ok && mrb != nil {
+				step.Meta = BlobMeta{Mod: mrb.mod, Size: int64(len(mrb.b))}
+				if retReader {
+					step.Rdr = types.BytesReadCloser{Reader: bytes.NewReader(mrb.b)}
+				}
+				if types.MediaTypeManifest(d.MediaType) {
+					raw = mrb.b
+				}
+			} else if !ok && mr.next != nil {
+				// fall through to next store
+				meta, err := mr.next.BlobMeta(d.Digest)
+				if err != nil {
+					mr.m.log.Debug("walk failed to get blob metadata", "repo", mr.name, "digest", d.Digest, "err", err)
+					continue
+				}
+				step.Meta = meta
+				if types.MediaTypeManifest(d.MediaType) {
+					rdr, err := mr.next.BlobGet(d.Digest)
+					if err != nil {
+						mr.m.log.Debug("walk failed to get blob", "repo", mr.name, "digest", d.Digest, "err", err)
+						continue
+					}
+					raw, err = io.ReadAll(rdr)
+					_ = rdr.Close()
+					if err != nil {
+						continue
+					}
+					if retReader {
+						step.Rdr = types.BytesReadCloser{Reader: bytes.NewReader(raw)}
+					}
+				} else if retReader {
+					rdr, err := mr.next.BlobGet(d.Digest)
+					if err != nil {
+						mr.m.log.Debug("walk failed to get blob", "repo", mr.name, "digest", d.Digest, "err", err)
+						continue
+					}
+					step.Rdr = rdr
+				}
+			} else {
+				// skip deleted or missing entries
+				mr.m.log.Debug("walk failed to get blob, deleted or missing", "repo", mr.name, "digest", d.Digest, "deleted", ok)
+				continue
+			}
+			if !yield(step) {
+				return
+			}
+			if raw != nil {
+				addDesc, _ := types.ManifestParseDescriptors(raw, d, depth)
+				if len(addDesc) > 0 {
+					descList = append(descList, addDesc...)
+				}
+			}
 		}
 	}
 }
 
-// run a GC on every repo
-func (m *mem) gc(cur, prev time.Time) error {
-	start := prev
-	if m.conf.Storage.GC.GracePeriod > 0 {
-		start = start.Add(m.conf.Storage.GC.GracePeriod * -1)
+// GC (garbage collect) cleans unmarked blobs that have been created before the cutoff time.
+func (mr *memRepo) GC(cutoff time.Time, keepDig map[digest.Digest]bool) error {
+	if *mr.m.conf.ReadOnly {
+		return types.ErrReadOnly
 	}
-	// since the lock isn't held for the entire GC, build a list of repos to check
+	// clean old unmarked blobs from the repo
+	rmDigList := map[digest.Digest]bool{}
+	mr.mu.Lock()
+	for cur, mrb := range mr.blobs {
+		if !keepDig[cur] && mrb != nil && mrb.mod.Before(cutoff) {
+			rmDigList[cur] = true
+			mr.m.log.Debug("gc pruned blob", "repo", mr.name, "digest", cur.String())
+			delete(mr.blobs, cur)
+		}
+	}
+	mr.mu.Unlock()
+	if len(rmDigList) == 0 {
+		return nil
+	}
+	// clean from shared blob store
+	m := mr.m
 	m.mu.Lock()
-	repoNames := make([]string, 0, len(m.repos))
-	for r := range m.repos {
-		repoNames = append(repoNames, r)
+	for cur := range rmDigList {
+		if mb, ok := m.blobs[cur]; ok && mb.refCount > 1 {
+			mb.refCount--
+		} else {
+			mr.m.log.Debug("gc pruned blob from shared store", "digest", cur.String())
+			delete(m.blobs, cur)
+		}
 	}
 	m.mu.Unlock()
-	for _, r := range repoNames {
-		// if stop ch was closed, exit immediately
-		select {
-		case <-m.stop:
-			return fmt.Errorf("stop signal received")
-		default:
-		}
-		m.mu.Lock()
-		repo, ok := m.repos[r]
-		m.mu.Unlock()
-		if !ok {
-			continue
-		}
-		// skip repos that were not updated since the last check, offsetting for the grace period
-		repo.mu.Lock()
-		outsideRange := repo.timeMod.Before(start)
-		repo.mu.Unlock()
-		if outsideRange {
-			continue
-		}
-		err := repo.gc()
-		if err != nil {
+	return nil
+}
+
+// Close indicates the repo is no longer being accessed and resources may be freed.
+func (mr *memRepo) Close() error {
+	if mr.next != nil {
+		if err := mr.next.Close(); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// IndexGet returns the current top level index for a repo.
-func (mr *memRepo) IndexGet() (types.LayoutIndex, error) {
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-	ic := mr.index.Copy()
-	return ic, nil
-}
-
-// IndexInsert adds a new entry to the index and writes the change to index.json.
-func (mr *memRepo) IndexInsert(desc types.Descriptor, opts ...types.LayoutIndexOpt) error {
-	if *mr.conf.Storage.ReadOnly {
-		return types.ErrReadOnly
-	}
-	mr.mu.Lock()
-	mr.timeMod = time.Now()
-	mr.index.AddDesc(desc, opts...)
-	mr.mu.Unlock()
-	mr.log.Debug("index entry added", "repo", mr.path, "desc", desc)
+// Cancel is used to stop an upload.
+func (mru *memRepoUpload) Cancel() error {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
+	mru.buffer = nil
 	return nil
 }
 
-// IndexRemove removes an entry from the index and writes the change to index.json.
-func (mr *memRepo) IndexRemove(desc types.Descriptor) error {
-	if *mr.conf.Storage.ReadOnly {
-		return types.ErrReadOnly
-	}
-	mr.mu.Lock()
-	mr.timeMod = time.Now()
-	mr.index.RmDesc(desc)
-	mr.mu.Unlock()
-	mr.log.Debug("index entry removed", "repo", mr.path, "desc", desc)
-	return nil
-}
-
-// BlobGet returns a reader to an entry from the CAS.
-func (mr *memRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
-	return mr.blobGet(d, false)
-}
-
-func (mr *memRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error) {
-	if d.IsZero() {
-		return nil, fmt.Errorf("invalid digest: %s", d.String())
-	}
-	if !locked {
-		mr.mu.Lock()
-		defer mr.mu.Unlock()
-	}
-	b, ok := mr.blobs[d]
-	if ok {
-		// when there is a directory backing, nil indicates an explicit delete or blob doesn't exist
-		if b == nil {
-			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
-		}
-		return types.BytesReadCloser{Reader: bytes.NewReader(b.b)}, nil
-	}
-	// else try to load from backing dir
-	if mr.path != "" {
-		fh, err := os.Open(filepath.Join(mr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
-		if err != nil {
-			if os.IsNotExist(err) {
-				mr.blobs[d] = nil // explicitly mark as not found to skip future attempts
-				return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
-			}
-			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
-		}
-		return fh, nil
-	}
-	return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
-}
-
-// blobMeta returns metadata on a blob.
-func (mr *memRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
-	m := blobMeta{}
-	if d.IsZero() {
-		return m, fmt.Errorf("invalid digest: %s", d.String())
-	}
-	if !locked {
-		mr.mu.Lock()
-		defer mr.mu.Unlock()
-	}
-	b, ok := mr.blobs[d]
-	if ok {
-		// when there is a directory backing, nil indicates an explicit delete or blob doesn't exist
-		if b == nil {
-			return m, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
-		}
-		return b.m, nil
-	}
-	// else try to load from backing dir
-	if mr.path != "" {
-		fi, err := os.Stat(filepath.Join(mr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
-		if err != nil {
-			if os.IsNotExist(err) {
-				mr.blobs[d] = nil // explicitly mark as not found to skip future attempts
-				return m, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
-			}
-			return m, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
-		}
-		m.mod = fi.ModTime()
-		return m, nil
-	}
-	return m, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
-}
-
-// BlobCreate is used to create a new blob.
-func (mr *memRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
-	if *mr.conf.Storage.ReadOnly {
-		return nil, "", types.ErrReadOnly
-	}
-	conf := blobConfig{
-		algo: digest.Canonical,
-	}
-	for _, opt := range opts {
-		err := opt(&conf)
-		if err != nil {
-			return nil, "", err
-		}
-	}
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-	// if blob exists, return the appropriate error
-	if !conf.expect.IsZero() {
-		b, ok := mr.blobs[conf.expect]
-		if b == nil {
-			ok = false
-		}
-		if ok {
-			return nil, "", types.ErrBlobExists
-		}
-	}
-	sessionID, err := genSessionID()
-	if err != nil {
-		return nil, "", fmt.Errorf("failed generating sessionID: %w", err)
-	}
-	_, err = mr.uploads.Get(sessionID)
-	if err == nil {
-		return nil, "", fmt.Errorf("session ID collision")
-	}
-	buffer := &bytes.Buffer{}
-	w := digest.NewWriter(buffer, conf.algo)
-	bc := &memRepoUpload{
-		buffer:    buffer,
-		alg:       conf.algo,
-		w:         w,
-		expect:    conf.expect,
-		mr:        mr,
-		sessionID: sessionID,
-	}
-	mr.timeMod = time.Now()
-	mr.uploads.Set(sessionID, bc)
-	return bc, sessionID, nil
-}
-
-// BlobDelete deletes an entry from the CAS.
-func (mr *memRepo) BlobDelete(d digest.Digest) error {
-	return mr.blobDelete(d, false)
-}
-
-// blobDelete is the internal method for deleting a blob.
-func (mr *memRepo) blobDelete(d digest.Digest, locked bool) error {
-	if *mr.conf.Storage.ReadOnly {
-		return types.ErrReadOnly
-	}
-	if d.IsZero() {
-		return fmt.Errorf("invalid digest: %s", d.String())
-	}
-	if !locked {
-		mr.mu.Lock()
-		defer mr.mu.Unlock()
-	}
-	_, ok := mr.blobs[d]
-	if ok {
-		if mr.path != "" {
-			mr.blobs[d] = nil
-		} else {
-			delete(mr.blobs, d)
-		}
-	}
-	if !ok {
-		if mr.path == "" {
-			return types.ErrNotFound
-		}
-		if mr.path != "" {
-			_, err := os.Stat(filepath.Join(mr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
-			if err != nil && errors.Is(err, fs.ErrNotExist) {
-				return types.ErrNotFound
-			}
-			mr.blobs[d] = nil
-		}
-	}
-	mr.timeMod = time.Now()
-	mr.log.Debug("blob deleted", "repo", mr.path, "digest", d.String())
-	return nil
-}
-
-// blobList returns a list of all known blobs in the repo
-func (mr *memRepo) blobList(locked bool) ([]digest.Digest, error) {
-	if !locked {
-		mr.mu.Lock()
-		defer mr.mu.Unlock()
-	}
-	dl := make([]digest.Digest, 0, len(mr.blobs))
-	for d, v := range mr.blobs {
-		if v != nil {
-			dl = append(dl, d)
-		}
-	}
-	if mr.path != "" {
-		algoS, err := os.ReadDir(filepath.Join(mr.path, blobsDir))
-		if err == nil {
-			for _, algo := range algoS {
-				if !algo.IsDir() {
-					continue
-				}
-				encodeS, err := os.ReadDir(filepath.Join(mr.path, blobsDir, algo.Name()))
-				if err != nil {
-					continue
-				}
-				for _, encode := range encodeS {
-					d, err := digest.Parse(algo.Name() + ":" + encode.Name())
-					if err != nil {
-						// skip unparsable entries
-						continue
-					}
-					if _, ok := mr.blobs[d]; !ok {
-						dl = append(dl, d)
-					}
-				}
-			}
-		}
-	}
-	return dl, nil
-}
-
-// BlobSession is used to retrieve an upload session
-func (mr *memRepo) BlobSession(sessionID string) (BlobCreator, error) {
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-	if bc, err := mr.uploads.Get(sessionID); err == nil {
-		return bc, nil
-	}
-	return nil, types.ErrNotFound
-}
-
-// Done indicates the routine using this repo is finished.
-// This must be called exactly once for every instance of [Store.RepoGet].
-func (mr *memRepo) Done() {
-	mr.wg.Done()
-}
-
-func (mr *memRepo) repoInit() error {
-	// initialize index from backend dir if available
-	// validate directory is an OCI Layout
-	statIndex, errIndex := os.Stat(filepath.Join(mr.path, indexFile))
-	//#nosec G304 internal method is only called with filenames within admin provided path.
-	layoutBytes, errLayout := os.ReadFile(filepath.Join(mr.path, layoutFile))
-	if errIndex != nil || errLayout != nil || statIndex.IsDir() || !layoutVerify(layoutBytes) {
+// Reader returns a new reader from the uploaded buffer.
+func (mru *memRepoUpload) Reader() io.Reader {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
+	if mru.buffer == nil {
 		return nil
 	}
-	// read the index.json
-	fh, err := os.Open(filepath.Join(mr.path, indexFile))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	defer fh.Close()
-	parseIndex := types.LayoutIndex{}
-	err = json.NewDecoder(fh).Decode(&parseIndex)
-	if err != nil {
-		return err
-	}
-	mr.index = parseIndex
-	// ingest to load child descriptors and configure referrers
-	_, err = indexIngest(mr, &mr.index, mr.conf, true)
-	if err != nil {
-		return err
-	}
-	return nil
+	return bytes.NewBuffer(mru.buffer.Bytes())
 }
 
-// gc runs the garbage collect
-func (mr *memRepo) gc() error {
-	<-mr.wgBlock
-	defer func() { mr.wgBlock <- struct{}{} }()
-	mr.wg.Wait()
+// Save is used to save an upload to a CAS digest.
+func (mru *memRepoUpload) Save(d digest.Digest) error {
+	if d.IsZero() {
+		return types.ErrDigestInvalid
+	}
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
+	if mru.buffer == nil {
+		return fmt.Errorf("upload was canceled or not initialized%.0w", types.ErrNotFound)
+	}
+	mrb := &memRepoBlob{
+		b:   mru.buffer.Bytes(),
+		mod: time.Now(),
+	}
+	mru.buffer = nil
+	mr := mru.mr
 	mr.mu.Lock()
 	defer mr.mu.Unlock()
-	mr.log.Debug("starting GC", "repo", mr.path)
-	i, mod, err := repoGarbageCollect(mr, mr.conf, mr.index, true)
-	if err != nil {
-		return err
+	m := mr.m
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.blobs[d]; ok {
+		if !bytes.Equal(existing.b, mrb.b) {
+			return fmt.Errorf("digest collision encountered pushing to %s: %s", mr.name, d.String())
+		}
+		mrb.b = existing.b
+		m.blobs[d].refCount++
+	} else {
+		m.blobs[d] = &memBlob{
+			b:        mrb.b,
+			refCount: 1,
+		}
 	}
-	if mod {
-		mr.index = i
-		mr.timeMod = time.Now()
-	}
-	mr.log.Debug("finished GC", "repo", mr.path)
+	mr.blobs[d] = mrb
+	m.log.Debug("blob created", "repo", mr.name, "digest", d.String())
 	return nil
 }
 
@@ -561,104 +474,8 @@ func (mr *memRepo) gc() error {
 func (mru *memRepoUpload) Write(p []byte) (int, error) {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
-	// verify session still exists and update last write time
-	if _, err := mru.mr.uploads.Get(mru.sessionID); err != nil {
-		return 0, fmt.Errorf("session expired %s: %w", mru.sessionID, err)
+	if mru.buffer == nil {
+		return 0, fmt.Errorf("upload was canceled or not initialized%.0w", types.ErrNotFound)
 	}
-	return mru.w.Write(p)
-}
-
-func (mru *memRepoUpload) Close() error {
-	mru.mu.Lock()
-	defer mru.mu.Unlock()
-	if !mru.expect.IsZero() && !mru.w.Verify(mru.expect) {
-		d, _ := mru.w.Digest()
-		return fmt.Errorf("digest mismatch, expected %s, received %s", mru.expect.String(), d.String())
-	}
-	// relocate []byte to in memory blob store
-	mru.mr.mu.Lock()
-	mru.mr.timeMod = time.Now()
-	d, err := mru.w.Digest()
-	if err != nil {
-		return fmt.Errorf("failed to compute digest: %v", err)
-	}
-	mru.mr.blobs[d] = &memRepoBlob{
-		b: mru.buffer.Bytes(),
-		m: blobMeta{
-			mod: time.Now(),
-		},
-	}
-	mru.mr.mu.Unlock()
-	mru.mr.log.Debug("blob created", "repo", mru.mr.path, "digest", d.String())
-	return mru.mr.uploads.Delete(mru.sessionID)
-}
-
-// Cancel is used to stop an upload.
-func (mru *memRepoUpload) Cancel() error {
-	mru.mu.Lock()
-	defer mru.mu.Unlock()
-	return mru.mr.uploads.Delete(mru.sessionID)
-}
-
-// Size reports the number of bytes pushed.
-func (mru *memRepoUpload) Size() int64 {
-	mru.mu.Lock()
-	defer mru.mu.Unlock()
-	return int64(mru.buffer.Len())
-}
-
-// ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
-func (mru *memRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
-	if algo.IsZero() {
-		return fmt.Errorf("algorithm not available: %s", algo.String())
-	}
-	mru.mu.Lock()
-	defer mru.mu.Unlock()
-	if algo.Equal(mru.alg) {
-		return nil
-	}
-	if mru.buffer.Len() > 0 {
-		return fmt.Errorf("unable to change algorithm after first write")
-	}
-	mru.alg = algo
-	mru.w = digest.NewWriter(mru.buffer, algo)
-	return nil
-}
-
-// Digest is used to get the current digest of the content.
-func (mru *memRepoUpload) Digest() digest.Digest {
-	mru.mu.Lock()
-	defer mru.mu.Unlock()
-	// any errors results in a zero value digest
-	d, _ := mru.w.Digest()
-	return d
-}
-
-// Verify ensures a digest matches the content.
-func (mru *memRepoUpload) Verify(expect digest.Digest) error {
-	mru.mu.Lock()
-	defer mru.mu.Unlock()
-	if mru.w.Verify(expect) {
-		return nil
-	}
-	if expect.IsZero() {
-		return fmt.Errorf("invalid digest")
-	}
-	if !mru.alg.Equal(expect.Algorithm()) {
-		// rescan content on algorithm change
-		mru.alg = expect.Algorithm()
-		mru.w = digest.NewWriter(mru.buffer, mru.alg)
-		_, err := mru.w.Hash().Write(mru.buffer.Bytes())
-		if err != nil {
-			return err
-		}
-		if mru.w.Verify(expect) {
-			return nil
-		}
-	}
-	d, err := mru.w.Digest()
-	if err != nil {
-		return fmt.Errorf("failed to compute digest: %w", err)
-	}
-	return fmt.Errorf("digest mismatch, expected %s, received %s", expect.String(), d.String())
+	return mru.buffer.Write(p)
 }
