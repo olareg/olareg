@@ -253,6 +253,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 		if err != nil {
 			if errors.Is(err, types.ErrBlobExists) {
 				// blob exists, indicate it was created and return the location to get
+				//#nosec G125 all variables in the path have been sanitized
 				loc, err := url.JoinPath("/v2", repoStr, "blobs", d.String())
 				if err != nil {
 					w.WriteHeader(http.StatusInternalServerError)
@@ -290,6 +291,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 				s.log.Info("failed to close blob", "repo", repoStr, "err", err)
 				return
 			}
+			//#nosec G125 all variables in the path have been sanitized
 			loc, err := url.JoinPath("/v2", repoStr, "blobs", d.String())
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -314,6 +316,7 @@ func (s *Server) blobUploadPost(repoStr string) http.HandlerFunc {
 		loc := url.URL{
 			Path: r.URL.Path,
 		}
+		//#nosec G125 all variables in the path have been sanitized
 		loc = *loc.JoinPath(sessionID)
 		locQ := url.Values{}
 		locQ.Set("state", state)
@@ -341,6 +344,7 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 	if err != nil {
 		if errors.Is(err, types.ErrBlobExists) {
 			// blob exists, indicate it was created and return the location to get
+			//#nosec G125 all variables in the path have been sanitized
 			loc, err := url.JoinPath("/v2", repoTgtStr, "blobs", dig.String())
 			if err != nil {
 				s.log.Error("failed to build location header", "repo", repoTgtStr, "err", err)
@@ -372,6 +376,7 @@ func (s *Server) blobUploadMount(repoSrcStr, repoTgtStr, digStr string, w http.R
 		return err
 	}
 	// write the success status and return nil
+	//#nosec G125 all variables in the path have been sanitized
 	loc, err := url.JoinPath("/v2", repoTgtStr, "blobs", dig.String())
 	if err != nil {
 		return err
@@ -554,6 +559,7 @@ func (s *Server) blobUploadPut(repoStr, sessionID string) http.HandlerFunc {
 			s.log.Error("failed to close blob upload", "err", err, "repo", repoStr, "sessionID", sessionID)
 			return
 		}
+		//#nosec G125 all variables in the path have been sanitized
 		loc, err := url.JoinPath("/v2", repoStr, "blobs", d.String())
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
