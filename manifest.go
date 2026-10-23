@@ -433,6 +433,7 @@ func (s *Server) manifestPut(repoStr, arg string) http.HandlerFunc {
 			w.Header().Set("OCI-Subject", subject.String())
 		}
 		// set the location header
+		//#nosec G125 all variables in the path have been sanitized
 		loc, err := url.JoinPath("/v2", repoStr, "manifests", d.String())
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
