@@ -16,29 +16,30 @@
 package config
 
 import (
-	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
+
+	"github.com/olareg/olareg/internal/sloghandle"
 )
 
 const (
-	manifestLimitDefault       = 1024 * 1024 * 8
-	referrerCacheExpireDefault = time.Minute * 5
-	referrerCacheLimitDefault  = 1000
-	referrersLimitDefault      = 1024 * 1024 * 4
-	repoUploadMaxDefault       = 1000
-	authDescription            = "olareg registry"
+	authDescription      = "olareg registry"
+	cacheExpireDefault   = time.Minute * 5
+	cacheLimitDefault    = 1000
+	manifestLimitDefault = 1024 * 1024 * 8
+	responseLimitDefault = 1024 * 1024 * 4
+	repoUploadMaxDefault = 1000
+	tagHistoryMinDefault = 50
+	tagHistoryAgeDefault = time.Hour * 24 * 30
 )
 
-type Store int
+type Store = string // preserving for backwards compatibility
 
 const (
-	StoreUndef  Store = iota // undefined backend storage is the invalid zero value
-	StoreMem                 // StoreMem only uses memory for an ephemeral registry
-	StoreDir                 // StoreDir tracks each repository with a separate blob store
-	StoreShared              // StoreShared tracks the blobs in a single store for less disk usage
+	StoreUndef = ""    // undefined backend storage is the invalid zero value
+	StoreMem   = "mem" // StoreMem only uses memory for an ephemeral registry
+	StoreDir   = "dir" // StoreDir tracks each repository with a separate blob store
 )
 
 type Config struct {
@@ -79,6 +80,7 @@ type ConfigAPI struct {
 	Manifest      ConfigAPIManifest
 	Blob          ConfigAPIBlob
 	Referrer      ConfigAPIReferrer
+	TagHistory    ConfigAPITagHistory
 	Warnings      []string
 	RateLimit     int // number of requests per second from a given IP address
 }
@@ -100,6 +102,15 @@ type ConfigAPIReferrer struct {
 	Limit           int64         // max size of a referrers response (OCI recommends 4MiB)
 }
 
+type ConfigAPITagHistory struct {
+	Enabled         *bool         // enable the tag history API, enabled by default
+	PruneAge        time.Duration // time after which history entries exceeding PruneMin may be pruned
+	PruneMin        int           // minimum number of history entries to retain
+	PageCacheExpire time.Duration // time to save pages for a paged response
+	PageCacheLimit  int           // max number of paged responses to keep in memory
+	Limit           int64         // max size of a tag history response (OCI recommends 4MiB)
+}
+
 type ConfigAuth struct {
 	Handler AuthHandler  // Handler is used to create a new [http.Handler] to authenticate request
 	Token   http.Handler // Token is a [http.Handler] that receives requests to the /token route
@@ -116,15 +127,33 @@ func (c *Config) SetDefaults() {
 	c.API.Manifest.SparseImage = boolDefault(c.API.Manifest.SparseImage, false)
 	c.API.Manifest.SparseIndex = boolDefault(c.API.Manifest.SparseIndex, false)
 	if c.API.Referrer.PageCacheExpire == 0 {
-		c.API.Referrer.PageCacheExpire = referrerCacheExpireDefault
+		c.API.Referrer.PageCacheExpire = cacheExpireDefault
 	}
 	if c.API.Referrer.PageCacheLimit == 0 {
-		c.API.Referrer.PageCacheLimit = referrerCacheLimitDefault
+		c.API.Referrer.PageCacheLimit = cacheLimitDefault
 	}
 	if c.API.Referrer.Limit == 0 {
-		c.API.Referrer.Limit = referrersLimitDefault
+		c.API.Referrer.Limit = responseLimitDefault
 	}
-
+	c.API.TagHistory.Enabled = boolDefault(c.API.TagHistory.Enabled, true)
+	if c.API.TagHistory.PruneMin == 0 {
+		c.API.TagHistory.PruneMin = tagHistoryMinDefault
+	}
+	if c.API.TagHistory.PruneAge == 0 {
+		c.API.TagHistory.PruneAge = tagHistoryAgeDefault
+	}
+	if c.API.TagHistory.PageCacheExpire == 0 {
+		c.API.TagHistory.PageCacheExpire = cacheExpireDefault
+	}
+	if c.API.TagHistory.PageCacheLimit == 0 {
+		c.API.TagHistory.PageCacheLimit = cacheLimitDefault
+	}
+	if c.API.TagHistory.Limit == 0 {
+		c.API.TagHistory.Limit = responseLimitDefault
+	}
+	if c.Log == nil {
+		c.Log = slog.New(sloghandle.Discard)
+	}
 	c.Storage.ReadOnly = boolDefault(c.Storage.ReadOnly, false)
 	switch c.Storage.StoreType {
 	case StoreDir:
@@ -152,34 +181,4 @@ func boolDefault(cur *bool, def bool) *bool {
 		return cur
 	}
 	return &def
-}
-
-func (s Store) MarshalText() ([]byte, error) {
-	var ret string
-	switch s {
-	case StoreMem:
-		ret = "mem"
-	case StoreDir:
-		ret = "dir"
-	case StoreShared:
-		ret = "shared"
-	}
-	if ret == "" {
-		return []byte{}, fmt.Errorf("unknown store value %d", int(s))
-	}
-	return []byte(ret), nil
-}
-
-func (s *Store) UnmarshalText(b []byte) error {
-	switch strings.ToLower(string(b)) {
-	default:
-		return fmt.Errorf("unknown store value \"%s\"", b)
-	case "mem":
-		*s = StoreMem
-	case "dir":
-		*s = StoreDir
-	case "shared":
-		*s = StoreShared
-	}
-	return nil
 }

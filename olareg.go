@@ -28,9 +28,9 @@ import (
 	"time"
 
 	"github.com/olareg/olareg/config"
+	"github.com/olareg/olareg/internal/backend"
 	"github.com/olareg/olareg/internal/cache"
 	"github.com/olareg/olareg/internal/httplog"
-	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/internal/store"
 	"github.com/olareg/olareg/types"
 )
@@ -41,16 +41,24 @@ var (
 	LogTrace = slog.LevelDebug - 4
 )
 
+func init() {
+	store.RegisterDefaults()
+}
+
 // New returns a Server.
 // Ensure the resource is cleaned up with either [Server.Close] or [Server.Shutdown].
-func New(conf config.Config) *Server {
+func New(conf config.Config) (*Server, error) {
 	conf.SetDefaults()
 	s := &Server{
 		conf: conf,
 		log:  conf.Log,
-		referrerCache: cache.New[referrerKey, referrerResponses](cache.Opts[referrerKey, referrerResponses]{
+		referrerCache: cache.New(cache.Opts[referrerKey, types.Index]{
 			Age:   conf.API.Referrer.PageCacheExpire,
 			Count: conf.API.Referrer.PageCacheLimit,
+		}),
+		tagHistoryCache: cache.New(cache.Opts[tagHistoryKey, types.Index]{
+			Age:   conf.API.TagHistory.PageCacheExpire,
+			Count: conf.API.TagHistory.PageCacheLimit,
 		}),
 	}
 	if conf.API.RateLimit > 0 {
@@ -58,26 +66,23 @@ func New(conf config.Config) *Server {
 			Age: time.Second * 10,
 		})
 	}
-	if s.log == nil {
-		s.log = slog.New(sloghandle.Discard)
+	if back, err := backend.New(conf); err == nil {
+		s.backend = back
+	} else {
+		return nil, err
 	}
-	switch s.conf.Storage.StoreType {
-	case config.StoreMem:
-		s.store = store.NewMem(s.conf, store.WithLog(s.log))
-	case config.StoreDir:
-		s.store = store.NewDir(s.conf, store.WithLog(s.log))
-	}
-	return s
+	return s, nil
 }
 
 type Server struct {
-	mu            sync.Mutex
-	conf          config.Config
-	store         store.Store
-	log           *slog.Logger
-	httpServer    *http.Server
-	referrerCache *cache.Cache[referrerKey, referrerResponses]
-	rateLimit     *cache.Cache[string, *rateLimitEntry]
+	mu              sync.Mutex
+	conf            config.Config
+	backend         *backend.Backend
+	log             *slog.Logger
+	httpServer      *http.Server
+	referrerCache   *cache.Cache[referrerKey, types.Index]
+	rateLimit       *cache.Cache[string, *rateLimitEntry]
+	tagHistoryCache *cache.Cache[tagHistoryKey, types.Index]
 }
 
 type rateLimitEntry struct {
@@ -85,13 +90,13 @@ type rateLimitEntry struct {
 	count int
 }
 
-// Close is used to release the backend store resources.
+// Close is used to release the backend resources.
 func (s *Server) Close() error {
-	if s.store == nil {
-		return fmt.Errorf("backend store was already closed")
+	if s.backend == nil {
+		return fmt.Errorf("backend was already closed")
 	}
-	err := s.store.Close()
-	s.store = nil
+	err := s.backend.Close()
+	s.backend = nil
 	return err
 }
 
@@ -140,17 +145,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if s.store != nil {
-		err = s.store.Close()
-		s.store = nil
+	if s.backend != nil {
+		err = s.backend.Close()
+		s.backend = nil
 	}
 	return err
 }
 
 // ServeHTTP handles requests to the OCI registry.
 func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
-	if s.store == nil {
-		s.log.Error("ServeHTTP called without a backend store")
+	if s.backend == nil {
+		s.log.Error("ServeHTTP called without a backend")
 		resp.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -282,6 +287,21 @@ func (s *Server) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		repo = matches[0]
 		access = config.AuthRead
 		handler = s.tagList(matches[0])
+	} else if matches, ok := matchV2(pathEl, "...", "_oci", "tag-history", "*"); ok {
+		if req.Method == http.MethodGet || req.Method == http.MethodHead {
+			// handle tag history
+			repo = matches[0]
+			access = config.AuthRead
+			if *s.conf.API.TagHistory.Enabled {
+				handler = s.tagHistory(matches[0], matches[1])
+			} else {
+				handler = methodNotAllowed()
+			}
+		} else {
+			// other methods are not allowed
+			repo = matches[0]
+			handler = methodNotAllowed()
+		}
 	} else if matches, ok := matchV2(pathEl, "...", "blobs", "uploads", "*"); ok {
 		repo = matches[0]
 		access = config.AuthWrite

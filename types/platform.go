@@ -14,6 +14,8 @@
 
 package types
 
+import "slices"
+
 // Platform specifies a platform where a particular image manifest is applicable.
 type Platform struct {
 	// Architecture field specifies the CPU architecture, for example `amd64` or `ppc64`.
@@ -47,4 +49,13 @@ func (p Platform) Copy() Platform {
 		copy(p2.Features, p.Features)
 	}
 	return p2
+}
+
+// Equal returns true when both platforms are identical.
+func (p Platform) Equal(p2 Platform) bool {
+	if p.Architecture != p2.Architecture || p.OS != p2.OS || p.OSVersion != p2.OSVersion || p.Variant != p2.Variant ||
+		!slices.Equal(p.OSFeatures, p2.OSFeatures) || !slices.Equal(p.Features, p2.Features) {
+		return false
+	}
+	return true
 }

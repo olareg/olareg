@@ -16,5 +16,17 @@ package types
 
 import "regexp"
 
-// RefTagRE is a regexp for a valid tag.
-var RefTagRE = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`)
+var pathPart = `[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*`
+
+var (
+	// PathPartRE is regexp for a subdirectory in a repository name
+	PathPartRE = regexp.MustCompile(`^` + pathPart + `$`)
+	// PathRE is the regexp for a full repository path
+	PathRE = regexp.MustCompile(`^` + pathPart + `(?:\/` + pathPart + `)*$`)
+	// RefTagRE is a regexp for a valid tag.
+	RefTagRE = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`)
+	// ReferrerTagRE is the syntax for fallback tags.
+	// Algorithm is truncated to 32 characters, and encoding is truncated to 64.
+	// This regexp is over simplified to only support sha256 and sha512 algorithms to avoid false positives.
+	ReferrerTagRE = regexp.MustCompile(`^(sha256|sha512)-([0-9a-f]{64})$`)
+)

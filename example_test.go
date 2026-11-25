@@ -30,11 +30,15 @@ import (
 func ExampleNew_test() {
 	ctx := context.Background()
 	// create a new olareg handler backed by memory
-	regHandler := olareg.New(config.Config{
+	regHandler, err := olareg.New(config.Config{
 		Storage: config.ConfigStorage{
 			StoreType: config.StoreMem,
 		},
 	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize olareg: %v", err)
+		return
+	}
 	// start the handler using httptest for unit tests
 	ts := httptest.NewServer(regHandler)
 	defer ts.Close()
@@ -68,7 +72,7 @@ func ExampleNew_test() {
 func ExampleNew_mem() {
 	ctx := context.Background()
 	// create a server backed by memory, listening on port 5000
-	regHandler := olareg.New(config.Config{
+	regHandler, err := olareg.New(config.Config{
 		HTTP: config.ConfigHTTP{
 			Addr: ":5000",
 		},
@@ -76,8 +80,12 @@ func ExampleNew_mem() {
 			StoreType: config.StoreMem,
 		},
 	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize olareg: %v", err)
+		return
+	}
 	// run the server
-	err := regHandler.Run(ctx)
+	err = regHandler.Run(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "startup failed: %v", err)
 		return
@@ -95,7 +103,7 @@ func ExampleNew_mem() {
 func ExampleNew_directory() {
 	ctx := context.Background()
 	// create a server backed by a local directory, listening on port 5000
-	regHandler := olareg.New(config.Config{
+	regHandler, err := olareg.New(config.Config{
 		HTTP: config.ConfigHTTP{
 			Addr: ":5000",
 		},
@@ -104,8 +112,12 @@ func ExampleNew_directory() {
 			RootDir:   "/path/to/storage",
 		},
 	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize olareg: %v", err)
+		return
+	}
 	// run the server
-	err := regHandler.Run(ctx)
+	err = regHandler.Run(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "startup failed: %v", err)
 		return

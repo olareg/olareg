@@ -15,12 +15,13 @@
 package store
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -32,414 +33,189 @@ import (
 	digest "github.com/sudo-bmitch/oci-digest"
 
 	"github.com/olareg/olareg/config"
-	"github.com/olareg/olareg/internal/cache"
-	"github.com/olareg/olareg/internal/sloghandle"
 	"github.com/olareg/olareg/types"
 )
 
+// dir is the on disk representation of an OCI Layout.
+// When holding multiple mutex locks simultaneously, always start from fine grain lock first (dirRepoUpload, then dirRepo, then dir) to avoid deadlocks.
+
 type dir struct {
-	mu    sync.Mutex
-	wg    sync.WaitGroup
-	root  string
-	repos *cache.Cache[string, *dirRepo]
-	log   *slog.Logger
-	conf  config.Config
-	stop  chan struct{}
+	root string
+	log  *slog.Logger
+	conf config.ConfigStorage
 }
 
 type dirRepo struct {
-	mu        sync.Mutex
-	wg        sync.WaitGroup
-	wgBlock   chan struct{}
-	timeCheck time.Time
-	timeMod   time.Time
-	name      string
-	path      string
-	exists    bool
-	index     types.LayoutIndex
-	uploads   *cache.Cache[string, *dirRepoUpload]
-	log       *slog.Logger
-	conf      config.Config
+	mu         sync.Mutex
+	d          *dir
+	name       string
+	path       string
+	indexEmpty bool
+	validOL    bool // valid oci-layout file
+	log        *slog.Logger
 }
 
 type dirRepoUpload struct {
-	mu        sync.Mutex
-	fh        *os.File
-	alg       digest.Algorithm
-	w         digest.Writer
-	size      int64
-	expect    digest.Digest
-	path      string
-	filename  string
-	dr        *dirRepo
-	sessionID string
+	mu       sync.Mutex
+	fh       *os.File
+	repoPath string
+	tempName string
+	dr       *dirRepo
 }
 
-// NewDir returns a directory store.
-func NewDir(conf config.Config, opts ...Opts) Store {
-	sc := storeConf{}
+// newDir creates a new directory backed store.
+func newDir(conf config.ConfigStorage, opts ...Opts) (Store, error) {
+	op := OptParams{
+		log: slog.New(slog.DiscardHandler),
+	}
 	for _, opt := range opts {
-		opt(&sc)
-	}
-	cacheOpts := cache.Opts[string, *dirRepo]{
-		PruneFn: func(_ string, dr *dirRepo) error {
-			if !dr.uploads.IsEmpty() {
-				return fmt.Errorf("uploads in progress")
-			}
-			// warning, this will block, ensure repos are always held open for a minimal time (this mostly affects the design of tests)
-			if !*dr.conf.Storage.ReadOnly {
-				if err := dr.gc(); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	}
-	// TODO: consider a config for an upper limit on the number of repos
-	if conf.Storage.GC.GracePeriod > 0 {
-		cacheOpts.Age = conf.Storage.GC.GracePeriod
+		opt(&op)
 	}
 	d := &dir{
-		root:  conf.Storage.RootDir,
-		repos: cache.New[string, *dirRepo](cacheOpts),
-		log:   sc.log,
-		conf:  conf,
-		stop:  make(chan struct{}),
+		root: conf.RootDir,
+		log:  op.log,
+		conf: conf,
 	}
-	if d.log == nil {
-		d.log = slog.New(sloghandle.Discard)
-	}
-	if !*d.conf.Storage.ReadOnly && d.conf.Storage.GC.Frequency > 0 {
-		d.wg.Add(1)
-		go d.gcTicker()
-	}
-	return d
+	return d, nil
 }
 
-func (d *dir) RepoGet(ctx context.Context, repoStr string) (Repo, error) {
-	d.mu.Lock()
-	locked := true
-	defer func() {
-		if locked {
-			d.mu.Unlock()
-		}
-	}()
-	// if stop ch was closed, fail
-	select {
-	case <-d.stop:
-		return nil, fmt.Errorf("cannot get repo after Close")
-	default:
-	}
-	if dr, err := d.repos.Get(repoStr); err == nil {
-		d.mu.Unlock()
-		locked = false
-		// wgBlock prevents adding to the WG while a wg.Wait is running, GC blocks new requests
-		select {
-		case <-dr.wgBlock:
-			dr.wg.Add(1)
-			dr.wgBlock <- struct{}{}
-			return dr, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	if stringsHasAny(strings.Split(repoStr, "/"), indexFile, layoutFile, blobsDir) {
-		return nil, fmt.Errorf("repo %s cannot contain %s, %s, or %s%.0w", repoStr, indexFile, layoutFile, blobsDir, types.ErrRepoNotAllowed)
-	}
-	if !filepath.IsLocal(repoStr) {
-		return nil, fmt.Errorf("repo %s must be a relative path%.0w", repoStr, types.ErrRepoNotAllowed)
+// RepoGet returns a repo.
+// The returned interface should remain valid until [Repo.Close] is called.
+func (d *dir) RepoGet(repo string) (Repo, error) {
+	// minimal validation since this is done in backend
+	if !filepath.IsLocal(repo) {
+		return nil, fmt.Errorf("repo %s must be a relative path%.0w", repo, types.ErrRepoNotAllowed)
 	}
 	dr := dirRepo{
-		wgBlock: make(chan struct{}, 1),
-		path:    filepath.Join(d.root, repoStr),
-		name:    repoStr,
-		conf:    d.conf,
-		log:     d.log,
+		path: filepath.Join(d.root, repo),
+		name: repo,
+		d:    d,
+		log:  d.log,
 	}
-	uploadCacheOpts := cache.Opts[string, *dirRepoUpload]{
-		PruneFn:     func(_ string, dru *dirRepoUpload) error { return dru.delete() },
-		PrunePreFn:  func(_ string, dru *dirRepoUpload) { dru.mu.Lock() },
-		PrunePostFn: func(_ string, dru *dirRepoUpload) { dru.mu.Unlock() },
+	// fast fail on an invalid oci-layout file
+	if err := dr.layoutVerify(); err != nil && !errors.Is(err, types.ErrNotFound) {
+		return nil, err
 	}
-	if d.conf.Storage.GC.RepoUploadMax > 0 {
-		uploadCacheOpts.Count = d.conf.Storage.GC.RepoUploadMax
-	}
-	if d.conf.Storage.GC.GracePeriod > 0 {
-		uploadCacheOpts.Age = d.conf.Storage.GC.GracePeriod
-	}
-	dr.uploads = cache.New[string, *dirRepoUpload](uploadCacheOpts)
-	dr.wgBlock <- struct{}{}
-	d.repos.Set(repoStr, &dr)
-	statDir, err := os.Stat(dr.path)
-	if err == nil && statDir.IsDir() {
-		statIndex, errIndex := os.Stat(filepath.Join(dr.path, indexFile))
-		//#nosec G304 internal method is only called with filenames within admin provided path.
-		layoutBytes, errLayout := os.ReadFile(filepath.Join(dr.path, layoutFile))
-		if errIndex == nil && errLayout == nil && !statIndex.IsDir() && layoutVerify(layoutBytes) {
-			dr.exists = true
-		}
-	}
-	dr.wg.Add(1)
 	return &dr, nil
 }
 
+// IsEphemeral indicates whether or not the repos continue to exist after closing.
+func (d *dir) IsEphemeral() bool {
+	return false
+}
+
+// Close indicates the store is no longer needed and may free up any resources.
+// Future calls to the store or any contained repos may fail.
 func (d *dir) Close() error {
-	// signal to background jobs to exit and block new repos from being created
-	close(d.stop)
-	d.mu.Lock()
-	repoNames, err := d.repos.List()
-	if err != nil {
-		return fmt.Errorf("failed to list repos during close: %w", err)
-	}
-	errs := []error{}
-	for _, r := range repoNames {
-		repo, err := d.repos.Get(r)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		<-repo.wgBlock
-		repo.wg.Wait()
-		if !*d.conf.Storage.ReadOnly {
-			err = repo.uploads.DeleteAll()
-			if err != nil {
-				errs = append(errs, err)
-				repo.wgBlock <- struct{}{}
-				continue
-			}
-		}
-		repo.wgBlock <- struct{}{}
-		err = d.repos.Delete(r)
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	// wait for background jobs to finish
-	d.mu.Unlock()
-	d.wg.Wait()
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
 	return nil
 }
 
-// gcTicker is a goroutine to continuously run the GC on a schedule
-func (d *dir) gcTicker() {
-	defer d.wg.Done()
-	ticker := time.NewTicker(d.conf.Storage.GC.Frequency)
-	prev := time.Time{}
-	for {
-		select {
-		case cur := <-ticker.C:
-			_ = d.gc(cur, prev)
-			prev = cur
-		case <-d.stop:
-			ticker.Stop()
-			return
-		}
-	}
-}
-
-// run a GC on every repo
-func (d *dir) gc(cur, prev time.Time) error {
-	start := prev.Add(time.Millisecond * -250)
-	if d.conf.Storage.GC.GracePeriod > 0 {
-		start = start.Add(d.conf.Storage.GC.GracePeriod * -1)
-	}
-	repoNames, err := d.repos.List()
-	if err != nil {
-		return fmt.Errorf("failed to list repos in gc: %w", err)
-	}
-	for _, r := range repoNames {
-		// if stop ch was closed, exit immediately
-		select {
-		case <-d.stop:
-			return fmt.Errorf("stop signal received")
-		default:
-		}
-
-		repo, err := d.repos.Get(r)
-		if err != nil {
-			continue
-		}
-		// skip repos that were have not been recently updated
-		repo.mu.Lock()
-		outsideRange := repo.timeMod.Before(start)
-		repo.mu.Unlock()
-		if outsideRange {
-			continue
-		}
-		err = repo.gc()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// IndexGet returns the current top level index.json for a repo.
+// IndexGet returns the top level index.json file contents.
 func (dr *dirRepo) IndexGet() (types.LayoutIndex, error) {
+	// verify the layout file
 	dr.mu.Lock()
-	defer dr.mu.Unlock()
-	err := dr.indexLoad(false, true)
-	if err != nil && errors.Is(err, types.ErrNotFound) {
-		err = nil // ignore not found errors
+	err := dr.layoutVerify()
+	dr.mu.Unlock()
+	if err != nil && !errors.Is(err, types.ErrNotFound) {
+		return types.LayoutIndex{}, err
 	}
-	ic := dr.index.Copy()
-	return ic, err
+	// load index.json
+	li := types.LayoutIndex{
+		Index: types.Index{
+			SchemaVersion: 2,
+			MediaType:     types.MediaTypeOCI1ManifestList,
+			Manifests:     []types.Descriptor{},
+		},
+	}
+	fh, err := os.Open(filepath.Join(dr.path, indexFile))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return li, nil
+		}
+		return li, err
+	}
+	defer fh.Close()
+	err = json.NewDecoder(fh).Decode(&li)
+	if li.SchemaVersion != 2 || li.MediaType != types.MediaTypeOCI1ManifestList {
+		return li, fmt.Errorf("unsupported schema version or media type in index.json")
+	}
+	dr.indexEmpty = len(li.Manifests) == 0
+	return li, err
 }
 
-// IndexInsert adds a new entry to the index and writes the change to index.json.
-func (dr *dirRepo) IndexInsert(desc types.Descriptor, opts ...types.LayoutIndexOpt) error {
-	if *dr.conf.Storage.ReadOnly {
+// IndexSet returns the top level index.json file contents.
+func (dr *dirRepo) IndexSet(li types.LayoutIndex) error {
+	if *dr.d.conf.ReadOnly {
 		return types.ErrReadOnly
 	}
+	// write the oci-layout file if missing
 	dr.mu.Lock()
-	defer dr.mu.Unlock()
-	_ = dr.indexLoad(false, true)
-	dr.index.AddDesc(desc, opts...)
-	dr.log.Debug("index entry added", "repo", dr.name, "desc", desc)
-	return dr.indexSave(true)
-}
-
-// IndexRemove removes an entry from the index and writes the change to index.json.
-func (dr *dirRepo) IndexRemove(desc types.Descriptor) error {
-	if *dr.conf.Storage.ReadOnly {
-		return types.ErrReadOnly
-	}
-	dr.mu.Lock()
-	defer dr.mu.Unlock()
-	_ = dr.indexLoad(false, true)
-	dr.index.RmDesc(desc)
-	dr.log.Debug("index entry removed", "repo", dr.name, "desc", desc)
-	return dr.indexSave(true)
-}
-
-// BlobGet returns a reader to an entry from the CAS.
-func (dr *dirRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
-	return dr.blobGet(d, false)
-}
-
-func (dr *dirRepo) blobGet(d digest.Digest, locked bool) (io.ReadSeekCloser, error) {
-	if !dr.exists {
-		return nil, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
-	}
-	if d.IsZero() {
-		return nil, fmt.Errorf("invalid digest: %s", d.String())
-	}
-	fh, err := os.Open(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
+	err := dr.layoutWrite()
+	dr.mu.Unlock()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
-		}
-		return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
+		return err
 	}
-	return fh, nil
-}
-
-// blobMeta returns metadata on a blob.
-func (dr *dirRepo) blobMeta(d digest.Digest, locked bool) (blobMeta, error) {
-	m := blobMeta{}
-	if !dr.exists {
-		return m, fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
-	}
-
-	if d.IsZero() {
-		return m, fmt.Errorf("invalid digest: %s", d.String())
-	}
-	fi, err := os.Stat(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
+	// write the index first to a temp file to avoid collisions
+	fh, err := os.CreateTemp(dr.path, "index.json.*")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return m, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
-		}
-		return m, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
+		dr.log.Debug("dirRepo index temp file create filed", "repo", dr.name, "err", err)
+		return err
 	}
-	m.mod = fi.ModTime()
-	return m, nil
+	defer fh.Close()
+	err = json.NewEncoder(fh).Encode(li)
+	if err != nil {
+		//#nosec G703 repo path has been cleaned
+		_ = os.Remove(fh.Name())
+		return err
+	}
+	//#nosec G703 repo path has been cleaned
+	err = os.Rename(fh.Name(), filepath.Join(dr.path, indexFile))
+	if err != nil {
+		dr.log.Debug("dirRepo index rename failed", "repo", dr.name, "err", err)
+		//#nosec G703 repo path has been cleaned
+		_ = os.Remove(fh.Name())
+		return err
+	}
+	dr.indexEmpty = len(li.Manifests) == 0
+	dr.log.Debug("dirRepo index updated", "repo", dr.name, "entries", len(li.Manifests))
+	return nil
 }
 
 // BlobCreate is used to create a new blob.
-func (dr *dirRepo) BlobCreate(opts ...BlobOpt) (BlobCreator, string, error) {
-	if *dr.conf.Storage.ReadOnly {
-		return nil, "", types.ErrReadOnly
-	}
-	conf := blobConfig{
-		algo: digest.Canonical,
-	}
-	for _, opt := range opts {
-		err := opt(&conf)
-		if err != nil {
-			return nil, "", err
-		}
-	}
-	if !dr.exists {
-		err := dr.repoInit(false)
-		if err != nil {
-			return nil, "", err
-		}
-	}
-	// if blob exists, return the appropriate error
-	if !conf.expect.IsZero() {
-		_, err := os.Stat(filepath.Join(dr.path, blobsDir, conf.expect.Algorithm().String(), conf.expect.Encoded()))
-		if err == nil {
-			return nil, "", types.ErrBlobExists
-		}
-	}
-	dr.mu.Lock()
-	defer dr.mu.Unlock()
-	sessionID, err := genSessionID()
-	if err != nil {
-		return nil, "", fmt.Errorf("failed generating sessionID: %w", err)
-	}
-	if _, err := dr.uploads.Get(sessionID); err == nil {
-		return nil, "", fmt.Errorf("session ID collision")
+func (dr *dirRepo) BlobCreate() (BlobCreator, error) {
+	if *dr.d.conf.ReadOnly {
+		return nil, types.ErrReadOnly
 	}
 	// create a temp file in the repo blob store, under an upload folder
 	tmpDir := filepath.Join(dr.path, uploadDir)
 	uploadFH, err := os.Stat(tmpDir)
 	if err == nil && !uploadFH.IsDir() {
-		return nil, "", fmt.Errorf("upload location %s is not a directory", tmpDir)
+		return nil, fmt.Errorf("upload location %s is not a directory", tmpDir)
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
 		err = os.MkdirAll(tmpDir, 0o755)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to create upload directory %s: %w", tmpDir, err)
+			return nil, fmt.Errorf("failed to create upload directory %s: %w", tmpDir, err)
 		}
 	}
 	tf, err := os.CreateTemp(tmpDir, "upload.*")
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create temp file in %s: %w", tmpDir, err)
+		return nil, fmt.Errorf("failed to create temp file in %s: %w", tmpDir, err)
 	}
-	filename := tf.Name()
-	// start a new digester with the appropriate algo
-	w := digest.NewWriter(tf, conf.algo)
 	bc := &dirRepoUpload{
-		fh:        tf,
-		alg:       conf.algo,
-		w:         w,
-		expect:    conf.expect,
-		path:      dr.path,
-		filename:  filename,
-		dr:        dr,
-		sessionID: sessionID,
+		fh:       tf,
+		repoPath: dr.path,
+		tempName: tf.Name(),
+		dr:       dr,
 	}
-	dr.timeMod = time.Now()
-	dr.uploads.Set(sessionID, bc)
-	return bc, sessionID, nil
+	return bc, nil
 }
 
-// BlobDelete deletes an entry from the CAS.
+// BlobDelete removes an entry from the CAS.
 func (dr *dirRepo) BlobDelete(d digest.Digest) error {
-	return dr.blobDelete(d, false)
-}
-
-func (dr *dirRepo) blobDelete(d digest.Digest, locked bool) error {
-	if *dr.conf.Storage.ReadOnly {
+	if *dr.d.conf.ReadOnly {
 		return types.ErrReadOnly
-	}
-	if !dr.exists {
-		return fmt.Errorf("repo does not exist %s: %w", dr.name, types.ErrNotFound)
 	}
 	if d.IsZero() {
 		return fmt.Errorf("invalid digest: %s", d.String())
@@ -455,132 +231,328 @@ func (dr *dirRepo) blobDelete(d digest.Digest, locked bool) error {
 	if fi.IsDir() {
 		return fmt.Errorf("invalid blob %s: %s is a directory", d.String(), filename)
 	}
-	dr.log.Debug("blob deleted", "repo", dr.name, "digest", d.String())
 	err = os.Remove(filename)
+	if err != nil {
+		dr.log.Debug("blob delete failed", "repo", dr.name, "digest", d.String(), "err", err)
+	} else {
+		dr.log.Debug("blob deleted", "repo", dr.name, "digest", d.String())
+	}
 	return err
 }
 
-func (dr *dirRepo) blobList(locked bool) ([]digest.Digest, error) {
-	dl := []digest.Digest{}
-	algoS, err := os.ReadDir(filepath.Join(dr.path, blobsDir))
+// BlobGet returns a reader to an entry from the CAS.
+func (dr *dirRepo) BlobGet(d digest.Digest) (io.ReadSeekCloser, error) {
+	if d.IsZero() {
+		return nil, fmt.Errorf("invalid digest: %s", d.String())
+	}
+	fh, err := os.Open(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return dl, nil
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
 		}
-		return dl, fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir), err)
+		return nil, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
 	}
-	for _, algo := range algoS {
-		if !algo.IsDir() {
-			continue
-		}
-		encodeS, err := os.ReadDir(filepath.Join(dr.path, blobsDir, algo.Name()))
-		if err != nil {
-			return dl, fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir, algo.Name()), err)
-		}
-		for _, encode := range encodeS {
-			d, err := digest.Parse(algo.Name() + ":" + encode.Name())
-			if err != nil {
-				// skip unparsable entries
-				continue
-			}
-			dl = append(dl, d)
-		}
-	}
-	return dl, nil
+	return fh, nil
 }
 
-// BlobSession is used to retrieve an upload session
-func (dr *dirRepo) BlobSession(sessionID string) (BlobCreator, error) {
-	dr.mu.Lock()
-	defer dr.mu.Unlock()
-	if bc, err := dr.uploads.Get(sessionID); err == nil {
-		return bc, nil
+// BlobMeta returns metadata on a blob.
+func (dr *dirRepo) BlobMeta(d digest.Digest) (BlobMeta, error) {
+	if d.IsZero() {
+		return BlobMeta{}, fmt.Errorf("invalid digest: %s", d.String())
 	}
-	return nil, types.ErrNotFound
+	fi, err := os.Stat(filepath.Join(dr.path, blobsDir, d.Algorithm().String(), d.Encoded()))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return BlobMeta{}, fmt.Errorf("failed to load digest %s: %w", d.String(), types.ErrNotFound)
+		}
+		return BlobMeta{}, fmt.Errorf("failed to load digest %s: %w", d.String(), err)
+	}
+	m := BlobMeta{}
+	m.Mod = fi.ModTime()
+	m.Size = fi.Size()
+	return m, nil
 }
 
-// Done indicates the routine using this repo is finished.
-// This must be called exactly once for every instance of [Store.RepoGet].
-func (dr *dirRepo) Done() {
-	dr.wg.Done()
-}
-
-func (dr *dirRepo) repoInit(locked bool) error {
-	if !locked {
-		dr.mu.Lock()
-		defer dr.mu.Unlock()
-		locked = true
+// BlobPut directly adds a blob without an intermediate `BlobCreator`
+func (dr *dirRepo) BlobPut(d digest.Digest, b []byte) error {
+	if *dr.d.conf.ReadOnly {
+		return types.ErrReadOnly
 	}
-	if dr.exists {
-		return nil
+	if d.IsZero() {
+		return types.ErrDigestInvalid
 	}
-	// create the directory
-	fi, err := os.Stat(dr.path)
+	if b == nil {
+		return fmt.Errorf("bytes cannot be nil%.0w", types.ErrNotFound)
+	}
+	// create the blob algorithm directory, if missing
+	tgtDir := filepath.Join(dr.path, blobsDir, d.Algorithm().String())
+	fi, err := os.Stat(tgtDir)
 	if err == nil && !fi.IsDir() {
-		return fmt.Errorf("repo %s is not a directory", dr.path)
+		return fmt.Errorf("failed to move file to blob storage, %s is not a directory", tgtDir)
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
-		err = os.MkdirAll(dr.path, 0o755)
+		err = os.MkdirAll(tgtDir, 0o755)
 		if err != nil {
-			return fmt.Errorf("failed to create repo directory %s: %w", dr.path, err)
+			return fmt.Errorf("unable to create blob storage directory %s: %w", tgtDir, err)
 		}
 	}
-	layoutName := filepath.Join(dr.path, layoutFile)
-	//#nosec G304 internal method is only called with filenames within admin provided path.
-	layoutBytes, err := os.ReadFile(layoutName)
-	if err != nil || !layoutVerify(layoutBytes) {
-		l := types.Layout{Version: types.LayoutVersion}
-		lJSON, err := json.Marshal(l)
-		if err != nil {
-			return err
-		}
-		//#nosec G306 file permissions are intentionally world readable.
-		err = os.WriteFile(layoutName, lJSON, 0o644)
-		if err != nil {
-			return err
-		}
-	}
-	// create index if it doesn't exist
-	indexName := filepath.Join(dr.path, indexFile)
-	fi, err = os.Stat(indexName)
-	if err == nil && fi.IsDir() {
-		return fmt.Errorf("index.json is a directory: %s", indexName)
-	}
-	if err != nil && errors.Is(err, fs.ErrNotExist) {
-		err = dr.indexSave(locked)
-	}
+	// write the blob into the store
+	blobName := filepath.Join(tgtDir, d.Encoded())
+	//#nosec G306 blob permissions are intentionally world readable.
+	err = os.WriteFile(blobName, b, 0o644)
 	if err != nil {
-		return err
+		dr.log.Debug("blob create failed", "repo", dr.name, "digest", d.String(), "err", err)
+	} else {
+		dr.log.Debug("blob created", "repo", dr.name, "digest", d.String())
 	}
-	dr.exists = true
+	return err
+}
+
+// Walk is used to traverse the contents of a repo.
+// Descriptors that are not found will be silently skipped.
+func (dr *dirRepo) Walk(depth types.ManifestParseDepth, retReader bool, descList ...types.Descriptor) iter.Seq[WalkStep] {
+	return func(yield func(WalkStep) bool) {
+		for i := 0; i < len(descList); i++ { // descList may be appended in this loop
+			d := descList[i]
+			bm, err := dr.BlobMeta(d.Digest)
+			if err != nil {
+				dr.log.Debug("walk failed to get blob metadata", "repo", dr.name, "digest", d.Digest, "err", err)
+				continue
+			}
+			step := WalkStep{Desc: d, Meta: BlobMeta{Mod: bm.Mod, Size: bm.Size}}
+			// always read manifests to parse later
+			var raw []byte
+			if types.MediaTypeManifest(d.MediaType) {
+				rdr, err := dr.BlobGet(d.Digest)
+				if err != nil {
+					dr.log.Debug("walk failed to get blob", "repo", dr.name, "digest", d.Digest, "err", err)
+					continue
+				}
+				raw, err = io.ReadAll(rdr)
+				_ = rdr.Close()
+				if err != nil {
+					dr.log.Debug("walk failed to read blob", "repo", dr.name, "digest", d.Digest, "err", err)
+					continue
+				}
+				if retReader {
+					step.Rdr = types.BytesReadCloser{Reader: bytes.NewReader(raw)}
+				}
+			} else if retReader {
+				// reader requested for blobs
+				step.Rdr, err = dr.BlobGet(d.Digest)
+				if err != nil {
+					dr.log.Debug("walk failed to get blob", "repo", dr.name, "digest", d.Digest, "err", err)
+					continue
+				}
+			}
+			if !yield(step) {
+				return
+			}
+			if len(raw) > 0 {
+				addDesc, _ := types.ManifestParseDescriptors(raw, d, depth)
+				if len(addDesc) > 0 {
+					descList = append(descList, addDesc...)
+				}
+			}
+		}
+	}
+}
+
+// GC (garbage collect) cleans unmarked blobs that have been created before the cutoff time.
+func (dr *dirRepo) GC(cutoff time.Time, keepDig map[digest.Digest]bool) error {
+	if *dr.d.conf.ReadOnly {
+		return types.ErrReadOnly
+	}
+	algoDirs, err := os.ReadDir(filepath.Join(dr.path, blobsDir))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir), err)
+	}
+	for _, algoDir := range algoDirs {
+		if !algoDir.IsDir() {
+			continue
+		}
+		encodeFiles, err := os.ReadDir(filepath.Join(dr.path, blobsDir, algoDir.Name()))
+		if err != nil {
+			return fmt.Errorf("failed to read dir %s: %v", filepath.Join(dr.path, blobsDir, algoDir.Name()), err)
+		}
+		for _, encodeFile := range encodeFiles {
+			d, err := digest.Parse(algoDir.Name() + ":" + encodeFile.Name())
+			if err != nil || keepDig[d] {
+				// skip unparsable digests and those on the keep list
+				continue
+			}
+			filename := filepath.Join(dr.path, blobsDir, algoDir.Name(), encodeFile.Name())
+			fi, err := os.Stat(filename)
+			if err != nil || fi.ModTime().After(cutoff) {
+				// skip nodes that cannot be stat or were written after the cutoff
+				continue
+			}
+			err = os.Remove(filename)
+			if err != nil {
+				dr.log.Debug("gc failed removing blob", "repo", dr.name, "filename", filename, "err", err)
+			} else {
+				dr.log.Debug("gc pruned blob", "repo", dr.name, "digest", d.String())
+			}
+		}
+	}
 	return nil
 }
 
-func (dr *dirRepo) indexLoad(force, locked bool) error {
-	if !locked {
-		dr.mu.Lock()
-		defer dr.mu.Unlock()
-		locked = true
-	}
-	if !force && time.Since(dr.timeCheck) < freqCheck {
+// Close indicates the repo is no longer being accessed and resources may be freed.
+func (dr *dirRepo) Close() error {
+	if *dr.d.conf.ReadOnly {
 		return nil
 	}
-	if dr.index.MediaType == "" && len(dr.index.Manifests) == 0 {
-		// default values for the index if the load fails (does not exist or unparsable)
-		dr.index = types.LayoutIndex{
-			Index: types.Index{
-				SchemaVersion: 2,
-				MediaType:     types.MediaTypeOCI1ManifestList,
-				Manifests:     []types.Descriptor{},
-				Annotations:   map[string]string{},
-			},
+	errs := []error{}
+	// remove the upload directory
+	uploadFiles, err := os.ReadDir(filepath.Join(dr.path, uploadDir))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, err)
+	} else if err == nil {
+		empty := true
+		for _, de := range uploadFiles {
+			if !de.Type().IsRegular() || !strings.HasPrefix(de.Name(), "upload.") {
+				empty = false
+				continue
+			}
+			err := os.Remove(filepath.Join(dr.path, uploadDir, de.Name()))
+			if err != nil {
+				empty = false
+				dr.log.Debug("dirRepo close: failed to delete upload file", "repo", dr.name, "file", de.Name(), "err", err)
+				errs = append(errs, err)
+			}
 		}
-		if *dr.conf.API.Referrer.Enabled {
-			dr.index.Annotations[types.AnnotReferrerConvert] = "true"
+		if empty {
+			err := os.Remove(filepath.Join(dr.path, uploadDir))
+			if err != nil {
+				dr.log.Debug("dirRepo close: failed to delete upload dir", "repo", dr.name, "err", err)
+				errs = append(errs, err)
+			} else {
+				dr.log.Debug("dirRepo close: pruned upload dir", "repo", dr.name)
+			}
 		}
 	}
-	fh, err := os.Open(filepath.Join(dr.path, indexFile))
+	if len(errs) == 0 && *dr.d.conf.GC.EmptyRepo {
+		blobsEmpty := true
+		// prune empty algorithm folders
+		algoDirs, err := os.ReadDir(filepath.Join(dr.path, blobsDir))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		} else if err == nil {
+			for _, algoDE := range algoDirs {
+				if !algoDE.IsDir() {
+					blobsEmpty = false
+					continue
+				}
+				hashFiles, err := os.ReadDir(filepath.Join(dr.path, blobsDir, algoDE.Name()))
+				if err != nil {
+					errs = append(errs, err)
+					blobsEmpty = false
+					continue
+				}
+				if len(hashFiles) > 0 {
+					blobsEmpty = false
+					continue
+				}
+				err = os.Remove(filepath.Join(dr.path, blobsDir, algoDE.Name()))
+				if err != nil {
+					dr.log.Debug("dirRepo close: failed to delete algorithm dir", "repo", dr.name, "algo", algoDE.Name(), "err", err)
+					errs = append(errs, err)
+				} else {
+					dr.log.Debug("dirRepo close: pruned algorithm dir", "repo", dr.name, "algo", algoDE.Name())
+				}
+			}
+			if blobsEmpty {
+				err = os.Remove(filepath.Join(dr.path, blobsDir))
+				if err != nil {
+					dr.log.Debug("dirRepo close: failed to delete blobs dir", "repo", dr.name, "err", err)
+					errs = append(errs, err)
+				} else {
+					dr.log.Debug("dirRepo close: pruned blobs dir", "repo", dr.name)
+				}
+			}
+		}
+		// if blob store is empty, verify the only contents remaining are the index.json and oci-layout files
+		if blobsEmpty {
+			files, err := os.ReadDir(dr.path)
+			if err != nil {
+				blobsEmpty = false
+			} else {
+				if len(files) > 2 {
+					blobsEmpty = false
+				} else {
+					for _, file := range files {
+						if !slices.Contains([]string{indexFile, layoutFile}, file.Name()) {
+							blobsEmpty = false
+						}
+					}
+				}
+			}
+		}
+		// if the repo is empty, remove the index.json, oci-layout, and any empty directories up to the dir root
+		if blobsEmpty {
+			if dr.validOL {
+				err = os.Remove(filepath.Join(dr.path, layoutFile))
+				if err != nil && !errors.Is(err, os.ErrNotExist) {
+					dr.log.Debug("dirRepo close: failed to delete oci-layout", "repo", dr.name, "err", err)
+					errs = append(errs, err)
+				}
+				dr.validOL = false
+			}
+			if dr.indexEmpty {
+				err = os.Remove(filepath.Join(dr.path, indexFile))
+				if err != nil && !errors.Is(err, os.ErrNotExist) {
+					dr.log.Debug("dirRepo close: failed to delete index.json", "repo", dr.name, "err", err)
+					errs = append(errs, err)
+				}
+			}
+			// clean empty directories under the root dir
+			repoPath, err := filepath.Rel(dr.d.root, dr.path)
+			if err != nil {
+				errs = append(errs, err)
+			} else if !types.PathRE.MatchString(repoPath) {
+				errs = append(errs, fmt.Errorf("invalid repo path, cannot clean directories: %s", repoPath))
+			} else {
+				splitPath := strings.Split(repoPath, string(filepath.Separator))
+				for len(splitPath) > 0 {
+					curDir := filepath.Join(dr.d.root, filepath.Join(splitPath...))
+					de, err := os.ReadDir(curDir)
+					if err != nil {
+						errs = append(errs, err)
+						break
+					} else if len(de) > 0 {
+						// directory not empty, stop cleaning
+						break
+					}
+					err = os.Remove(curDir)
+					if err != nil {
+						dr.log.Debug("dirRepo close: failed to delete repo path", "repo", dr.name, "curDir", curDir, "err", err)
+						errs = append(errs, err)
+						break
+					} else {
+						dr.log.Debug("dirRepo close: pruned repo path", "repo", dr.name, "curDir", curDir)
+					}
+					splitPath = splitPath[:len(splitPath)-1]
+				}
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// layoutVerify ingests the oci-layout file, verifying the contents.
+// This may return a [types.ErrNotFound] when either is missing.
+// All other errors should block working with the repo directory.
+func (dr *dirRepo) layoutVerify() error {
+	if dr.validOL {
+		return nil
+	}
+	//#nosec G304 internal method is only called with filenames within admin provided path.
+	fh, err := os.Open(filepath.Join(dr.path, layoutFile))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("%v%.0w", err, types.ErrNotFound)
@@ -588,190 +560,118 @@ func (dr *dirRepo) indexLoad(force, locked bool) error {
 		return err
 	}
 	defer fh.Close()
-	stat, err := fh.Stat()
-	if err != nil {
-		return err
+	if err := types.LayoutVerify(fh); err != nil {
+		return fmt.Errorf("failed to verify layout file %s: %w", filepath.Join(dr.path, layoutFile), err)
 	}
-	dr.timeCheck = time.Now()
-	if dr.timeMod == stat.ModTime() {
-		// file is unchanged from previous loaded version
-		return nil
-	}
-	parseIndex := types.LayoutIndex{}
-	err = json.NewDecoder(fh).Decode(&parseIndex)
-	if err != nil {
-		return err
-	}
-	dr.index = parseIndex
-	dr.timeMod = stat.ModTime()
-	dr.exists = true
-
-	mod, err := indexIngest(dr, &dr.index, dr.conf, locked)
-	if err != nil {
-		return err
-	}
-	if mod && !*dr.conf.Storage.ReadOnly {
-		err = dr.indexSave(locked)
-		if err != nil {
-			return err
-		}
-	}
+	dr.validOL = true
 	return nil
 }
 
-func (dr *dirRepo) indexSave(locked bool) error {
-	if *dr.conf.Storage.ReadOnly {
+// layoutWrite writes the oci-layout if needed.
+func (dr *dirRepo) layoutWrite() error {
+	if *dr.d.conf.ReadOnly {
 		return types.ErrReadOnly
 	}
-	if !locked {
-		dr.mu.Lock()
-		defer dr.mu.Unlock()
+	err := dr.layoutVerify()
+	if err == nil {
+		return err // noop
+	} else if !errors.Is(err, types.ErrNotFound) {
+		return err
 	}
-	// force minimal settings on the index
-	dr.index.SchemaVersion = 2
-	dr.index.MediaType = types.MediaTypeOCI1ManifestList
-	fh, err := os.CreateTemp(dr.path, "index.json.*")
+	// ensure repo directory exists (blob creation should have already done this)
+	stat, err := os.Stat(dr.path)
+	if err == nil && !stat.IsDir() {
+		return fmt.Errorf("repo %s is not a directory", dr.path)
+	}
 	if err != nil {
+		//#nosec G301 directory permissions are intentionally world readable.
+		err = os.MkdirAll(dr.path, 0o755)
+		if err != nil {
+			dr.log.Debug("dirRepo layout mkdir failed", "repo", dr.name, "err", err)
+			return fmt.Errorf("failed to create repo directory %s: %w", dr.path, err)
+		}
+	}
+	//#nosec G306 only called with filenames within admin provided path.
+	fh, err := os.Create(filepath.Join(dr.path, layoutFile))
+	if err != nil {
+		dr.log.Debug("dirRepo layout create failed", "repo", dr.name, "err", err)
 		return err
 	}
 	defer fh.Close()
-	err = json.NewEncoder(fh).Encode(dr.index)
+	l := types.Layout{Version: types.LayoutVersion}
+	err = json.NewEncoder(fh).Encode(l)
 	if err != nil {
-		//#nosec G703 repo path has been cleaned
-		_ = os.Remove(fh.Name())
 		return err
-	}
-	//#nosec G703 repo path has been cleaned
-	err = os.Rename(fh.Name(), filepath.Join(dr.path, indexFile))
-	if err != nil {
-		//#nosec G703 repo path has been cleaned
-		_ = os.Remove(fh.Name())
-		return err
-	}
-	fi, err := fh.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to stat index.json for tracking mod time: %w", err)
-	}
-	dr.timeMod = fi.ModTime()
-	return nil
-}
-
-// gc runs the garbage collect
-func (dr *dirRepo) gc() error {
-	<-dr.wgBlock
-	defer func() { dr.wgBlock <- struct{}{} }()
-	dr.wg.Wait()
-	dr.mu.Lock()
-	defer dr.mu.Unlock()
-	dr.log.Debug("starting GC", "repo", dr.name)
-	// attempt to remove an empty upload folder, ignore errors (e.g. uploads managed by another tool)
-	if dr.uploads.IsEmpty() {
-		fi, err := os.Stat(filepath.Join(dr.path, uploadDir))
-		if err == nil && fi.IsDir() {
-			_ = os.Remove(filepath.Join(dr.path, uploadDir))
-		}
-	}
-	// run the GC process, track any errors but wait until later to return it
-	errGC := func() error {
-		err := dr.indexLoad(true, true)
-		if err != nil {
-			return fmt.Errorf("failed to load index: %w", err)
-		}
-		i, mod, err := repoGarbageCollect(dr, dr.conf, dr.index, true)
-		if err != nil {
-			return err
-		}
-		if mod {
-			dr.index = i
-			if err := dr.indexSave(true); err != nil {
-				return err
-			}
-		}
-		return nil
-	}()
-	// prune an empty repo dir and mark the repo as empty if successful
-	if *dr.conf.Storage.GC.EmptyRepo && len(dr.index.Manifests) == 0 && dr.uploads.IsEmpty() {
-		errDir := func() error {
-			errs := []error{}
-			for _, dir := range []string{
-				filepath.Join(dr.path, uploadDir),
-				filepath.Join(dr.path, blobsDir, "sha256"),
-				filepath.Join(dr.path, blobsDir, "sha512"),
-				filepath.Join(dr.path, blobsDir),
-				filepath.Join(dr.path, indexFile),
-				filepath.Join(dr.path, layoutFile),
-				filepath.Join(dr.path),
-			} {
-				err := os.Remove(dir)
-				if err != nil && !errors.Is(err, fs.ErrNotExist) {
-					errs = append(errs, err)
-				}
-			}
-			return errors.Join(errs...)
-		}()
-		if errDir == nil {
-			dr.exists = false
-		}
-	}
-	dr.log.Debug("finished GC", "repo", dr.name, "err", errGC)
-	if errGC != nil {
-		return errGC
 	}
 	return nil
 }
 
-// Write is used to push content into the blob.
-func (dru *dirRepoUpload) Write(p []byte) (int, error) {
+// Writer is used to push the blob content.
+func (dru *dirRepoUpload) Write(p []byte) (n int, err error) {
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
 	if dru.fh == nil {
 		return 0, fmt.Errorf("writer is closed")
 	}
-	// verify session still exists and update last write time
-	if _, err := dru.dr.uploads.Get(dru.sessionID); err != nil {
-		return 0, fmt.Errorf("session expired %s: %w", dru.sessionID, err)
-	}
-	n, err := dru.w.Write(p)
-	dru.size += int64(n)
+	n, err = dru.fh.Write(p)
 	return n, err
 }
 
-// Close finishes an upload, verifying digest if requested, and moves it into the blob store.
-func (dru *dirRepoUpload) Close() error {
+// Reader returns a reader from the start of the blob.
+// The reader should always be fully consumed before calling Write again.
+func (dru *dirRepoUpload) Reader() io.Reader {
+	dru.mu.Lock()
+	defer dru.mu.Unlock()
+	if dru.tempName == "" {
+		return nil
+	}
+	rdr, err := os.Open(dru.tempName)
+	if err != nil {
+		return nil
+	}
+	return rdr
+}
+
+// Save is used to store the blob to a given digest value.
+// The store is not required to verify this value.
+func (dru *dirRepoUpload) Save(d digest.Digest) error {
+	if d.IsZero() {
+		return types.ErrDigestInvalid
+	}
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
 	err := dru.fh.Close()
 	dru.fh = nil
 	if err != nil {
-		return errors.Join(err, os.Remove(dru.filename))
-	}
-	dig, err := dru.w.Digest()
-	if err != nil {
-		return errors.Join(fmt.Errorf("failed to compute the digest: %w", err),
-			os.Remove(dru.filename))
-	}
-	if !dru.expect.IsZero() && !dig.Equal(dru.expect) {
-		return errors.Join(fmt.Errorf("digest mismatch, expected %s, received %s", dru.expect.String(), dig.String()),
-			os.Remove(dru.filename))
+		return errors.Join(err, os.Remove(dru.tempName))
 	}
 	// move temp file to blob store
-	tgtDir := filepath.Join(dru.path, blobsDir, dig.Algorithm().String())
+	tgtDir := filepath.Join(dru.repoPath, blobsDir, d.Algorithm().String())
 	fi, err := os.Stat(tgtDir)
 	if err == nil && !fi.IsDir() {
 		return errors.Join(fmt.Errorf("failed to move file to blob storage, %s is not a directory", tgtDir),
-			os.Remove(dru.filename))
+			os.Remove(dru.tempName))
 	}
 	if err != nil {
 		//#nosec G301 directory permissions are intentionally world readable.
 		err = os.MkdirAll(tgtDir, 0o755)
 		if err != nil {
 			return errors.Join(fmt.Errorf("unable to create blob storage directory %s: %w", tgtDir, err),
-				os.Remove(dru.filename))
+				os.Remove(dru.tempName))
 		}
 	}
-	blobName := filepath.Join(tgtDir, dig.Encoded())
-	err = errors.Join(os.Rename(dru.filename, blobName), dru.dr.uploads.Delete(dru.sessionID))
-	dru.dr.log.Debug("blob created", "repo", dru.dr.name, "digest", dig.String(), "err", err)
+	blobName := filepath.Join(tgtDir, d.Encoded())
+	err = os.Rename(dru.tempName, blobName)
+	if err == nil {
+		//#nosec G302 blob permissions are intentionally world readable.
+		err = os.Chmod(blobName, 0o644)
+	}
+	dru.tempName = ""
+	if err != nil {
+		dru.dr.log.Debug("blob create failed", "repo", dru.dr.name, "digest", d.String(), "err", err)
+	} else {
+		dru.dr.log.Debug("blob created", "repo", dru.dr.name, "digest", d.String())
+	}
 	return err
 }
 
@@ -779,99 +679,19 @@ func (dru *dirRepoUpload) Close() error {
 func (dru *dirRepoUpload) Cancel() error {
 	dru.mu.Lock()
 	defer dru.mu.Unlock()
-	return dru.dr.uploads.Delete(dru.sessionID)
-}
-
-func (dru *dirRepoUpload) delete() error {
+	errs := []error{}
 	if dru.fh != nil {
-		_ = dru.fh.Close()
-		dru.fh = nil
-	}
-	_ = os.Remove(dru.filename)
-	// Update dr.timeMod to trigger a GC that would delete an empty upload folder.
-	// Use a goroutine to avoid circular deadlocks.
-	// A method holding the dr.mu lock may wait on the cache.mu, and the cache.mu is locked when calling this method.
-	go func() {
-		dru.dr.mu.Lock()
-		dru.dr.timeMod = time.Now()
-		dru.dr.mu.Unlock()
-	}()
-	// always return nil, even on errors, to allow entry to be removed from upload session list
-	return nil
-}
-
-// Size reports the number of bytes pushed.
-func (dru *dirRepoUpload) Size() int64 {
-	dru.mu.Lock()
-	defer dru.mu.Unlock()
-	return dru.size
-}
-
-// ChangeAlgorithm modifies the digest algorithm. This may only be rejected after the first write.
-func (dru *dirRepoUpload) ChangeAlgorithm(algo digest.Algorithm) error {
-	if algo.IsZero() {
-		return fmt.Errorf("algorithm not available: %s", algo.String())
-	}
-	dru.mu.Lock()
-	defer dru.mu.Unlock()
-	if algo.Equal(dru.alg) {
-		return nil
-	}
-	if dru.size > 0 {
-		return fmt.Errorf("unable to change algorithm after first write")
-	}
-	dru.alg = algo
-	dru.w = digest.NewWriter(dru.fh, algo)
-	return nil
-}
-
-// Digest is used to get the current digest of the content.
-func (dru *dirRepoUpload) Digest() digest.Digest {
-	dru.mu.Lock()
-	defer dru.mu.Unlock()
-	// any errors results in a zero value digest
-	d, _ := dru.w.Digest()
-	return d
-}
-
-// Verify ensures a digest matches the content.
-func (dru *dirRepoUpload) Verify(expect digest.Digest) error {
-	dru.mu.Lock()
-	defer dru.mu.Unlock()
-	if dru.w.Verify(expect) {
-		return nil
-	}
-	if expect.IsZero() {
-		return fmt.Errorf("invalid digest")
-	}
-	if !dru.alg.Equal(expect.Algorithm()) {
-		// rescan content on algorithm change
-		dru.alg = expect.Algorithm()
-		dru.w = digest.NewWriter(dru.fh, dru.alg)
-		_, err := dru.fh.Seek(0, io.SeekStart)
-		if err != nil {
-			return fmt.Errorf("seek failed, required to recompute digest: %w", err)
-		}
-		_, err = io.Copy(dru.w.Hash(), dru.fh)
-		if err != nil {
-			return fmt.Errorf("failed to scan the file to recompute the digest: %w", err)
-		}
-		if dru.w.Verify(expect) {
-			return nil
+		if err := dru.fh.Close(); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	d, err := dru.w.Digest()
-	if err != nil {
-		return fmt.Errorf("failed to compute digest: %w", err)
-	}
-	return fmt.Errorf("digest mismatch, expected %s, received %s", expect.String(), d.String())
-}
-
-func stringsHasAny(list []string, check ...string) bool {
-	for _, c := range check {
-		if slices.Contains(list, c) {
-			return true
+	if dru.tempName != "" {
+		if err := os.Remove(dru.tempName); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
 		}
 	}
-	return false
+	dr := dru.dr
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
+	return errors.Join(errs...)
 }
