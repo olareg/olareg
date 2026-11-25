@@ -50,7 +50,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: "Set up Go ${{ matrix.gover }}"
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
       with:
         go-version: "${{ matrix.gover }}"
         check-latest: true
@@ -75,10 +75,10 @@ jobs:
 
     - name: Install syft
       if: startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main'
-      uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      uses: anchore/sbom-action/download-syft@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
       id: syft
       with:
-        syft-version: "v1.55.0"
+        syft-version: "v1.57.2"
 
     - name: Build artifacts
       if: startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main'
@@ -86,9 +86,9 @@ jobs:
 
     - name: Install cosign
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
-      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       with:
-        cosign-release: "v3.1.4"
+        cosign-release: "v3.1.5"
 
     - name: Sign artifacts
       if: ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/heads/main' ) && matrix.gover == env.RELEASE_GO_VER
@@ -137,7 +137,7 @@ jobs:
     - name: Create release
       if: steps.release_details.outputs.valid == 'true' && matrix.gover == env.RELEASE_GO_VER
       id: release_create
-      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+      uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
